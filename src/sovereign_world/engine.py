@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
+from sovereign_world.commands import Decree, build_council_report, validate_envelope
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
+from sovereign_world.ids import EntityId
 from sovereign_world.people import advance_population_day
 from sovereign_world.resources import InventoryDelta, Resource
 from sovereign_world.rng import StableRng
+from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.work import execute_work_day
 
@@ -38,9 +42,68 @@ def _event(
     )
 
 
-def advance_day(state: WorldState, rng: StableRng) -> TransitionResult:
+def _run_councils(
+    state: WorldState,
+    sovereigns: Mapping[EntityId, Sovereign],
+) -> list[DomainEvent]:
+    events: list[DomainEvent] = []
+    if state.day % state.config.council_interval_days != 0:
+        return events
+    for civilization_id in sorted(sovereigns):
+        if civilization_id not in state.civilizations:
+            continue
+        sovereign = sovereigns[civilization_id]
+        try:
+            envelope = sovereign.decide(build_council_report(state, civilization_id))
+        except Exception as exception:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.COMMAND,
+                    "sovereign_unavailable",
+                    str(civilization_id),
+                    error_type=type(exception).__name__,
+                )
+            )
+            continue
+        validation = validate_envelope(envelope, state)
+        decrees = state.active_decrees.setdefault(civilization_id, {})
+        for command in validation.accepted:
+            if isinstance(command, Decree):
+                decrees[command.kind.value] = command.value
+                decrees[f"{command.kind.value}_expires"] = state.day + command.duration_days
+            events.append(
+                _event(
+                    state,
+                    EventPhase.COMMAND,
+                    "command_accepted",
+                    str(civilization_id),
+                    command_id=command.command_id,
+                )
+            )
+        for validation_error in validation.errors:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.COMMAND,
+                    "command_rejected",
+                    str(civilization_id),
+                    code=validation_error.code,
+                )
+            )
+    return events
+
+
+def advance_day(
+    state: WorldState,
+    rng: StableRng,
+    *,
+    sovereigns: Mapping[EntityId, Sovereign] | None = None,
+) -> TransitionResult:
     candidate = state.model_copy(deep=True)
     events: list[DomainEvent] = []
+    if sovereigns is not None:
+        events.extend(_run_councils(candidate, sovereigns))
 
     for civilization_id in sorted(candidate.civilizations):
         civilization = candidate.civilizations[civilization_id]
@@ -132,4 +195,3 @@ def advance_day(state: WorldState, rng: StableRng) -> TransitionResult:
     candidate.day += 1
     validate_world(candidate)
     return TransitionResult(state=candidate, events=EventBatch.assign_sequences(events))
-
