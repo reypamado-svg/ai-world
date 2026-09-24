@@ -29,7 +29,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers"
+addopts = "--strict-markers --basetemp=work/pytest-temp"
 markers = ["soak: long-running deterministic seed matrix"]
 
 [tool.ruff]
@@ -43,4 +43,3 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 python_version = "3.12"
 strict = true
 packages = ["sovereign_world"]
-
