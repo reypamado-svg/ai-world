@@ -41,6 +41,17 @@ def test_truncated_journal_tail_is_ignored(tmp_path: Path) -> None:
     assert len(records) == 2
 
 
+def test_append_discards_a_truncated_tail_before_writing(tmp_path: Path) -> None:
+    store, state = _store_with_days(tmp_path, days=2)
+    with store.journal_path.open("ab") as journal:
+        journal.write(b'{"sequence":999,"type":"transition"')
+
+    result = advance_day(state, StableRng(30))
+    store.append_transition(result.state, result.events)
+
+    assert len(WorldStore(tmp_path).read_records()) == 3
+
+
 def test_corrupt_complete_record_reports_byte_offset(tmp_path: Path) -> None:
     store, _ = _store_with_days(tmp_path, days=2)
     data = store.journal_path.read_bytes().replace(

@@ -10,7 +10,11 @@ from sovereign_world.commands import (
     CouncilReport,
     Decree,
     DecreeKind,
+    DirectOrder,
+    DirectOrderKind,
+    ProjectKind,
 )
+from sovereign_world.ids import EntityId
 
 
 class Sovereign(Protocol):
@@ -40,6 +44,22 @@ def plan_baseline_commands(report: CouncilReport) -> tuple[Command, ...]:
             priority=60,
             duration_days=60,
         ),
+        DirectOrder(
+            command_id=f"project:{report.day}:shelter",
+            kind=DirectOrderKind.START_PROJECT,
+            worker_ids=report.person_ids[:2],
+            project_id=EntityId(f"project:shelter:{report.civilization_id}"),
+            project_kind=ProjectKind.SHELTER,
+            priority=90,
+        ),
+        DirectOrder(
+            command_id=f"project:{report.day}:storage",
+            kind=DirectOrderKind.START_PROJECT,
+            worker_ids=report.person_ids[2:4],
+            project_id=EntityId(f"project:storage:{report.civilization_id}"),
+            project_kind=ProjectKind.STORAGE,
+            priority=85,
+        ),
     )
 
 
@@ -52,4 +72,3 @@ class BaselineSovereign:
             correlation_id=report.report_id,
             commands=plan_baseline_commands(report)[:8],
         )
-

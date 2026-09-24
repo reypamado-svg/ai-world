@@ -1,9 +1,11 @@
 from sovereign_world.commands import CommandEnvelope, CouncilReport, Decree, DecreeKind
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.engine import advance_day
+from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.scripted import BaselineSovereign
 from sovereign_world.state import build_initial_state
+from sovereign_world.work import ProjectStatus
 
 
 class FailingSovereign:
@@ -74,3 +76,37 @@ def test_invalid_command_does_not_block_valid_decree() -> None:
 
     assert result.state.active_decrees[civilization_id]["food_reserve_target"] == 120
 
+
+def test_baseline_sovereign_builds_starter_structures() -> None:
+    config = WorldConfig(seed=21, width=24, height=24)
+    state = build_initial_state(RunManifest.new(config=config, engine_version="0.1.0"))
+    sovereigns = {
+        civilization_id: BaselineSovereign() for civilization_id in state.civilizations
+    }
+
+    result = advance_day(state, StableRng(config.seed), sovereigns=sovereigns)
+
+    for civilization in result.state.civilizations.values():
+        assert len(civilization.projects) == 2
+        assert all(
+            project.status is ProjectStatus.COMPLETE
+            for project in civilization.projects.values()
+        )
+
+
+def test_food_reserve_decree_prevents_baseline_starvation() -> None:
+    config = WorldConfig(seed=21, width=24, height=24)
+    state = build_initial_state(RunManifest.new(config=config, engine_version="0.1.0"))
+    sovereigns = {
+        civilization_id: BaselineSovereign() for civilization_id in state.civilizations
+    }
+    rng = StableRng(config.seed)
+
+    for _ in range(1_000):
+        state = advance_day(state, rng, sovereigns=sovereigns).state
+
+    assert all(civilization.population.living_ids for civilization in state.civilizations.values())
+    assert all(
+        civilization.inventory.quantities.get(Resource.FOOD, 0) > 0
+        for civilization in state.civilizations.values()
+    )

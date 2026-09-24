@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gzip
+from base64 import b64decode
 from dataclasses import dataclass
 
 from sovereign_world.persistence import WorldStore
@@ -15,6 +17,17 @@ class VerificationResult:
     records: int
 
 
+def _recorded_state(payload: dict[str, object]) -> WorldState:
+    compressed = payload.get("state_gzip_base64")
+    if isinstance(compressed, str):
+        raw = gzip.decompress(b64decode(compressed))
+        return WorldState.model_validate_json(raw)
+    legacy = payload.get("state_json")
+    if isinstance(legacy, str):
+        return WorldState.model_validate_json(legacy)
+    raise RuntimeError("transition does not contain a recorded state")
+
+
 def replay_run(store: WorldStore, target_day: int | None = None) -> WorldState:
     records = store.read_records()
     if target_day is None:
@@ -24,7 +37,7 @@ def replay_run(store: WorldStore, target_day: int | None = None) -> WorldState:
     for record in reversed(records):
         if record.type != "transition" or int(record.payload["day"]) != target_day:
             continue
-        state = WorldState.model_validate_json(record.payload["state_json"])
+        state = _recorded_state(record.payload)
         if state_hash(state) != record.payload["state_hash"]:
             raise RuntimeError(f"state hash mismatch at day {target_day}")
         return state
@@ -38,7 +51,7 @@ def verify_run(store: WorldStore) -> VerificationResult:
     for record in records:
         if record.type != "transition":
             continue
-        state = WorldState.model_validate_json(record.payload["state_json"])
+        state = _recorded_state(record.payload)
         actual_hash = state_hash(state)
         if actual_hash != record.payload["state_hash"]:
             raise RuntimeError(f"state hash mismatch at journal sequence {record.sequence}")
@@ -49,4 +62,3 @@ def verify_run(store: WorldStore) -> VerificationResult:
         state_hash=last_hash,
         records=len(records),
     )
-

@@ -29,6 +29,11 @@ class DirectOrderKind(StrEnum):
     REQUEST_SURVEY = "request_survey"
 
 
+class ProjectKind(StrEnum):
+    SHELTER = "shelter"
+    STORAGE = "storage"
+
+
 class Decree(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -46,6 +51,7 @@ class DirectOrder(BaseModel):
     kind: DirectOrderKind
     worker_ids: tuple[EntityId, ...] = ()
     project_id: EntityId | None = None
+    project_kind: ProjectKind | None = None
     priority: int = Field(default=50, ge=0, le=100)
 
 
@@ -151,7 +157,17 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
         seen.add(command.command_id)
         if isinstance(command, DirectOrder):
             command_error: CommandError | None = None
+            if command.kind is DirectOrderKind.START_PROJECT and (
+                command.project_id is None or command.project_kind is None
+            ):
+                command_error = CommandError(
+                    command_id=command.command_id,
+                    code="invalid_project",
+                    message="start-project order requires project ID and kind",
+                )
             for person_id in command.worker_ids:
+                if command_error is not None:
+                    break
                 owner = _person_owner(state, person_id)
                 if owner is None:
                     command_error = CommandError(
@@ -179,4 +195,3 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 continue
         accepted.append(command)
     return CommandValidation(accepted=tuple(accepted), errors=tuple(errors))
-

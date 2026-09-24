@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from base64 import b64encode
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,9 @@ class WorldStore:
         self.root = root
         self.database_path = root / "world.sqlite3"
         self.journal_path = root / "journal.jsonl"
+        self._tail_sequence: int | None = None
+        self._tail_hash: str | None = None
+        self._verified_length: int | None = None
 
     @classmethod
     def create(
@@ -113,6 +117,9 @@ class WorldStore:
         data = self.journal_path.read_bytes()
         complete_length = data.rfind(b"\n") + 1
         if complete_length == 0:
+            self._tail_sequence = 0
+            self._tail_hash = "0" * 64
+            self._verified_length = 0
             return ()
         records: list[JournalRecord] = []
         previous_hash = "0" * 64
@@ -138,12 +145,25 @@ class WorldStore:
             records.append(record)
             previous_hash = record.record_hash
             offset += len(line)
+        self._tail_sequence = len(records)
+        self._tail_hash = previous_hash
+        self._verified_length = complete_length
         return tuple(records)
 
     def append_record(self, record_type: str, payload: dict[str, Any]) -> JournalRecord:
-        records = self.read_records()
-        sequence = len(records) + 1
-        previous_hash = records[-1].record_hash if records else "0" * 64
+        if self._tail_sequence is None:
+            self.read_records()
+        if (
+            self._tail_sequence is None
+            or self._tail_hash is None
+            or self._verified_length is None
+        ):
+            raise RuntimeError("journal tail was not initialized")
+        if self.journal_path.stat().st_size != self._verified_length:
+            with self.journal_path.open("r+b") as journal:
+                journal.truncate(self._verified_length)
+        sequence = self._tail_sequence + 1
+        previous_hash = self._tail_hash
         digest = _record_hash(sequence, record_type, payload, previous_hash)
         record = JournalRecord(
             sequence=sequence,
@@ -157,14 +177,18 @@ class WorldStore:
             journal.write(encoded)
             journal.flush()
             os.fsync(journal.fileno())
+        self._tail_sequence = sequence
+        self._tail_hash = digest
+        self._verified_length += len(encoded)
         return record
 
     def append_transition(self, state: WorldState, events: EventBatch) -> JournalRecord:
+        encoded_state = b64encode(gzip.compress(state.model_dump_json().encode())).decode()
         return self.append_record(
             "transition",
             {
                 "day": state.day,
-                "state_json": state.model_dump_json(),
+                "state_gzip_base64": encoded_state,
                 "state_hash": state_hash(state),
                 "events": events.canonical_json(),
             },
@@ -211,4 +235,3 @@ class WorldStore:
             except Exception:
                 continue
         raise RuntimeError("no verified checkpoint is available")
-
