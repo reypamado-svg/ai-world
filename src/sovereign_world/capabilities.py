@@ -25,6 +25,22 @@ class CapabilityId(StrEnum):
     ORGANIZED_LOGISTICS = "organized_logistics"
 
 
+REGIONAL_CAPABILITY_BY_STRENGTH: dict[str, CapabilityId] = {
+    "fertile soil": CapabilityId.CULTIVATION,
+    "timber": CapabilityId.TIMBERCRAFT,
+    "stone": CapabilityId.STONEWORKING,
+    "ore": CapabilityId.METALLURGY_AWARENESS,
+}
+
+
+def regional_capability(strength: str) -> CapabilityId:
+    """Return the fixed initial capability represented by a start's strength."""
+    try:
+        return REGIONAL_CAPABILITY_BY_STRENGTH[strength]
+    except KeyError as error:
+        raise ValueError(f"unknown regional strength: {strength}") from error
+
+
 class CapabilityRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 

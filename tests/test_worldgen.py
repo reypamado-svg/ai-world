@@ -2,8 +2,9 @@ from itertools import combinations
 
 import pytest
 
-from sovereign_world.config import WorldConfig
+from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.rng import StableRng
+from sovereign_world.state import build_initial_state
 from sovereign_world.worldgen import WorldGenerationError, generate_world
 
 
@@ -30,6 +31,15 @@ def test_generated_starts_are_viable_and_separated() -> None:
     assert all(start.viability.vulnerability for start in generated.starts)
     for left, right in combinations(generated.starts, 2):
         assert left.center.distance(right.center) >= 12
+
+
+def test_each_start_has_one_known_regional_capability() -> None:
+    config = WorldConfig(seed=9, width=48, height=48)
+    manifest = RunManifest.new(config=config, engine_version="0.1.0")
+
+    state = build_initial_state(manifest)
+
+    assert all(civilization.capabilities for civilization in state.civilizations.values())
 
 
 def test_generation_failure_is_bounded_and_reports_seed() -> None:

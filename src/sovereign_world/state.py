@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sovereign_world.capabilities import CapabilityRecord, regional_capability
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
@@ -26,6 +27,7 @@ class CivilizationState(BaseModel):
     work_orders: tuple[WorkOrder, ...] = ()
     projects: dict[EntityId, ConstructionProject] = Field(default_factory=dict)
     known_tiles: tuple[HexCoord, ...] = ()
+    capabilities: tuple[CapabilityRecord, ...] = ()
 
 
 class WorldState(BaseModel):
@@ -67,6 +69,12 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
             rng=stable_rng.stream(f"founders:{start.civilization_index}"),
             allocator=person_ids,
         )
+        capability = regional_capability(start.viability.strength)
+        practitioner_ids: list[EntityId] = []
+        for person_id, person in population.people.items():
+            skill = person.skills[start.viability.strength]
+            person.skills[capability.value] = skill
+            practitioner_ids.append(person_id)
         known_tiles = tuple(
             tile.coord
             for tile in generated.world_map.tiles
@@ -88,6 +96,13 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
             population=population,
             inventory=inventory,
             known_tiles=known_tiles,
+            capabilities=(
+                CapabilityRecord(
+                    capability=capability,
+                    practitioner_ids=tuple(sorted(practitioner_ids)),
+                    discovered_day=0,
+                ),
+            ),
         )
     return WorldState(
         run_id=manifest.run_id,
@@ -108,4 +123,14 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("population belongs to another civilization")
         if any(quantity < 0 for quantity in civilization.inventory.quantities.values()):
             raise ValueError("inventory quantity cannot be negative")
+        capabilities = tuple(record.capability for record in civilization.capabilities)
+        if capabilities != tuple(sorted(set(capabilities), key=lambda capability: capability.value)):
+            raise ValueError("civilization capabilities must be unique and sorted")
+        for record in civilization.capabilities:
+            for person_id in record.practitioner_ids:
+                person = civilization.population.people.get(person_id)
+                if person is None or not person.alive:
+                    raise ValueError("capability practitioner must be living and local")
+                if person.skills.get(record.capability.value, 0) <= 0:
+                    raise ValueError("capability practitioner must have matching skill")
 
