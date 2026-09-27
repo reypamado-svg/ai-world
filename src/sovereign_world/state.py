@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sovereign_world.capabilities import CapabilityRecord, regional_capability
+from sovereign_world.capabilities import CapabilityRecord, TeachingAssignment, regional_capability
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
@@ -28,6 +28,7 @@ class CivilizationState(BaseModel):
     projects: dict[EntityId, ConstructionProject] = Field(default_factory=dict)
     known_tiles: tuple[HexCoord, ...] = ()
     capabilities: tuple[CapabilityRecord, ...] = ()
+    teaching_assignments: tuple[TeachingAssignment, ...] = ()
 
 
 class WorldState(BaseModel):
@@ -124,7 +125,10 @@ def validate_world(state: WorldState) -> None:
         if any(quantity < 0 for quantity in civilization.inventory.quantities.values()):
             raise ValueError("inventory quantity cannot be negative")
         capabilities = tuple(record.capability for record in civilization.capabilities)
-        if capabilities != tuple(sorted(set(capabilities), key=lambda capability: capability.value)):
+        sorted_capabilities = tuple(
+            sorted(set(capabilities), key=lambda capability: capability.value)
+        )
+        if capabilities != sorted_capabilities:
             raise ValueError("civilization capabilities must be unique and sorted")
         for record in civilization.capabilities:
             for person_id in record.practitioner_ids:
@@ -133,4 +137,12 @@ def validate_world(state: WorldState) -> None:
                     raise ValueError("capability practitioner must be living and local")
                 if person.skills.get(record.capability.value, 0) <= 0:
                     raise ValueError("capability practitioner must have matching skill")
+        assignments = civilization.teaching_assignments
+        sorted_assignments = tuple(
+            sorted(assignments, key=lambda assignment: assignment.assignment_id)
+        )
+        if assignments != sorted_assignments:
+            raise ValueError("teaching assignments must be sorted")
+        if len({assignment.assignment_id for assignment in assignments}) != len(assignments):
+            raise ValueError("teaching assignments must be unique")
 

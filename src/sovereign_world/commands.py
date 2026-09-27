@@ -7,6 +7,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sovereign_world.capabilities import CapabilityId
 from sovereign_world.events import DomainEvent
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
@@ -27,6 +28,7 @@ class DirectOrderKind(StrEnum):
     CANCEL_PROJECT = "cancel_project"
     RELOCATE_GROUP = "relocate_group"
     REQUEST_SURVEY = "request_survey"
+    START_TEACHING = "start_teaching"
 
 
 class ProjectKind(StrEnum):
@@ -52,6 +54,10 @@ class DirectOrder(BaseModel):
     worker_ids: tuple[EntityId, ...] = ()
     project_id: EntityId | None = None
     project_kind: ProjectKind | None = None
+    assignment_id: EntityId | None = None
+    teacher_id: EntityId | None = None
+    apprentice_id: EntityId | None = None
+    capability: CapabilityId | None = None
     priority: int = Field(default=50, ge=0, le=100)
 
 
@@ -144,6 +150,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     accepted: list[Command] = []
     errors: list[CommandError] = []
     seen: set[str] = set()
+    seen_assignments: set[EntityId] = set()
     for command in envelope.commands:
         if command.command_id in seen:
             errors.append(
@@ -165,7 +172,45 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     code="invalid_project",
                     message="start-project order requires project ID and kind",
                 )
-            for person_id in command.worker_ids:
+            if command.kind is DirectOrderKind.START_TEACHING:
+                required = (
+                    command.assignment_id,
+                    command.teacher_id,
+                    command.apprentice_id,
+                    command.capability,
+                )
+                if any(value is None for value in required):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_teaching",
+                        message=(
+                            "start-teaching order requires assignment, teacher, apprentice, "
+                            "and capability"
+                        ),
+                    )
+                else:
+                    assert command.assignment_id is not None
+                    existing_assignments = state.civilizations[
+                        envelope.civilization_id
+                    ].teaching_assignments
+                    is_duplicate = command.assignment_id in seen_assignments or any(
+                        assignment.assignment_id == command.assignment_id
+                        for assignment in existing_assignments
+                    )
+                    if is_duplicate:
+                        command_error = CommandError(
+                            command_id=command.command_id,
+                            code="duplicate_assignment",
+                            message="teaching assignment ID is repeated",
+                        )
+                    else:
+                        seen_assignments.add(command.assignment_id)
+            person_ids = command.worker_ids
+            if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
+                assert command.teacher_id is not None
+                assert command.apprentice_id is not None
+                person_ids += (command.teacher_id, command.apprentice_id)
+            for person_id in person_ids:
                 if command_error is not None:
                     break
                 owner = _person_owner(state, person_id)
@@ -190,6 +235,18 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         message=f"person {person_id} is dead",
                     )
                     break
+            if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
+                assert command.teacher_id is not None
+                assert command.capability is not None
+                teacher = state.civilizations[envelope.civilization_id].population.people[
+                    command.teacher_id
+                ]
+                if teacher.skills.get(command.capability.value, 0) <= 0:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="unqualified_teacher",
+                        message="teacher does not possess the requested capability",
+                    )
             if command_error is not None:
                 errors.append(command_error)
                 continue

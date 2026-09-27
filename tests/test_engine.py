@@ -1,5 +1,8 @@
+from sovereign_world.capabilities import CapabilityRecord
+from sovereign_world.commands import CommandEnvelope, DirectOrder, DirectOrderKind
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.engine import advance_day
+from sovereign_world.ids import EntityId
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.state import build_initial_state, state_hash
@@ -55,4 +58,65 @@ def test_hunger_accumulates_when_food_is_missing() -> None:
     population = result.state.civilizations[civilization_id].population
     assert all(person.nutrition_debt == 1 for person in population.people.values())
     assert any(event.kind == "food_shortage" for event in result.events.events)
+
+
+def test_last_unrecorded_practitioner_death_forgets_capability() -> None:
+    state = _state()
+    civilization_id = sorted(state.civilizations)[0]
+    civilization = state.civilizations[civilization_id]
+    record = civilization.capabilities[0]
+    practitioner = record.practitioner_ids[0]
+    civilization.capabilities = (
+        CapabilityRecord(
+            capability=record.capability,
+            practitioner_ids=(practitioner,),
+            discovered_day=0,
+        ),
+    )
+    civilization.population.people[practitioner].alive = False
+
+    result = advance_day(state, StableRng(state.config.seed))
+
+    assert not result.state.civilizations[civilization_id].capabilities
+    assert "capability_forgotten" in {event.kind for event in result.events.events}
+
+
+def test_validated_teaching_order_becomes_an_assignment() -> None:
+    state = _state()
+    civilization_id = sorted(state.civilizations)[0]
+    civilization = state.civilizations[civilization_id]
+    teacher = civilization.capabilities[0].practitioner_ids[0]
+    apprentice = next(
+        person_id
+        for person_id in civilization.population.living_ids
+        if person_id != teacher
+    )
+
+    class TeachingSovereign:
+        def decide(self, report):
+            return CommandEnvelope(
+                schema_version=1,
+                civilization_id=report.civilization_id,
+                council_day=report.day,
+                correlation_id=report.report_id,
+                commands=(
+                    DirectOrder(
+                        command_id="order:teach",
+                        kind=DirectOrderKind.START_TEACHING,
+                        assignment_id=EntityId("teaching:1"),
+                        teacher_id=teacher,
+                        apprentice_id=apprentice,
+                        capability=civilization.capabilities[0].capability,
+                    ),
+                ),
+            )
+
+    result = advance_day(
+        state,
+        StableRng(state.config.seed),
+        sovereigns={civilization_id: TeachingSovereign()},
+    )
+
+    assignments = result.state.civilizations[civilization_id].teaching_assignments
+    assert [assignment.assignment_id for assignment in assignments] == [EntityId("teaching:1")]
 

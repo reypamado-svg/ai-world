@@ -1,3 +1,4 @@
+from sovereign_world.capabilities import CapabilityId
 from sovereign_world.commands import (
     CommandEnvelope,
     Decree,
@@ -71,6 +72,62 @@ def test_validation_rejects_cross_civilization_person() -> None:
 
     assert result.accepted == ()
     assert result.errors[0].code == "foreign_person"
+
+
+def test_foreign_teacher_order_is_rejected() -> None:
+    state = _state()
+    civilization_ids = sorted(state.civilizations)
+    foreign_teacher = state.civilizations[civilization_ids[1]].population.living_ids[0]
+    apprentice = state.civilizations[civilization_ids[0]].population.living_ids[0]
+    envelope = CommandEnvelope(
+        schema_version=1,
+        civilization_id=civilization_ids[0],
+        council_day=0,
+        correlation_id="report:0",
+        commands=(
+            DirectOrder(
+                command_id="order:teach:foreign",
+                kind=DirectOrderKind.START_TEACHING,
+                assignment_id=EntityId("teaching:foreign"),
+                teacher_id=foreign_teacher,
+                apprentice_id=apprentice,
+                capability=CapabilityId.CULTIVATION,
+            ),
+        ),
+    )
+
+    result = validate_envelope(envelope, state)
+
+    assert result.accepted == ()
+    assert result.errors[0].code == "foreign_person"
+
+
+def test_dead_teacher_and_duplicate_assignment_are_rejected() -> None:
+    state = _state()
+    civilization_id = sorted(state.civilizations)[0]
+    people = state.civilizations[civilization_id].population.people
+    teacher, apprentice = sorted(people)[:2]
+    people[teacher].alive = False
+    order = DirectOrder(
+        command_id="order:teach:dead",
+        kind=DirectOrderKind.START_TEACHING,
+        assignment_id=EntityId("teaching:duplicate"),
+        teacher_id=teacher,
+        apprentice_id=apprentice,
+        capability=CapabilityId.CULTIVATION,
+    )
+    duplicate = order.model_copy(update={"command_id": "order:teach:duplicate"})
+    envelope = CommandEnvelope(
+        schema_version=1,
+        civilization_id=civilization_id,
+        council_day=0,
+        correlation_id="report:0",
+        commands=(order, duplicate),
+    )
+
+    result = validate_envelope(envelope, state)
+
+    assert [error.code for error in result.errors] == ["dead_person", "duplicate_assignment"]
 
 
 def test_council_report_contains_only_civilizations_private_knowledge() -> None:

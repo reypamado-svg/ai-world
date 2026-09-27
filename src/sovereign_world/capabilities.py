@@ -79,9 +79,13 @@ class KnowledgeState(BaseModel):
             raise ValueError("capability records must be sorted")
         if len({record.capability for record in self.records}) != len(self.records):
             raise ValueError("capability records must be unique")
-        if self.assignments != tuple(sorted(self.assignments, key=lambda assignment: assignment.assignment_id)):
+        sorted_assignments = tuple(
+            sorted(self.assignments, key=lambda assignment: assignment.assignment_id)
+        )
+        if self.assignments != sorted_assignments:
             raise ValueError("teaching assignments must be sorted")
-        if len({assignment.assignment_id for assignment in self.assignments}) != len(self.assignments):
+        assignment_ids = {assignment.assignment_id for assignment in self.assignments}
+        if len(assignment_ids) != len(self.assignments):
             raise ValueError("teaching assignments must be unique")
         return self
 
@@ -104,7 +108,9 @@ def advance_knowledge_day(
     day: int,
 ) -> KnowledgeDayResult:
     """Advance teaching and remove unrecorded capabilities with no living practitioner."""
-    updated_people = {person_id: person.model_copy(deep=True) for person_id, person in people.items()}
+    updated_people = {
+        person_id: person.model_copy(deep=True) for person_id, person in people.items()
+    }
     records = {record.capability: record for record in knowledge.records}
     forgotten: list[CapabilityId] = []
     for capability, record in tuple(records.items()):
@@ -117,7 +123,9 @@ def advance_knowledge_day(
             records.pop(capability)
             forgotten.append(capability)
         elif living_practitioners != record.practitioner_ids:
-            records[capability] = record.model_copy(update={"practitioner_ids": living_practitioners})
+            records[capability] = record.model_copy(
+                update={"practitioner_ids": living_practitioners}
+            )
 
     learned: list[CapabilityId] = []
     remaining_assignments: list[TeachingAssignment] = []
@@ -153,7 +161,9 @@ def advance_knowledge_day(
     return KnowledgeDayResult(
         knowledge=KnowledgeState(
             records=tuple(sorted(records.values(), key=lambda record: record.capability.value)),
-            assignments=tuple(sorted(remaining_assignments, key=lambda assignment: assignment.assignment_id)),
+            assignments=tuple(
+                sorted(remaining_assignments, key=lambda assignment: assignment.assignment_id)
+            ),
         ),
         people=updated_people,
         learned=tuple(learned),
