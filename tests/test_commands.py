@@ -9,6 +9,8 @@ from sovereign_world.commands import (
     validate_envelope,
 )
 from sovereign_world.config import RunManifest, WorldConfig
+from sovereign_world.diplomacy import Contact, DiplomaticMessage, MissionStatus
+from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.state import build_initial_state
 
@@ -140,4 +142,69 @@ def test_council_report_contains_only_civilizations_private_knowledge() -> None:
     assert set(report.person_ids).isdisjoint(state.civilizations[foreign_id].population.people)
     assert set(report.known_tiles) == set(state.civilizations[own_id].known_tiles)
     assert len(report.known_tiles) < len(state.world_map.tiles)
+
+
+def test_message_requires_contact_and_a_known_route() -> None:
+    state = _state()
+    sender, recipient = sorted(state.civilizations)[:2]
+    civilization = state.civilizations[sender]
+    ambassador = civilization.population.living_ids[0]
+    origin = civilization.population.people[ambassador].location
+    destination = state.world_map.neighbors(origin)[0]
+    order = DirectOrder(
+        command_id="message:without-contact",
+        kind=DirectOrderKind.SEND_MESSAGE,
+        message_id=EntityId("message:1"),
+        ambassador_id=ambassador,
+        recipient_civilization_id=recipient,
+        message_text="We seek peace.",
+        route=(origin, destination),
+    )
+    envelope = CommandEnvelope(
+        schema_version=1,
+        civilization_id=sender,
+        council_day=0,
+        correlation_id="report:0",
+        commands=(order,),
+    )
+
+    rejected = validate_envelope(envelope, state)
+    assert rejected.errors[0].code == "unknown_contact"
+
+    civilization.contacts = (
+        Contact(
+            civilization_id=recipient,
+            settlement=destination,
+            first_contact_day=0,
+            last_seen_day=0,
+        ),
+    )
+    state.civilizations[recipient].start_center = destination
+
+    accepted = validate_envelope(envelope, state)
+    assert accepted.accepted == (order,)
+
+
+def test_report_shows_only_received_messages() -> None:
+    state = _state()
+    sender, recipient = sorted(state.civilizations)[:2]
+    recipient_state = state.civilizations[recipient]
+    ambassador = state.civilizations[sender].population.living_ids[0]
+    message = DiplomaticMessage(
+        message_id=EntityId("message:received"),
+        sender_civilization_id=sender,
+        recipient_civilization_id=recipient,
+        ambassador_id=ambassador,
+        route=(HexCoord(0, 0),),
+        source_text="Peace.",
+        departed_day=0,
+        status=MissionStatus.DELIVERED,
+        delivered_day=1,
+        delivered_text="Peace.",
+    )
+    recipient_state.received_messages = (message,)
+
+    report = build_council_report(state, recipient)
+    assert report.received_messages == (message,)
+    assert build_council_report(state, sender).received_messages == ()
 

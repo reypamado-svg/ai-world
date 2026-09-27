@@ -15,6 +15,7 @@ from sovereign_world.commands import (
     build_council_report,
     validate_envelope,
 )
+from sovereign_world.diplomacy import Contact, DiplomaticMessage, advance_diplomacy_day
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
 from sovereign_world.exploration import Expedition, advance_expeditions
 from sovereign_world.ids import EntityId
@@ -172,6 +173,41 @@ def _run_councils(
                         str(command.expedition_id),
                     )
                 )
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.SEND_MESSAGE
+                and command.message_id is not None
+                and command.ambassador_id is not None
+                and command.recipient_civilization_id is not None
+                and command.route
+            ):
+                state.diplomatic_missions = tuple(
+                    sorted(
+                        (
+                            *state.diplomatic_missions,
+                            DiplomaticMessage(
+                                message_id=command.message_id,
+                                sender_civilization_id=civilization_id,
+                                recipient_civilization_id=command.recipient_civilization_id,
+                                ambassador_id=command.ambassador_id,
+                                route=command.route,
+                                source_text=command.message_text,
+                                departed_day=state.day,
+                            ),
+                        ),
+                        key=lambda message: message.message_id,
+                    )
+                )
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.MOVEMENT,
+                        "message_dispatched",
+                        str(civilization_id),
+                        str(command.message_id),
+                        recipient=str(command.recipient_civilization_id),
+                    )
+                )
             events.append(
                 _event(
                     state,
@@ -258,6 +294,89 @@ def advance_day(
                     str(expedition_id),
                 )
             )
+        for tile in expedition_result.observed_tiles:
+            for foreign_id, foreign in sorted(candidate.civilizations.items()):
+                if foreign_id == civilization_id or foreign.start_center != tile:
+                    continue
+                existing = next(
+                    (
+                        contact
+                        for contact in civilization.contacts
+                        if contact.civilization_id == foreign_id
+                    ),
+                    None,
+                )
+                contact = Contact(
+                    civilization_id=foreign_id,
+                    settlement=foreign.start_center,
+                    first_contact_day=(
+                        candidate.day if existing is None else existing.first_contact_day
+                    ),
+                    last_seen_day=candidate.day,
+                )
+                civilization.contacts = tuple(
+                    sorted(
+                        (
+                            *(
+                            item
+                            for item in civilization.contacts
+                            if item.civilization_id != foreign_id
+                            ),
+                            contact,
+                        ),
+                        key=lambda item: item.civilization_id,
+                    )
+                )
+                if existing is None:
+                    events.append(
+                        _event(
+                            candidate,
+                            EventPhase.MOVEMENT,
+                            "foreign_settlement_sighted",
+                            str(civilization_id),
+                            str(foreign_id),
+                            tile_q=tile.q,
+                            tile_r=tile.r,
+                        )
+                    )
+
+    diplomacy_result = advance_diplomacy_day(
+        candidate.diplomatic_missions,
+        {
+            civilization_id: civilization.population.people
+            for civilization_id, civilization in candidate.civilizations.items()
+        },
+        day=candidate.day,
+        rng=rng,
+    )
+    candidate.diplomatic_missions = diplomacy_result.missions
+    for civilization_id, people in diplomacy_result.people_by_civilization.items():
+        civilization = candidate.civilizations[civilization_id]
+        civilization.population = civilization.population.model_copy(update={"people": people})
+    for message in diplomacy_result.delivered:
+        recipient = candidate.civilizations[message.recipient_civilization_id]
+        recipient.received_messages = tuple(
+            sorted((*recipient.received_messages, message), key=lambda item: item.message_id)
+        )
+        events.append(
+            _event(
+                candidate,
+                EventPhase.MOVEMENT,
+                "message_delivered",
+                str(message.sender_civilization_id),
+                str(message.recipient_civilization_id),
+                message_id=str(message.message_id),
+                distorted=message.delivered_text != message.source_text,
+            )
+        )
+    for message_id in diplomacy_result.delayed_ids:
+        events.append(
+            _event(candidate, EventPhase.MOVEMENT, "message_delayed", None, str(message_id))
+        )
+    for message_id in diplomacy_result.lost_ids:
+        events.append(
+            _event(candidate, EventPhase.MOVEMENT, "message_lost", None, str(message_id))
+        )
 
     for civilization_id in sorted(candidate.civilizations):
         civilization = candidate.civilizations[civilization_id]

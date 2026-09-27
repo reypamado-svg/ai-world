@@ -9,6 +9,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field
 
 from sovereign_world.capabilities import CapabilityId
+from sovereign_world.diplomacy import Contact, DiplomaticMessage
 from sovereign_world.events import DomainEvent
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
@@ -31,6 +32,7 @@ class DirectOrderKind(StrEnum):
     REQUEST_SURVEY = "request_survey"
     START_TEACHING = "start_teaching"
     START_EXPEDITION = "start_expedition"
+    SEND_MESSAGE = "send_message"
 
 
 class ProjectKind(StrEnum):
@@ -63,6 +65,10 @@ class DirectOrder(BaseModel):
     expedition_id: EntityId | None = None
     explorer_ids: tuple[EntityId, ...] = ()
     route: tuple[HexCoord, ...] = ()
+    message_id: EntityId | None = None
+    ambassador_id: EntityId | None = None
+    recipient_civilization_id: EntityId | None = None
+    message_text: str = Field(default="", max_length=1_000)
     priority: int = Field(default=50, ge=0, le=100)
 
 
@@ -107,6 +113,8 @@ class CouncilReport(BaseModel):
     inventory: dict[Resource, int]
     project_ids: tuple[EntityId, ...]
     active_decrees: dict[str, int]
+    contacts: tuple[Contact, ...] = ()
+    received_messages: tuple[DiplomaticMessage, ...] = ()
     recent_events: tuple[DomainEvent, ...] = ()
 
 
@@ -131,6 +139,8 @@ def build_council_report(
         inventory=dict(civilization.inventory.quantities),
         project_ids=tuple(sorted(civilization.projects)),
         active_decrees=dict(state.active_decrees.get(civilization_id, {})),
+        contacts=civilization.contacts,
+        received_messages=civilization.received_messages,
         recent_events=visible_events,
     )
 
@@ -159,6 +169,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     seen: set[str] = set()
     seen_assignments: set[EntityId] = set()
     seen_expeditions: set[EntityId] = set()
+    seen_messages: set[EntityId] = set()
     for command in envelope.commands:
         if command.command_id in seen:
             errors.append(
@@ -231,6 +242,38 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     )
                 else:
                     seen_expeditions.add(command.expedition_id)
+            if command.kind is DirectOrderKind.SEND_MESSAGE:
+                message_required = (
+                    command.message_id,
+                    command.ambassador_id,
+                    command.recipient_civilization_id,
+                )
+                if (
+                    any(value is None for value in message_required)
+                    or not command.message_text
+                    or not command.route
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_message",
+                        message=(
+                            "send-message requires an ID, ambassador, recipient, text, and route"
+                        ),
+                    )
+                else:
+                    assert command.message_id is not None
+                    duplicate = command.message_id in seen_messages or any(
+                        message.message_id == command.message_id
+                        for message in state.diplomatic_missions
+                    )
+                    if duplicate:
+                        command_error = CommandError(
+                            command_id=command.command_id,
+                            code="duplicate_message",
+                            message="message ID is repeated",
+                        )
+                    else:
+                        seen_messages.add(command.message_id)
             person_ids = command.worker_ids
             if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
@@ -238,6 +281,9 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 person_ids += (command.teacher_id, command.apprentice_id)
             if command.kind is DirectOrderKind.START_EXPEDITION and command_error is None:
                 person_ids += command.explorer_ids
+            if command.kind is DirectOrderKind.SEND_MESSAGE and command_error is None:
+                assert command.ambassador_id is not None
+                person_ids += (command.ambassador_id,)
             for person_id in person_ids:
                 if command_error is not None:
                     break
@@ -295,6 +341,57 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="invalid_route",
                         message=(
                             "expedition route must start locally and use adjacent in-bounds tiles"
+                        ),
+                    )
+            if command.kind is DirectOrderKind.SEND_MESSAGE and command_error is None:
+                assert command.ambassador_id is not None
+                assert command.recipient_civilization_id is not None
+                civilization = state.civilizations[envelope.civilization_id]
+                contact = next(
+                    (
+                        item
+                        for item in civilization.contacts
+                        if item.civilization_id == command.recipient_civilization_id
+                    ),
+                    None,
+                )
+                ambassador = civilization.population.people[command.ambassador_id]
+                in_transit = any(
+                    message.ambassador_id == command.ambassador_id
+                    and message.status.value == "in_transit"
+                    for message in state.diplomatic_missions
+                )
+                if command.recipient_civilization_id not in state.civilizations:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="unknown_recipient",
+                        message="recipient civilization is unknown",
+                    )
+                elif contact is None:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="unknown_contact",
+                        message="messages require a physically discovered foreign settlement",
+                    )
+                elif in_transit:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="ambassador_unavailable",
+                        message="ambassador already carries a message",
+                    )
+                elif (
+                    command.route[0] != ambassador.location
+                    or command.route[-1] != contact.settlement
+                    or any(tile not in civilization.known_tiles for tile in command.route)
+                    or any(not state.world_map.contains(tile) for tile in command.route)
+                    or any(first.distance(second) != 1 for first, second in pairwise(command.route))
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_route",
+                        message=(
+                            "message route must be known, adjacent, and end at the "
+                            "discovered settlement"
                         ),
                     )
             if command_error is not None:
