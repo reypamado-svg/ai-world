@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from itertools import pairwise
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -29,6 +30,7 @@ class DirectOrderKind(StrEnum):
     RELOCATE_GROUP = "relocate_group"
     REQUEST_SURVEY = "request_survey"
     START_TEACHING = "start_teaching"
+    START_EXPEDITION = "start_expedition"
 
 
 class ProjectKind(StrEnum):
@@ -58,6 +60,9 @@ class DirectOrder(BaseModel):
     teacher_id: EntityId | None = None
     apprentice_id: EntityId | None = None
     capability: CapabilityId | None = None
+    expedition_id: EntityId | None = None
+    explorer_ids: tuple[EntityId, ...] = ()
+    route: tuple[HexCoord, ...] = ()
     priority: int = Field(default=50, ge=0, le=100)
 
 
@@ -97,6 +102,7 @@ class CouncilReport(BaseModel):
     civilization_id: EntityId
     day: int
     person_ids: tuple[EntityId, ...]
+    start_center: HexCoord
     known_tiles: tuple[HexCoord, ...]
     inventory: dict[Resource, int]
     project_ids: tuple[EntityId, ...]
@@ -120,6 +126,7 @@ def build_council_report(
         civilization_id=civilization_id,
         day=state.day,
         person_ids=tuple(sorted(civilization.population.people)),
+        start_center=civilization.start_center,
         known_tiles=tuple(sorted(civilization.known_tiles)),
         inventory=dict(civilization.inventory.quantities),
         project_ids=tuple(sorted(civilization.projects)),
@@ -151,6 +158,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     errors: list[CommandError] = []
     seen: set[str] = set()
     seen_assignments: set[EntityId] = set()
+    seen_expeditions: set[EntityId] = set()
     for command in envelope.commands:
         if command.command_id in seen:
             errors.append(
@@ -205,11 +213,31 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         )
                     else:
                         seen_assignments.add(command.assignment_id)
+            if command.kind is DirectOrderKind.START_EXPEDITION:
+                if command.expedition_id is None or not command.explorer_ids or not command.route:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_expedition",
+                        message="start-expedition order requires an ID, explorers, and route",
+                    )
+                elif command.expedition_id in seen_expeditions or any(
+                    expedition.expedition_id == command.expedition_id
+                    for expedition in state.civilizations[envelope.civilization_id].expeditions
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="duplicate_expedition",
+                        message="expedition ID is repeated",
+                    )
+                else:
+                    seen_expeditions.add(command.expedition_id)
             person_ids = command.worker_ids
             if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
                 assert command.apprentice_id is not None
                 person_ids += (command.teacher_id, command.apprentice_id)
+            if command.kind is DirectOrderKind.START_EXPEDITION and command_error is None:
+                person_ids += command.explorer_ids
             for person_id in person_ids:
                 if command_error is not None:
                     break
@@ -246,6 +274,28 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         command_id=command.command_id,
                         code="unqualified_teacher",
                         message="teacher does not possess the requested capability",
+                    )
+            if command.kind is DirectOrderKind.START_EXPEDITION and command_error is None:
+                locations = {
+                    state.civilizations[envelope.civilization_id]
+                    .population.people[person_id]
+                    .location
+                    for person_id in command.explorer_ids
+                }
+                route = command.route
+                if (
+                    len(locations) != 1
+                    or route[0] not in state.civilizations[envelope.civilization_id].known_tiles
+                    or route[0] not in locations
+                    or any(not state.world_map.contains(tile) for tile in route)
+                    or any(first.distance(second) != 1 for first, second in pairwise(route))
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_route",
+                        message=(
+                            "expedition route must start locally and use adjacent in-bounds tiles"
+                        ),
                     )
             if command_error is not None:
                 errors.append(command_error)

@@ -16,6 +16,7 @@ from sovereign_world.commands import (
     validate_envelope,
 )
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
+from sovereign_world.exploration import Expedition, advance_expeditions
 from sovereign_world.ids import EntityId
 from sovereign_world.people import advance_population_day
 from sovereign_world.resources import InventoryDelta, Resource
@@ -141,6 +142,36 @@ def _run_councils(
                         key=lambda assignment: assignment.assignment_id,
                     )
                 )
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.START_EXPEDITION
+                and command.expedition_id is not None
+                and command.explorer_ids
+                and command.route
+            ):
+                civilization = state.civilizations[civilization_id]
+                civilization.expeditions = tuple(
+                    sorted(
+                        (
+                            *civilization.expeditions,
+                            Expedition(
+                                expedition_id=command.expedition_id,
+                                explorer_ids=command.explorer_ids,
+                                route=command.route,
+                            ),
+                        ),
+                        key=lambda expedition: expedition.expedition_id,
+                    )
+                )
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.MOVEMENT,
+                        "expedition_started",
+                        str(civilization_id),
+                        str(command.expedition_id),
+                    )
+                )
             events.append(
                 _event(
                     state,
@@ -178,6 +209,55 @@ def advance_day(
     events: list[DomainEvent] = []
     if sovereigns is not None:
         events.extend(_run_councils(candidate, sovereigns))
+
+    for civilization_id in sorted(candidate.civilizations):
+        civilization = candidate.civilizations[civilization_id]
+        expedition_result = advance_expeditions(
+            civilization.expeditions,
+            civilization.population.people,
+            candidate.world_map,
+            candidate.day,
+            observations=civilization.observations,
+        )
+        civilization.expeditions = expedition_result.expeditions
+        civilization.observations = expedition_result.observations
+        civilization.known_tiles = tuple(
+            observation.tile for observation in civilization.observations
+        )
+        civilization.population = civilization.population.model_copy(
+            update={"people": expedition_result.people}
+        )
+        for tile in expedition_result.observed_tiles:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.MOVEMENT,
+                    "tile_observed",
+                    str(civilization_id),
+                    tile_q=tile.q,
+                    tile_r=tile.r,
+                )
+            )
+        for expedition_id in expedition_result.returned_ids:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.MOVEMENT,
+                    "expedition_returned",
+                    str(civilization_id),
+                    str(expedition_id),
+                )
+            )
+        for expedition_id in expedition_result.failed_ids:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.MOVEMENT,
+                    "expedition_failed",
+                    str(civilization_id),
+                    str(expedition_id),
+                )
+            )
 
     for civilization_id in sorted(candidate.civilizations):
         civilization = candidate.civilizations[civilization_id]

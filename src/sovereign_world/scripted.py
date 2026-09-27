@@ -14,6 +14,7 @@ from sovereign_world.commands import (
     DirectOrderKind,
     ProjectKind,
 )
+from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 
 
@@ -22,7 +23,7 @@ class Sovereign(Protocol):
 
 
 def plan_baseline_commands(report: CouncilReport) -> tuple[Command, ...]:
-    return (
+    commands: tuple[Command, ...] = (
         Decree(
             command_id=f"decree:{report.day}:food",
             kind=DecreeKind.FOOD_RESERVE_TARGET,
@@ -59,6 +60,24 @@ def plan_baseline_commands(report: CouncilReport) -> tuple[Command, ...]:
             project_id=EntityId(f"project:storage:{report.civilization_id}"),
             project_kind=ProjectKind.STORAGE,
             priority=85,
+        ),
+    )
+    if report.day != 0:
+        return commands
+    direction = -1 if report.start_center.q >= 4 else 1
+    route = tuple(
+        HexCoord(report.start_center.q + (step * direction), report.start_center.r)
+        for step in range(6)
+    )
+    return (
+        *commands,
+        DirectOrder(
+            command_id=f"expedition:{report.day}:survey",
+            kind=DirectOrderKind.START_EXPEDITION,
+            expedition_id=EntityId(f"expedition:survey:{report.civilization_id}"),
+            explorer_ids=report.person_ids[4:6],
+            route=route,
+            priority=80,
         ),
     )
 

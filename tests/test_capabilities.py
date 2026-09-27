@@ -47,8 +47,9 @@ def test_teaching_awards_surveying_only_when_required_days_complete() -> None:
         ),
     )
 
-    first = advance_knowledge_day(knowledge, {teacher.person_id: teacher, apprentice.person_id: apprentice}, 1)
-    second = advance_knowledge_day(first.knowledge, {teacher.person_id: teacher, apprentice.person_id: apprentice}, 2)
+    people = {teacher.person_id: teacher, apprentice.person_id: apprentice}
+    first = advance_knowledge_day(knowledge, people, 1)
+    second = advance_knowledge_day(first.knowledge, people, 2)
 
     assert first.learned == ()
     assert second.learned == (CapabilityId.SURVEYING,)
