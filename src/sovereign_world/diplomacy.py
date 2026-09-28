@@ -19,6 +19,12 @@ class MissionStatus(StrEnum):
     LOST = "lost"
 
 
+class TreatyKind(StrEnum):
+    PEACE = "peace"
+    TRADE = "trade"
+    MIGRATION = "migration"
+
+
 class Contact(BaseModel):
     """A single civilization's dated sighting of a foreign settlement."""
 
@@ -33,6 +39,37 @@ class Contact(BaseModel):
     def valid_dates(self) -> Contact:
         if self.last_seen_day < self.first_contact_day:
             raise ValueError("contact cannot be seen before first contact")
+        return self
+
+
+class TreatyOffer(BaseModel):
+    """A proposal that cannot take effect without a returned acceptance."""
+
+    model_config = ConfigDict(frozen=True)
+
+    offer_id: EntityId
+    proposer_civilization_id: EntityId
+    recipient_civilization_id: EntityId
+    kind: TreatyKind
+    proposed_day: int = Field(ge=0)
+
+
+class ActiveTreaty(BaseModel):
+    """A treaty with delivery evidence on both sides."""
+
+    model_config = ConfigDict(frozen=True)
+
+    treaty_id: EntityId
+    proposer_civilization_id: EntityId
+    recipient_civilization_id: EntityId
+    kind: TreatyKind
+    offered_day: int = Field(ge=0)
+    activated_day: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def valid_dates(self) -> ActiveTreaty:
+        if self.activated_day < self.offered_day:
+            raise ValueError("treaty cannot activate before its offer")
         return self
 
 
@@ -52,6 +89,8 @@ class DiplomaticMessage(BaseModel):
     status: MissionStatus = MissionStatus.IN_TRANSIT
     delivered_day: int | None = Field(default=None, ge=0)
     delivered_text: str | None = Field(default=None, max_length=1_100)
+    treaty_offer: TreatyOffer | None = None
+    acceptance_of: EntityId | None = None
 
     @model_validator(mode="after")
     def valid_shape(self) -> DiplomaticMessage:
@@ -65,6 +104,13 @@ class DiplomaticMessage(BaseModel):
             raise ValueError("delivered messages require delivered text")
         if self.status is not MissionStatus.DELIVERED and self.delivered_text is not None:
             raise ValueError("only delivered messages can contain delivered text")
+        if self.treaty_offer is not None and self.acceptance_of is not None:
+            raise ValueError("a message cannot offer and accept a treaty")
+        if self.treaty_offer is not None and (
+            self.treaty_offer.proposer_civilization_id != self.sender_civilization_id
+            or self.treaty_offer.recipient_civilization_id != self.recipient_civilization_id
+        ):
+            raise ValueError("treaty offer parties must match message parties")
         return self
 
 

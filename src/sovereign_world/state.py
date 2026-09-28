@@ -10,7 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from sovereign_world.capabilities import CapabilityRecord, TeachingAssignment, regional_capability
 from sovereign_world.config import RunManifest, WorldConfig
-from sovereign_world.diplomacy import Contact, DiplomaticMessage, MissionStatus
+from sovereign_world.diplomacy import (
+    ActiveTreaty,
+    Contact,
+    DiplomaticMessage,
+    MissionStatus,
+    TreatyOffer,
+)
 from sovereign_world.exploration import Expedition, Observation
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
@@ -48,6 +54,8 @@ class WorldState(BaseModel):
     civilizations: dict[EntityId, CivilizationState]
     active_decrees: dict[EntityId, dict[str, int]] = Field(default_factory=dict)
     diplomatic_missions: tuple[DiplomaticMessage, ...] = ()
+    treaty_offers: tuple[TreatyOffer, ...] = ()
+    active_treaties: tuple[ActiveTreaty, ...] = ()
 
 
 def _canonical_payload(state: WorldState) -> str:
@@ -212,4 +220,23 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("diplomatic mission must name existing civilizations")
         if message.ambassador_id not in sender.population.people:
             raise ValueError("diplomatic ambassador must belong to sender")
+    offers = state.treaty_offers
+    if offers != tuple(sorted(offers, key=lambda offer: offer.offer_id)):
+        raise ValueError("treaty offers must be sorted")
+    if len({offer.offer_id for offer in offers}) != len(offers):
+        raise ValueError("treaty offers must be unique")
+    for offer in offers:
+        if (
+            offer.proposer_civilization_id not in state.civilizations
+            or offer.recipient_civilization_id not in state.civilizations
+            or offer.proposer_civilization_id == offer.recipient_civilization_id
+        ):
+            raise ValueError("treaty offer parties must be distinct existing civilizations")
+    treaties = state.active_treaties
+    if treaties != tuple(sorted(treaties, key=lambda treaty: treaty.treaty_id)):
+        raise ValueError("active treaties must be sorted")
+    if len({treaty.treaty_id for treaty in treaties}) != len(treaties):
+        raise ValueError("active treaties must be unique")
+    if any(treaty.treaty_id not in {offer.offer_id for offer in offers} for treaty in treaties):
+        raise ValueError("active treaty requires a recorded offer")
 

@@ -15,7 +15,13 @@ from sovereign_world.commands import (
     build_council_report,
     validate_envelope,
 )
-from sovereign_world.diplomacy import Contact, DiplomaticMessage, advance_diplomacy_day
+from sovereign_world.diplomacy import (
+    ActiveTreaty,
+    Contact,
+    DiplomaticMessage,
+    TreatyOffer,
+    advance_diplomacy_day,
+)
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
 from sovereign_world.exploration import Expedition, advance_expeditions
 from sovereign_world.ids import EntityId
@@ -175,7 +181,12 @@ def _run_councils(
                 )
             elif (
                 isinstance(command, DirectOrder)
-                and command.kind is DirectOrderKind.SEND_MESSAGE
+                and command.kind
+                in {
+                    DirectOrderKind.SEND_MESSAGE,
+                    DirectOrderKind.OFFER_TREATY,
+                    DirectOrderKind.ACCEPT_TREATY,
+                }
                 and command.message_id is not None
                 and command.ambassador_id is not None
                 and command.recipient_civilization_id is not None
@@ -193,11 +204,53 @@ def _run_councils(
                                 route=command.route,
                                 source_text=command.message_text,
                                 departed_day=state.day,
+                                treaty_offer=(
+                                    TreatyOffer(
+                                        offer_id=command.treaty_id,
+                                        proposer_civilization_id=civilization_id,
+                                        recipient_civilization_id=(
+                                            command.recipient_civilization_id
+                                        ),
+                                        kind=command.treaty_kind,
+                                        proposed_day=state.day,
+                                    )
+                                    if command.kind is DirectOrderKind.OFFER_TREATY
+                                    and command.treaty_id is not None
+                                    and command.treaty_kind is not None
+                                    else None
+                                ),
+                                acceptance_of=(
+                                    command.treaty_id
+                                    if command.kind is DirectOrderKind.ACCEPT_TREATY
+                                    else None
+                                ),
                             ),
                         ),
                         key=lambda message: message.message_id,
                     )
                 )
+                if (
+                    command.kind is DirectOrderKind.OFFER_TREATY
+                    and command.treaty_id is not None
+                    and command.treaty_kind is not None
+                ):
+                    state.treaty_offers = tuple(
+                        sorted(
+                            (
+                                *state.treaty_offers,
+                                TreatyOffer(
+                                    offer_id=command.treaty_id,
+                                    proposer_civilization_id=civilization_id,
+                                    recipient_civilization_id=(
+                                        command.recipient_civilization_id
+                                    ),
+                                    kind=command.treaty_kind,
+                                    proposed_day=state.day,
+                                ),
+                            ),
+                            key=lambda offer: offer.offer_id,
+                        )
+                    )
                 events.append(
                     _event(
                         state,
@@ -208,6 +261,16 @@ def _run_councils(
                         recipient=str(command.recipient_civilization_id),
                     )
                 )
+                if command.kind is DirectOrderKind.OFFER_TREATY:
+                    events.append(
+                        _event(
+                            state,
+                            EventPhase.COMMAND,
+                            "treaty_offered",
+                            str(civilization_id),
+                            str(command.treaty_id),
+                        )
+                    )
             events.append(
                 _event(
                     state,
@@ -369,6 +432,60 @@ def advance_day(
                 distorted=message.delivered_text != message.source_text,
             )
         )
+        if message.treaty_offer is not None:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.MOVEMENT,
+                    "treaty_offer_received",
+                    str(message.sender_civilization_id),
+                    str(message.treaty_offer.offer_id),
+                )
+            )
+        if message.acceptance_of is not None:
+            offer = next(
+                (
+                    item
+                    for item in candidate.treaty_offers
+                    if item.offer_id == message.acceptance_of
+                ),
+                None,
+            )
+            if (
+                offer is not None
+                and offer.proposer_civilization_id == message.recipient_civilization_id
+                and offer.recipient_civilization_id == message.sender_civilization_id
+                and not any(
+                    treaty.treaty_id == offer.offer_id
+                    for treaty in candidate.active_treaties
+                )
+            ):
+                candidate.active_treaties = tuple(
+                    sorted(
+                        (
+                            *candidate.active_treaties,
+                            ActiveTreaty(
+                                treaty_id=offer.offer_id,
+                                proposer_civilization_id=offer.proposer_civilization_id,
+                                recipient_civilization_id=offer.recipient_civilization_id,
+                                kind=offer.kind,
+                                offered_day=offer.proposed_day,
+                                activated_day=candidate.day,
+                            ),
+                        ),
+                        key=lambda treaty: treaty.treaty_id,
+                    )
+                )
+                events.append(
+                    _event(
+                        candidate,
+                        EventPhase.MOVEMENT,
+                        "treaty_activated",
+                        str(offer.proposer_civilization_id),
+                        str(offer.offer_id),
+                        recipient=str(offer.recipient_civilization_id),
+                    )
+                )
     for message_id in diplomacy_result.delayed_ids:
         events.append(
             _event(candidate, EventPhase.MOVEMENT, "message_delayed", None, str(message_id))
