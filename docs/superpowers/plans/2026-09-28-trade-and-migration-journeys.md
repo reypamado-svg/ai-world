@@ -11,13 +11,15 @@
 3. Goods leave the sender's storehouse at dispatch. Cargo is limited to 50 units per living carrier. Carriers, migrants, ambassadors, and explorers are exclusive: one person cannot be on two journeys at once.
 4. Each day, every active journey resolves in a fixed order using named random streams (`day:{d}:logistics:{id}`):
    - A dead traveller drops out, and death stays permanent. If no traveller is left alive, a shipment is **lost** and a migration **fails**.
-   - A roll below 60/10 000 is a hazard. A shipment's cargo is **lost**, and the carriers turn back empty-handed. A migration loses one migrant, chosen by a seeded draw, who dies with cause `travel hazard`.
+   - On the outbound leg only, a roll below 60/10 000 is a hazard. A shipment's cargo is **lost**, and the carriers turn back empty-handed. A migration loses one migrant, chosen by a seeded draw, who dies with cause `travel hazard`, and the party halts for the day.
    - A roll below 900/10 000 is a **delay**, and nobody moves that day.
    - Otherwise every living traveller advances one tile.
 5. On reaching the last tile, the journey **arrives**. If the recipient has no living members, the delivery **fails**. Carriers bring the goods home and restore them to the sender's storehouse, and migrants walk home. Otherwise the **receipt** happens:
    - Cargo enters the recipient's inventory. Anything that does not fit is recorded as waste.
    - Migrants move to the recipient's population with their ancestry, skills, and health intact. A pregnancy follows the mother.
-6. Carriers walk the route back after delivery, loss, or failure. The shipment is **returned** once every living carrier is home.
+6. Carriers walk the route back after delivery, loss, or failure. Return legs can be delayed but meet no hazards. The shipment is **returned** once every living carrier is home. A party that dies out on the way home **perishes**, and any cargo it still carried is gone.
+7. Migrants in transit remain members of their origin, eat from its stores, and are subject to its daily mortality. They leave the origin's council roster at departure, so the origin cannot infer the arrival from its roster.
+8. Migrants carry their skills. On arrival they join the recipient's practitioner lists, and a capability new to the recipient is recorded as learned by migration. If an emigrant was an origin capability's last practitioner, that capability is forgotten through the existing knowledge-loss rule.
 
 ## Records and events
 

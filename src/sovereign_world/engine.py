@@ -6,8 +6,15 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 
-from sovereign_world.capabilities import KnowledgeState, TeachingAssignment, advance_knowledge_day
+from sovereign_world.capabilities import (
+    CapabilityId,
+    CapabilityRecord,
+    KnowledgeState,
+    TeachingAssignment,
+    advance_knowledge_day,
+)
 from sovereign_world.commands import (
+    JOURNEY_ORDERS,
     Decree,
     DirectOrder,
     DirectOrderKind,
@@ -25,6 +32,15 @@ from sovereign_world.diplomacy import (
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
 from sovereign_world.exploration import Expedition, advance_expeditions
 from sovereign_world.ids import EntityId
+from sovereign_world.logistics import (
+    TRAVEL_HAZARD_CAUSE,
+    Journey,
+    JourneyKind,
+    LogisticsNotice,
+    NoticeKind,
+    advance_journeys_day,
+    notice,
+)
 from sovereign_world.people import advance_population_day
 from sovereign_world.resources import InventoryDelta, Resource
 from sovereign_world.rng import StableRng
@@ -57,6 +73,377 @@ def _event(
         subject_id=subject_id,
         payload=payload,
     )
+
+
+def _add_notice(state: WorldState, civilization_id: EntityId, item: LogisticsNotice) -> None:
+    civilization = state.civilizations[civilization_id]
+    civilization.logistics_notices = tuple(
+        sorted((*civilization.logistics_notices, item), key=lambda entry: entry.notice_id)
+    )
+
+
+def _dispatch_journey(
+    state: WorldState,
+    civilization_id: EntityId,
+    command: DirectOrder,
+) -> list[DomainEvent]:
+    """Start a validated journey; shipped goods leave the sender's storehouse now."""
+    assert command.journey_id is not None
+    assert command.treaty_id is not None
+    assert command.recipient_civilization_id is not None
+    kind = JOURNEY_ORDERS[command.kind]
+    civilization = state.civilizations[civilization_id]
+    cargo = dict(sorted(command.cargo.items()))
+    if kind is JourneyKind.SHIPMENT:
+        if any(
+            civilization.inventory.quantities.get(resource, 0) < quantity
+            for resource, quantity in cargo.items()
+        ):
+            return [
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "shipment_unfunded",
+                    str(civilization_id),
+                    str(command.journey_id),
+                )
+            ]
+        civilization.inventory = civilization.inventory.apply_delta(
+            InventoryDelta(changes={resource: -quantity for resource, quantity in cargo.items()})
+        )
+    journey = Journey(
+        journey_id=command.journey_id,
+        kind=kind,
+        treaty_id=command.treaty_id,
+        sender_civilization_id=civilization_id,
+        recipient_civilization_id=command.recipient_civilization_id,
+        traveller_ids=tuple(sorted(command.traveller_ids)),
+        route=command.route,
+        cargo=cargo,
+        carrying_cargo=kind is JourneyKind.SHIPMENT,
+        departed_day=state.day,
+    )
+    state.journeys = tuple(sorted((*state.journeys, journey), key=lambda item: item.journey_id))
+    _add_notice(
+        state,
+        civilization_id,
+        notice(
+            state.day,
+            (
+                NoticeKind.SHIPMENT_DISPATCHED
+                if kind is JourneyKind.SHIPMENT
+                else NoticeKind.MIGRATION_DEPARTED
+            ),
+            journey,
+            journey.recipient_civilization_id,
+            cargo=cargo,
+            person_ids=journey.traveller_ids,
+        ),
+    )
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            f"{kind.value}_dispatched",
+            str(civilization_id),
+            str(journey.journey_id),
+            recipient=str(journey.recipient_civilization_id),
+            treaty=str(journey.treaty_id),
+            travellers=len(journey.traveller_ids),
+            cargo_units=sum(cargo.values()),
+            route_tiles=len(journey.route),
+        )
+    ]
+
+
+def _transfer_migrants(state: WorldState, journey: Journey) -> tuple[EntityId, ...]:
+    """Move living arrivals, with their history and any pregnancy, to the new civilization."""
+    origin = state.civilizations[journey.sender_civilization_id]
+    destination = state.civilizations[journey.recipient_civilization_id]
+    origin_people = dict(origin.population.people)
+    destination_people = dict(destination.population.people)
+    arrivals = tuple(
+        person_id
+        for person_id in journey.traveller_ids
+        if person_id in origin_people and origin_people[person_id].alive
+    )
+    for person_id in arrivals:
+        person = origin_people.pop(person_id)
+        destination_people[person_id] = person.model_copy(
+            update={"civilization_id": destination.civilization_id}
+        )
+    following_mother = tuple(
+        birth for birth in origin.population.scheduled_births if birth.parent_ids[0] in arrivals
+    )
+    origin.population = origin.population.model_copy(
+        update={
+            "people": origin_people,
+            "scheduled_births": tuple(
+                birth
+                for birth in origin.population.scheduled_births
+                if birth not in following_mother
+            ),
+        }
+    )
+    destination.population = destination.population.model_copy(
+        update={
+            "people": destination_people,
+            "scheduled_births": tuple(
+                sorted(
+                    (*destination.population.scheduled_births, *following_mother),
+                    key=lambda birth: (birth.due_day, birth.parent_ids),
+                )
+            ),
+        }
+    )
+    return arrivals
+
+
+def _adopt_migrant_capabilities(
+    state: WorldState,
+    civilization_id: EntityId,
+    arrivals: tuple[EntityId, ...],
+) -> tuple[CapabilityId, ...]:
+    """Migrants bring practical skills; a new capability becomes known on arrival."""
+    civilization = state.civilizations[civilization_id]
+    records = {record.capability: record for record in civilization.capabilities}
+    learned: list[CapabilityId] = []
+    for capability in CapabilityId:
+        practitioners = tuple(
+            person_id
+            for person_id in arrivals
+            if civilization.population.people[person_id].skills.get(capability.value, 0) > 0
+        )
+        if not practitioners:
+            continue
+        existing = records.get(capability)
+        if existing is None:
+            learned.append(capability)
+            records[capability] = CapabilityRecord(
+                capability=capability,
+                practitioner_ids=tuple(sorted(practitioners)),
+                discovered_day=state.day,
+            )
+        else:
+            records[capability] = existing.model_copy(
+                update={
+                    "practitioner_ids": tuple(sorted({*existing.practitioner_ids, *practitioners}))
+                }
+            )
+    civilization.capabilities = tuple(
+        sorted(records.values(), key=lambda record: record.capability.value)
+    )
+    return tuple(learned)
+
+
+def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
+    """Resolve travel, then receipt and allegiance transfer only for physical arrivals."""
+    if not state.journeys:
+        return []
+    result = advance_journeys_day(
+        state.journeys,
+        {
+            civilization_id: civilization.population.people
+            for civilization_id, civilization in state.civilizations.items()
+        },
+        day=state.day,
+        rng=rng,
+    )
+    state.journeys = result.journeys
+    for civilization_id, people in result.people_by_civilization.items():
+        civilization = state.civilizations[civilization_id]
+        civilization.population = civilization.population.model_copy(update={"people": people})
+    kinds = {journey.journey_id: journey.kind for journey in result.journeys}
+    events: list[DomainEvent] = []
+    for journey_id in result.delayed_ids:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                f"{kinds[journey_id].value}_delayed",
+                None,
+                str(journey_id),
+            )
+        )
+    for journey_id in result.lost_ids:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "shipment_lost",
+                None,
+                str(journey_id),
+                cause=TRAVEL_HAZARD_CAUSE,
+            )
+        )
+    for death in result.hazard_deaths:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "migrant_lost",
+                None,
+                str(death.journey_id),
+                person=str(death.person_id),
+            )
+        )
+        events.append(
+            _event(
+                state,
+                EventPhase.DEATH,
+                "person_died",
+                str(death.civilization_id),
+                str(death.person_id),
+                cause=TRAVEL_HAZARD_CAUSE,
+            )
+        )
+    for journey_id in result.perished_ids:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                f"{kinds[journey_id].value}_party_perished",
+                None,
+                str(journey_id),
+            )
+        )
+    for journey in result.arrived:
+        recipient_id = journey.recipient_civilization_id
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                f"{journey.kind.value}_arrived",
+                str(recipient_id),
+                str(journey.journey_id),
+                sender=str(journey.sender_civilization_id),
+            )
+        )
+        recipient = state.civilizations[recipient_id]
+        if journey.kind is JourneyKind.SHIPMENT:
+            recipient.inventory, waste = recipient.inventory.store_with_waste(journey.cargo)
+            accepted = {
+                resource: quantity - waste.get(resource, 0)
+                for resource, quantity in journey.cargo.items()
+                if quantity - waste.get(resource, 0) > 0
+            }
+            _add_notice(
+                state,
+                recipient_id,
+                notice(
+                    state.day,
+                    NoticeKind.SHIPMENT_RECEIVED,
+                    journey,
+                    journey.sender_civilization_id,
+                    cargo=accepted,
+                ),
+            )
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "shipment_received",
+                    str(recipient_id),
+                    str(journey.journey_id),
+                    units=sum(accepted.values()),
+                    wasted=sum(waste.values()),
+                )
+            )
+            continue
+        arrivals = _transfer_migrants(state, journey)
+        _add_notice(
+            state,
+            recipient_id,
+            notice(
+                state.day,
+                NoticeKind.MIGRANTS_RECEIVED,
+                journey,
+                journey.sender_civilization_id,
+                person_ids=arrivals,
+            ),
+        )
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "migrants_received",
+                str(recipient_id),
+                str(journey.journey_id),
+                people=len(arrivals),
+            )
+        )
+        for capability in _adopt_migrant_capabilities(state, recipient_id, arrivals):
+            events.append(
+                _event(
+                    state,
+                    EventPhase.WORK,
+                    "capability_learned",
+                    str(recipient_id),
+                    capability=capability.value,
+                    source="migration",
+                )
+            )
+    for journey in result.failed:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                f"{journey.kind.value}_failed",
+                None,
+                str(journey.journey_id),
+                cause="no living recipients",
+            )
+        )
+    cargo_home = {journey.journey_id for journey in result.cargo_returned}
+    for journey in result.returned:
+        sender_id = journey.sender_civilization_id
+        restored: dict[Resource, int] = {}
+        if journey.journey_id in cargo_home:
+            sender = state.civilizations[sender_id]
+            sender.inventory, waste = sender.inventory.store_with_waste(journey.cargo)
+            restored = {
+                resource: quantity - waste.get(resource, 0)
+                for resource, quantity in journey.cargo.items()
+                if quantity - waste.get(resource, 0) > 0
+            }
+        home = journey.route[0]
+        survivors = tuple(
+            person_id
+            for person_id in journey.traveller_ids
+            if (person := state.civilizations[sender_id].population.people.get(person_id))
+            is not None
+            and person.alive
+            and person.location == home
+        )
+        _add_notice(
+            state,
+            sender_id,
+            notice(
+                state.day,
+                (
+                    NoticeKind.SHIPMENT_CARRIERS_RETURNED
+                    if journey.kind is JourneyKind.SHIPMENT
+                    else NoticeKind.MIGRANTS_RETURNED
+                ),
+                journey,
+                journey.recipient_civilization_id,
+                cargo=restored,
+                person_ids=survivors,
+                reported_outcome=journey.outcome,
+            ),
+        )
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                f"{journey.kind.value}_returned",
+                str(sender_id),
+                str(journey.journey_id),
+                outcome=journey.outcome.value,
+                restored_units=sum(restored.values()),
+            )
+        )
+    return events
 
 
 def _run_councils(
@@ -179,6 +566,8 @@ def _run_councils(
                         str(command.expedition_id),
                     )
                 )
+            elif isinstance(command, DirectOrder) and command.kind in JOURNEY_ORDERS:
+                events.extend(_dispatch_journey(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind
@@ -494,6 +883,8 @@ def advance_day(
         events.append(
             _event(candidate, EventPhase.MOVEMENT, "message_lost", None, str(message_id))
         )
+
+    events.extend(_advance_journeys(candidate, rng))
 
     for civilization_id in sorted(candidate.civilizations):
         civilization = candidate.civilizations[civilization_id]

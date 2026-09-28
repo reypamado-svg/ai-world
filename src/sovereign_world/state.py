@@ -20,6 +20,12 @@ from sovereign_world.diplomacy import (
 from sovereign_world.exploration import Expedition, Observation
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
+from sovereign_world.logistics import (
+    Journey,
+    JourneyKind,
+    JourneyOutcome,
+    LogisticsNotice,
+)
 from sovereign_world.people import Population, create_founders
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
@@ -41,6 +47,7 @@ class CivilizationState(BaseModel):
     teaching_assignments: tuple[TeachingAssignment, ...] = ()
     contacts: tuple[Contact, ...] = ()
     received_messages: tuple[DiplomaticMessage, ...] = ()
+    logistics_notices: tuple[LogisticsNotice, ...] = ()
 
 
 class WorldState(BaseModel):
@@ -56,6 +63,7 @@ class WorldState(BaseModel):
     diplomatic_missions: tuple[DiplomaticMessage, ...] = ()
     treaty_offers: tuple[TreatyOffer, ...] = ()
     active_treaties: tuple[ActiveTreaty, ...] = ()
+    journeys: tuple[Journey, ...] = ()
 
 
 def _canonical_payload(state: WorldState) -> str:
@@ -209,6 +217,11 @@ def validate_world(state: WorldState) -> None:
             for message in received
         ):
             raise ValueError("received messages must be delivered to this civilization")
+        notices = civilization.logistics_notices
+        if notices != tuple(sorted(notices, key=lambda item: item.notice_id)):
+            raise ValueError("logistics notices must be sorted")
+        if len({item.notice_id for item in notices}) != len(notices):
+            raise ValueError("logistics notices must be unique")
     person_owners: dict[EntityId, EntityId] = {}
     for civilization_id, civilization in state.civilizations.items():
         for person_id, person in civilization.population.people.items():
@@ -248,3 +261,39 @@ def validate_world(state: WorldState) -> None:
     if any(treaty.treaty_id not in {offer.offer_id for offer in offers} for treaty in treaties):
         raise ValueError("active treaty requires a recorded offer")
 
+    journeys = state.journeys
+    if journeys != tuple(sorted(journeys, key=lambda journey: journey.journey_id)):
+        raise ValueError("journeys must be sorted")
+    if len({journey.journey_id for journey in journeys}) != len(journeys):
+        raise ValueError("journeys must be unique")
+    treaties_by_id = {treaty.treaty_id: treaty for treaty in treaties}
+    required_kind = {JourneyKind.SHIPMENT: "trade", JourneyKind.MIGRATION: "migration"}
+    busy: set[EntityId] = set()
+    for journey in journeys:
+        sender = state.civilizations.get(journey.sender_civilization_id)
+        if sender is None or journey.recipient_civilization_id not in state.civilizations:
+            raise ValueError("journey must name existing civilizations")
+        treaty = treaties_by_id.get(journey.treaty_id)
+        if (
+            treaty is None
+            or treaty.kind.value != required_kind[journey.kind]
+            or {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+            != {journey.sender_civilization_id, journey.recipient_civilization_id}
+        ):
+            raise ValueError("journey requires a matching active treaty")
+        if not journey.active:
+            continue
+        for person_id in journey.traveller_ids:
+            if person_id not in sender.population.people:
+                raise ValueError("travelling party must belong to its sender")
+            if person_id in busy:
+                raise ValueError("a person cannot travel on two journeys at once")
+            busy.add(person_id)
+            person = sender.population.people[person_id]
+            if person.alive and person.location != journey.route[journey.route_index]:
+                raise ValueError("living travellers must stand on their route position")
+        if journey.carrying_cargo and journey.outcome not in {
+            JourneyOutcome.PENDING,
+            JourneyOutcome.FAILED,
+        }:
+            raise ValueError("only undelivered cargo can still be carried")

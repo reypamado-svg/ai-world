@@ -9,10 +9,19 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field
 
 from sovereign_world.capabilities import CapabilityId
-from sovereign_world.diplomacy import Contact, DiplomaticMessage, TreatyKind
+from sovereign_world.diplomacy import Contact, DiplomaticMessage, MissionStatus, TreatyKind
 from sovereign_world.events import DomainEvent
+from sovereign_world.exploration import ExpeditionStatus
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
+from sovereign_world.logistics import (
+    CARGO_UNITS_PER_CARRIER,
+    MAX_TRAVELLERS,
+    JourneyKind,
+    JourneyOutcome,
+    JourneyPhase,
+    LogisticsNotice,
+)
 from sovereign_world.resources import Resource
 from sovereign_world.state import WorldState
 
@@ -35,6 +44,18 @@ class DirectOrderKind(StrEnum):
     SEND_MESSAGE = "send_message"
     OFFER_TREATY = "offer_treaty"
     ACCEPT_TREATY = "accept_treaty"
+    DISPATCH_SHIPMENT = "dispatch_shipment"
+    DISPATCH_MIGRATION = "dispatch_migration"
+
+
+JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
+    DirectOrderKind.DISPATCH_SHIPMENT: JourneyKind.SHIPMENT,
+    DirectOrderKind.DISPATCH_MIGRATION: JourneyKind.MIGRATION,
+}
+REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
+    JourneyKind.SHIPMENT: TreatyKind.TRADE,
+    JourneyKind.MIGRATION: TreatyKind.MIGRATION,
+}
 
 
 class ProjectKind(StrEnum):
@@ -73,6 +94,9 @@ class DirectOrder(BaseModel):
     message_text: str = Field(default="", max_length=1_000)
     treaty_id: EntityId | None = None
     treaty_kind: TreatyKind | None = None
+    journey_id: EntityId | None = None
+    traveller_ids: tuple[EntityId, ...] = ()
+    cargo: dict[Resource, int] = Field(default_factory=dict)
     priority: int = Field(default=50, ge=0, le=100)
 
 
@@ -119,6 +143,7 @@ class CouncilReport(BaseModel):
     active_decrees: dict[str, int]
     contacts: tuple[Contact, ...] = ()
     received_messages: tuple[DiplomaticMessage, ...] = ()
+    logistics_notices: tuple[LogisticsNotice, ...] = ()
     recent_events: tuple[DomainEvent, ...] = ()
 
 
@@ -128,6 +153,16 @@ def build_council_report(
     recent_events: tuple[DomainEvent, ...] = (),
 ) -> CouncilReport:
     civilization = state.civilizations[civilization_id]
+    emigrants = {
+        person_id
+        for journey in state.journeys
+        if journey.kind is JourneyKind.MIGRATION
+        and journey.sender_civilization_id == civilization_id
+        and not (
+            journey.phase is JourneyPhase.COMPLETE and journey.outcome is JourneyOutcome.FAILED
+        )
+        for person_id in journey.traveller_ids
+    }
     visible_events = tuple(
         event
         for event in recent_events
@@ -137,7 +172,13 @@ def build_council_report(
         report_id=f"report:{state.day}:{civilization_id}",
         civilization_id=civilization_id,
         day=state.day,
-        person_ids=tuple(sorted(civilization.population.people)),
+        person_ids=tuple(
+            sorted(
+                person_id
+                for person_id in civilization.population.people
+                if person_id not in emigrants
+            )
+        ),
         start_center=civilization.start_center,
         known_tiles=tuple(sorted(civilization.known_tiles)),
         inventory=dict(civilization.inventory.quantities),
@@ -145,6 +186,7 @@ def build_council_report(
         active_decrees=dict(state.active_decrees.get(civilization_id, {})),
         contacts=civilization.contacts,
         received_messages=civilization.received_messages,
+        logistics_notices=civilization.logistics_notices,
         recent_events=visible_events,
     )
 
@@ -153,6 +195,95 @@ def _person_owner(state: WorldState, person_id: EntityId) -> EntityId | None:
     for civilization_id in sorted(state.civilizations):
         if person_id in state.civilizations[civilization_id].population.people:
             return civilization_id
+    return None
+
+
+def _travelling_people(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
+    """People already committed to a journey, embassy, or expedition."""
+    busy = {
+        person_id
+        for journey in state.journeys
+        if journey.active and journey.sender_civilization_id == civilization_id
+        for person_id in journey.traveller_ids
+    }
+    busy.update(
+        message.ambassador_id
+        for message in state.diplomatic_missions
+        if message.status is MissionStatus.IN_TRANSIT
+        and message.sender_civilization_id == civilization_id
+    )
+    busy.update(
+        person_id
+        for expedition in state.civilizations[civilization_id].expeditions
+        if expedition.status is ExpeditionStatus.ACTIVE
+        for person_id in expedition.explorer_ids
+    )
+    return busy
+
+
+def _journey_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved_cargo: dict[Resource, int],
+) -> CommandError | None:
+    """Validate an already-identified shipment or migration against treaty, route, and goods."""
+    kind = JOURNEY_ORDERS[command.kind]
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    treaty = next(
+        (item for item in state.active_treaties if item.treaty_id == command.treaty_id),
+        None,
+    )
+    if (
+        treaty is None
+        or treaty.kind is not REQUIRED_TREATY[kind]
+        or {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+        != {civilization_id, command.recipient_civilization_id}
+    ):
+        return error("no_active_treaty", f"{kind.value} requires a matching active treaty")
+    contact = next(
+        (
+            item
+            for item in civilization.contacts
+            if item.civilization_id == command.recipient_civilization_id
+        ),
+        None,
+    )
+    if contact is None:
+        return error("unknown_contact", "journeys require a discovered foreign settlement")
+    route = command.route
+    if (
+        len(route) < 2
+        or route[0] != civilization.start_center
+        or route[-1] != contact.settlement
+        or any(tile not in civilization.known_tiles for tile in route)
+        or any(not state.world_map.contains(tile) for tile in route)
+        or any(first.distance(second) != 1 for first, second in pairwise(route))
+    ):
+        return error(
+            "invalid_route",
+            "journey route must leave home over known adjacent tiles to the settlement",
+        )
+    people = civilization.population.people
+    home = civilization.start_center
+    if any(people[person_id].location != home for person_id in command.traveller_ids):
+        return error("traveller_not_home", "travellers must depart from the home settlement")
+    if kind is JourneyKind.MIGRATION:
+        if command.cargo:
+            return error("invalid_cargo", "migration journeys carry no trade cargo")
+        return None
+    if not command.cargo or any(quantity <= 0 for quantity in command.cargo.values()):
+        return error("invalid_cargo", "a shipment requires positive cargo")
+    if sum(command.cargo.values()) > CARGO_UNITS_PER_CARRIER * len(command.traveller_ids):
+        return error("cargo_over_capacity", "each carrier can bear 50 units")
+    for resource, quantity in command.cargo.items():
+        available = civilization.inventory.quantities.get(resource, 0)
+        if reserved_cargo.get(resource, 0) + quantity > available:
+            return error("insufficient_goods", f"not enough {resource} to ship")
     return None
 
 
@@ -175,6 +306,9 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     seen_expeditions: set[EntityId] = set()
     seen_messages: set[EntityId] = set()
     seen_treaties: set[EntityId] = set()
+    seen_journeys: set[EntityId] = set()
+    committed_travellers: set[EntityId] = set()
+    reserved_cargo: dict[Resource, int] = {}
     for command in envelope.commands:
         if command.command_id in seen:
             errors.append(
@@ -306,6 +440,35 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     code="invalid_treaty",
                     message="treaty acceptance requires the offered treaty ID",
                 )
+            if command.kind in JOURNEY_ORDERS:
+                traveller_ids = command.traveller_ids
+                if (
+                    command.journey_id is None
+                    or command.treaty_id is None
+                    or command.recipient_civilization_id is None
+                    or not traveller_ids
+                    or len(traveller_ids) > MAX_TRAVELLERS
+                    or len(set(traveller_ids)) != len(traveller_ids)
+                    or not command.route
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_journey",
+                        message=(
+                            "journey requires an ID, treaty, recipient, route, and one to "
+                            "sixteen distinct travellers"
+                        ),
+                    )
+                elif command.journey_id in seen_journeys or any(
+                    journey.journey_id == command.journey_id for journey in state.journeys
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="duplicate_journey",
+                        message="journey ID is repeated",
+                    )
+                else:
+                    seen_journeys.add(command.journey_id)
             person_ids = command.worker_ids
             if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
@@ -320,6 +483,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             } and command_error is None:
                 assert command.ambassador_id is not None
                 person_ids += (command.ambassador_id,)
+            if command.kind in JOURNEY_ORDERS and command_error is None:
+                person_ids += command.traveller_ids
             for person_id in person_ids:
                 if command_error is not None:
                     break
@@ -345,6 +510,36 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         message=f"person {person_id} is dead",
                     )
                     break
+            travellers: tuple[EntityId, ...] = ()
+            if command.kind is DirectOrderKind.START_EXPEDITION:
+                travellers = command.explorer_ids
+            elif command.kind in JOURNEY_ORDERS:
+                travellers = command.traveller_ids
+            elif command.kind in {
+                DirectOrderKind.SEND_MESSAGE,
+                DirectOrderKind.OFFER_TREATY,
+                DirectOrderKind.ACCEPT_TREATY,
+            } and command.ambassador_id is not None:
+                travellers = (command.ambassador_id,)
+            if travellers and command_error is None:
+                committed = committed_travellers | {
+                    person_id
+                    for journey in state.journeys
+                    if journey.active
+                    for person_id in journey.traveller_ids
+                }
+                if command.kind in JOURNEY_ORDERS:
+                    committed |= _travelling_people(state, envelope.civilization_id)
+                if any(person_id in committed for person_id in travellers):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="traveller_unavailable",
+                        message="a traveller is already committed to another journey",
+                    )
+            if command.kind in JOURNEY_ORDERS and command_error is None:
+                command_error = _journey_error(
+                    command, envelope.civilization_id, state, reserved_cargo
+                )
             if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
                 assert command.capability is not None
@@ -465,5 +660,9 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             if command_error is not None:
                 errors.append(command_error)
                 continue
+            committed_travellers.update(travellers)
+            if command.kind is DirectOrderKind.DISPATCH_SHIPMENT:
+                for resource, quantity in command.cargo.items():
+                    reserved_cargo[resource] = reserved_cargo.get(resource, 0) + quantity
         accepted.append(command)
     return CommandValidation(accepted=tuple(accepted), errors=tuple(errors))

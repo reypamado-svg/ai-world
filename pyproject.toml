@@ -29,6 +29,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = "--strict-markers --basetemp=work/pytest-temp"
 markers = ["soak: long-running deterministic seed matrix"]
 
