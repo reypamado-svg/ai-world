@@ -119,6 +119,11 @@ def create_founders(
     )
 
 
+def birth_person_id(civilization_id: EntityId, sequence: int) -> EntityId:
+    """Scope birth IDs by birth civilization so person IDs stay globally unique."""
+    return EntityId(f"person:{civilization_id.rsplit(':', 1)[-1]}-{sequence:010d}")
+
+
 def _mortality_threshold(person: Person) -> tuple[int, str]:
     if person.health_bp <= 0:
         return 1_000_000, "critical health"
@@ -172,8 +177,8 @@ def advance_population_day(
         if scheduled.due_day != day:
             pending.append(scheduled)
             continue
-        parents = [candidate.people[parent_id] for parent_id in scheduled.parent_ids]
-        person_id = EntityId(f"person:{candidate.next_sequence:010d}")
+        mother = candidate.people[scheduled.parent_ids[0]]
+        person_id = birth_person_id(candidate.civilization_id, candidate.next_sequence)
         candidate.next_sequence += 1
         child = Person(
             person_id=person_id,
@@ -181,7 +186,7 @@ def advance_population_day(
             sex=Sex.FEMALE if int(rng.integers(0, 2)) == 0 else Sex.MALE,
             birth_day=day,
             age_days=0,
-            location=parents[0].location,
+            location=mother.location,
             parent_ids=scheduled.parent_ids,
             health_bp=9_000,
         )

@@ -120,3 +120,35 @@ def test_dead_people_remain_historical_records() -> None:
     assert second.people[person.person_id].death_day == 1
     assert not second.people[person.person_id].alive
 
+
+
+def test_birth_ids_never_collide_with_other_civilizations() -> None:
+    from sovereign_world.config import RunManifest, WorldConfig
+    from sovereign_world.state import build_initial_state
+
+    state = build_initial_state(
+        RunManifest.new(config=WorldConfig(seed=21, width=48, height=48), engine_version="0.1.0")
+    )
+    first_id, second_id = sorted(state.civilizations)[:2]
+    first = state.civilizations[first_id]
+    mother = next(
+        person_id
+        for person_id in first.population.living_ids
+        if first.population.people[person_id].sex is Sex.FEMALE
+    )
+    first.population.scheduled_births = (
+        ScheduledBirth(due_day=0, parent_ids=(mother, EntityId("person:emigrated-father"))),
+    )
+
+    result = advance_population_day(first.population, day=0, rng=StableRng(4).stream("births"))
+    child_id = result.births[0].person_id
+    first.population = result.population
+
+    assert child_id not in state.civilizations[second_id].population.people
+    assert result.people[child_id].location == result.people[mother].location
+    every_id = [
+        person_id
+        for civilization in state.civilizations.values()
+        for person_id in civilization.population.people
+    ]
+    assert len(every_id) == len(set(every_id))

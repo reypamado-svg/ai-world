@@ -209,6 +209,14 @@ def validate_world(state: WorldState) -> None:
             for message in received
         ):
             raise ValueError("received messages must be delivered to this civilization")
+    person_owners: dict[EntityId, EntityId] = {}
+    for civilization_id, civilization in state.civilizations.items():
+        for person_id, person in civilization.population.people.items():
+            if person_id in person_owners:
+                raise ValueError("person IDs must be globally unique")
+            if person.person_id != person_id or person.civilization_id != civilization_id:
+                raise ValueError("person record must match its civilization")
+            person_owners[person_id] = civilization_id
     missions = state.diplomatic_missions
     if missions != tuple(sorted(missions, key=lambda message: message.message_id)):
         raise ValueError("diplomatic missions must be sorted")
