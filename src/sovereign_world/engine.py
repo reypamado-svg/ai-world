@@ -99,6 +99,18 @@ def _dispatch_journey(
             civilization.inventory.quantities.get(resource, 0) < quantity
             for resource, quantity in cargo.items()
         ):
+            _add_notice(
+                state,
+                civilization_id,
+                LogisticsNotice(
+                    notice_id=f"{command.journey_id}:{NoticeKind.SHIPMENT_UNFUNDED.value}",
+                    day=state.day,
+                    kind=NoticeKind.SHIPMENT_UNFUNDED,
+                    journey_id=command.journey_id,
+                    counterpart_civilization_id=command.recipient_civilization_id,
+                    cargo=cargo,
+                ),
+            )
             return [
                 _event(
                     state,
@@ -292,9 +304,10 @@ def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
                 state,
                 EventPhase.DEATH,
                 "person_died",
-                str(death.civilization_id),
+                None,
                 str(death.person_id),
                 cause=TRAVEL_HAZARD_CAUSE,
+                civilization=str(death.civilization_id),
             )
         )
     for journey_id in result.perished_ids:
@@ -944,9 +957,19 @@ def advance_day(
                 )
             )
 
+        away = {
+            person_id
+            for journey in candidate.journeys
+            if journey.active and journey.sender_civilization_id == civilization_id
+            for person_id in journey.traveller_ids
+        }
         work_result = execute_work_day(
             civilization.work_orders,
-            civilization.population.people,
+            {
+                person_id: person
+                for person_id, person in civilization.population.people.items()
+                if person_id not in away
+            },
             civilization.inventory,
             civilization.projects,
         )

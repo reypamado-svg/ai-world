@@ -152,3 +152,34 @@ def test_birth_ids_never_collide_with_other_civilizations() -> None:
         for person_id in civilization.population.people
     ]
     assert len(every_id) == len(set(every_id))
+
+
+def test_a_dead_mother_gives_no_posthumous_birth() -> None:
+    civilization_id = EntityId("civilization:0000000001")
+    mother = Person(
+        person_id=EntityId("person:0000000001"),
+        civilization_id=civilization_id,
+        sex=Sex.FEMALE,
+        birth_day=-9_000,
+        age_days=9_000,
+        location=HexCoord(2, 2),
+        alive=False,
+        death_day=10,
+    )
+    population = Population(
+        civilization_id=civilization_id,
+        people={mother.person_id: mother},
+        scheduled_births=(
+            ScheduledBirth(
+                due_day=20,
+                parent_ids=(mother.person_id, EntityId("person:0000000002")),
+            ),
+        ),
+        next_sequence=3,
+    )
+
+    result = advance_population_day(population, day=20, rng=StableRng(7).stream("posthumous"))
+
+    assert result.births == ()
+    assert result.population.scheduled_births == ()
+    assert set(result.people) == {mother.person_id}

@@ -17,6 +17,7 @@ from sovereign_world.ids import EntityId
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
     MAX_TRAVELLERS,
+    Journey,
     JourneyKind,
     JourneyOutcome,
     JourneyPhase,
@@ -153,15 +154,22 @@ def build_council_report(
     recent_events: tuple[DomainEvent, ...] = (),
 ) -> CouncilReport:
     civilization = state.civilizations[civilization_id]
+    latest_migration: dict[EntityId, Journey] = {}
+    for journey in sorted(
+        state.journeys, key=lambda item: (item.departed_day, item.journey_id)
+    ):
+        if journey.kind is JourneyKind.MIGRATION:
+            for person_id in journey.traveller_ids:
+                latest_migration[person_id] = journey
+    # A civilization loses sight of its emigrants at departure, whatever becomes of them,
+    # unless the party walks back home after a failed delivery.
     emigrants = {
         person_id
-        for journey in state.journeys
-        if journey.kind is JourneyKind.MIGRATION
-        and journey.sender_civilization_id == civilization_id
+        for person_id, journey in latest_migration.items()
+        if journey.sender_civilization_id == civilization_id
         and not (
             journey.phase is JourneyPhase.COMPLETE and journey.outcome is JourneyOutcome.FAILED
         )
-        for person_id in journey.traveller_ids
     }
     visible_events = tuple(
         event
@@ -272,6 +280,9 @@ def _journey_error(
     home = civilization.start_center
     if any(people[person_id].location != home for person_id in command.traveller_ids):
         return error("traveller_not_home", "travellers must depart from the home settlement")
+    expectant = {birth.parent_ids[0] for birth in civilization.population.scheduled_births}
+    if expectant & set(command.traveller_ids):
+        return error("expectant_traveller", "a mother with a birth due cannot leave on a journey")
     if kind is JourneyKind.MIGRATION:
         if command.cargo:
             return error("invalid_cargo", "migration journeys carry no trade cargo")
@@ -308,6 +319,13 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     seen_treaties: set[EntityId] = set()
     seen_journeys: set[EntityId] = set()
     committed_travellers: set[EntityId] = set()
+    committed_at_home: set[EntityId] = set()
+    teaching_people = {
+        person_id
+        for assignment in state.civilizations[envelope.civilization_id].teaching_assignments
+        for person_id in (assignment.teacher_id, assignment.apprentice_id)
+    }
+    already_travelling = _travelling_people(state, envelope.civilization_id)
     reserved_cargo: dict[Resource, int] = {}
     for command in envelope.commands:
         if command.command_id in seen:
@@ -521,20 +539,30 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 DirectOrderKind.ACCEPT_TREATY,
             } and command.ambassador_id is not None:
                 travellers = (command.ambassador_id,)
+            home_duty: tuple[EntityId, ...] = ()
+            if command.kind is DirectOrderKind.START_PROJECT:
+                home_duty = command.worker_ids
+            elif command.kind is DirectOrderKind.START_TEACHING and command_error is None:
+                assert command.teacher_id is not None
+                assert command.apprentice_id is not None
+                home_duty = (command.teacher_id, command.apprentice_id)
             if travellers and command_error is None:
-                committed = committed_travellers | {
-                    person_id
-                    for journey in state.journeys
-                    if journey.active
-                    for person_id in journey.traveller_ids
-                }
-                if command.kind in JOURNEY_ORDERS:
-                    committed |= _travelling_people(state, envelope.civilization_id)
+                committed = (
+                    committed_travellers | committed_at_home | teaching_people | already_travelling
+                )
                 if any(person_id in committed for person_id in travellers):
                     command_error = CommandError(
                         command_id=command.command_id,
                         code="traveller_unavailable",
-                        message="a traveller is already committed to another journey",
+                        message="a traveller is already committed to another duty",
+                    )
+            if home_duty and command_error is None:
+                away = committed_travellers | already_travelling
+                if any(person_id in away for person_id in home_duty):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="person_travelling",
+                        message="a person away on a journey cannot work or teach at home",
                     )
             if command.kind in JOURNEY_ORDERS and command_error is None:
                 command_error = _journey_error(
@@ -661,6 +689,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 errors.append(command_error)
                 continue
             committed_travellers.update(travellers)
+            committed_at_home.update(home_duty)
             if command.kind is DirectOrderKind.DISPATCH_SHIPMENT:
                 for resource, quantity in command.cargo.items():
                     reserved_cargo[resource] = reserved_cargo.get(resource, 0) + quantity

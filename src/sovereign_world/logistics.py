@@ -95,6 +95,7 @@ class Journey(BaseModel):
 
 class NoticeKind(StrEnum):
     SHIPMENT_DISPATCHED = "shipment_dispatched"
+    SHIPMENT_UNFUNDED = "shipment_unfunded"
     SHIPMENT_RECEIVED = "shipment_received"
     SHIPMENT_CARRIERS_RETURNED = "shipment_carriers_returned"
     MIGRATION_DEPARTED = "migration_departed"
@@ -204,7 +205,7 @@ def advance_journeys_day(
         if not living:
             outcome = (
                 journey.outcome
-                if journey.phase is JourneyPhase.RETURNING
+                if journey.phase is JourneyPhase.RETURNING and not journey.carrying_cargo
                 else JourneyOutcome.PERISHED
             )
             perished_ids.append(journey.journey_id)
@@ -220,8 +221,6 @@ def advance_journeys_day(
             )
             continue
         if journey.phase is JourneyPhase.RETURNING and journey.route_index == 0:
-            if journey.carrying_cargo:
-                cargo_returned.append(journey)
             completed = journey.model_copy(
                 update={
                     "phase": JourneyPhase.COMPLETE,

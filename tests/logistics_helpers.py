@@ -113,3 +113,19 @@ class OneShotSovereign:
             correlation_id=report.report_id,
             commands=orders,
         )
+
+
+class ScheduledSovereign:
+    """Issue fixed orders at the councils on the given days."""
+
+    def __init__(self, orders_by_day: dict[int, tuple[DirectOrder, ...]]) -> None:
+        self.orders_by_day = orders_by_day
+
+    def decide(self, report: CouncilReport) -> CommandEnvelope:
+        return CommandEnvelope(
+            schema_version=1,
+            civilization_id=report.civilization_id,
+            council_day=report.day,
+            correlation_id=report.report_id,
+            commands=self.orders_by_day.get(report.day, ()),
+        )

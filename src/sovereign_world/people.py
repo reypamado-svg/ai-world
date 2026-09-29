@@ -178,6 +178,8 @@ def advance_population_day(
             pending.append(scheduled)
             continue
         mother = candidate.people[scheduled.parent_ids[0]]
+        if not mother.alive:
+            continue
         person_id = birth_person_id(candidate.civilization_id, candidate.next_sequence)
         candidate.next_sequence += 1
         child = Person(

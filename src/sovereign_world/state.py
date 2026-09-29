@@ -17,7 +17,7 @@ from sovereign_world.diplomacy import (
     MissionStatus,
     TreatyOffer,
 )
-from sovereign_world.exploration import Expedition, Observation
+from sovereign_world.exploration import Expedition, ExpeditionStatus, Observation
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
 from sovereign_world.logistics import (
@@ -171,6 +171,8 @@ def validate_world(state: WorldState) -> None:
         if len({expedition.expedition_id for expedition in expeditions}) != len(expeditions):
             raise ValueError("expeditions must be unique")
         for expedition in expeditions:
+            if expedition.status is not ExpeditionStatus.ACTIVE:
+                continue
             for person_id in expedition.explorer_ids:
                 if person_id not in civilization.population.people:
                     raise ValueError("expedition explorer must be local")
@@ -239,7 +241,10 @@ def validate_world(state: WorldState) -> None:
         sender = state.civilizations.get(message.sender_civilization_id)
         if sender is None or message.recipient_civilization_id not in state.civilizations:
             raise ValueError("diplomatic mission must name existing civilizations")
-        if message.ambassador_id not in sender.population.people:
+        if (
+            message.status is MissionStatus.IN_TRANSIT
+            and message.ambassador_id not in sender.population.people
+        ):
             raise ValueError("diplomatic ambassador must belong to sender")
     offers = state.treaty_offers
     if offers != tuple(sorted(offers, key=lambda offer: offer.offer_id)):
