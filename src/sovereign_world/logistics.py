@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from math import ceil
@@ -34,6 +35,13 @@ FORAGE_TERRAIN_BP: dict[Terrain, int] = {
 class JourneyKind(StrEnum):
     SHIPMENT = "shipment"
     MIGRATION = "migration"
+    SETTLEMENT = "settlement"
+    GARRISON = "garrison"
+    RELOCATION = "relocation"
+
+
+INTERNAL_KINDS = frozenset({JourneyKind.SETTLEMENT, JourneyKind.GARRISON, JourneyKind.RELOCATION})
+"""Journeys within one civilization: no treaty, and the sender is also the recipient."""
 
 
 class JourneyPhase(StrEnum):
@@ -58,7 +66,7 @@ class Journey(BaseModel):
 
     journey_id: EntityId
     kind: JourneyKind
-    treaty_id: EntityId
+    treaty_id: EntityId | None = None
     sender_civilization_id: EntityId
     recipient_civilization_id: EntityId
     traveller_ids: tuple[EntityId, ...]
@@ -78,8 +86,13 @@ class Journey(BaseModel):
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
-        if self.sender_civilization_id == self.recipient_civilization_id:
-            raise ValueError("a journey requires a foreign recipient")
+        internal = self.kind in INTERNAL_KINDS
+        if internal != (self.sender_civilization_id == self.recipient_civilization_id):
+            raise ValueError("only internal journeys stay within their civilization")
+        if internal != (self.treaty_id is None):
+            raise ValueError("foreign journeys need a treaty and internal ones have none")
+        if internal and (self.cargo or self.carrying_cargo):
+            raise ValueError("internal journeys carry no trade cargo")
         if self.traveller_ids != tuple(sorted(set(self.traveller_ids))):
             raise ValueError("journey travellers must be unique and sorted")
         if not self.traveller_ids or len(self.traveller_ids) > MAX_TRAVELLERS:
@@ -145,6 +158,10 @@ class NoticeKind(StrEnum):
     MIGRANTS_RECEIVED = "migrants_received"
     MIGRANTS_TURNED_AWAY = "migrants_turned_away"
     MIGRANTS_RETURNED = "migrants_returned"
+    PARTY_DISPATCHED = "party_dispatched"
+    PARTY_ARRIVED = "party_arrived"
+    PARTY_RETURNED = "party_returned"
+    PARTY_UNFUNDED = "party_unfunded"
 
 
 class LogisticsNotice(BaseModel):
@@ -156,7 +173,7 @@ class LogisticsNotice(BaseModel):
     day: int = Field(ge=0)
     kind: NoticeKind
     journey_id: EntityId
-    treaty_id: EntityId
+    treaty_id: EntityId | None
     counterpart_civilization_id: EntityId
     cargo: dict[Resource, int] = Field(default_factory=dict)
     person_ids: tuple[EntityId, ...] = ()
@@ -232,6 +249,7 @@ def advance_journeys_day(
     rng: StableRng,
     treaties_in_force: frozenset[EntityId],
     world_map: WorldMap,
+    arrival_allowed: Callable[[Journey], bool] | None = None,
 ) -> JourneyDayResult:
     """Move each active party one route tile, resolving deaths, hazards, and delays.
 
@@ -355,6 +373,28 @@ def advance_journeys_day(
             update={"route_index": route_index, "travel_progress": progress}
         )
         if journey.phase is JourneyPhase.OUTBOUND and route_index == len(journey.route) - 1:
+            if journey.kind in INTERNAL_KINDS:
+                if arrival_allowed is None or arrival_allowed(moved):
+                    moved = moved.model_copy(
+                        update={
+                            "arrived_day": day,
+                            "outcome": JourneyOutcome.DELIVERED,
+                            "phase": JourneyPhase.COMPLETE,
+                            "completed_day": day,
+                        }
+                    )
+                    arrived.append(moved)
+                else:
+                    moved = moved.model_copy(
+                        update={
+                            "arrived_day": day,
+                            "outcome": JourneyOutcome.FAILED,
+                            "phase": JourneyPhase.RETURNING,
+                        }
+                    )
+                    failed.append(moved)
+                updated.append(moved)
+                continue
             recipient_living = any(
                 person.alive
                 for person in people.get(journey.recipient_civilization_id, {}).values()

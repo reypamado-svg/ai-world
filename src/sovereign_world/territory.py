@@ -22,6 +22,8 @@ CHALLENGE_DAYS = 7
 DAILY_GAIN = 3
 DAILY_LOSS = 2
 SETTLEMENT_SIGHT = 1
+GARRISON_STRENGTH = 25
+SETTLEMENT_SPACING = 3
 
 
 class Settlement(BaseModel):
@@ -34,6 +36,24 @@ class Settlement(BaseModel):
     tile: HexCoord
     founded_day: int = Field(ge=0)
     capital: bool = False
+
+
+class Garrison(BaseModel):
+    """People stationed on a tile to hold it; they project influence but never anchor it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    garrison_id: EntityId
+    civilization_id: EntityId
+    tile: HexCoord
+    member_ids: tuple[EntityId, ...]
+    since_day: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def valid_members(self) -> Garrison:
+        if not self.member_ids or self.member_ids != tuple(sorted(set(self.member_ids))):
+            raise ValueError("garrison members must be unique, sorted, and not empty")
+        return self
 
 
 class Claim(BaseModel):
@@ -89,6 +109,7 @@ class Territory(BaseModel):
     held: tuple[HeldControl, ...] = ()
     owners: tuple[TileOwner, ...] = ()
     challenges: tuple[Challenge, ...] = ()
+    cut_off: tuple[EntityId, ...] = ()
 
     @model_validator(mode="after")
     def canonical(self) -> Territory:
@@ -101,6 +122,8 @@ class Territory(BaseModel):
         challenged = [item.tile for item in self.challenges]
         if challenged != sorted(set(challenged)):
             raise ValueError("each tile has at most one challenge, sorted")
+        if self.cut_off != tuple(sorted(set(self.cut_off))):
+            raise ValueError("cut-off sources must be unique and sorted")
         return self
 
     def owner_of(self) -> dict[HexCoord, EntityId]:
@@ -193,7 +216,8 @@ class ControlChange:
 class TerritoryDayResult:
     territory: Territory
     changes: tuple[ControlChange, ...]
-    cut_off: tuple[EntityId, ...]
+    severed: tuple[EntityId, ...]
+    restored: tuple[EntityId, ...]
 
 
 def _drift(held: int, target: int) -> int:
@@ -223,10 +247,13 @@ def advance_territory(
     settlements: Iterable[Settlement],
     residents: Mapping[EntityId, int],
     day: int,
+    garrisons: Iterable[Garrison] = (),
+    garrisoned: Mapping[EntityId, int] | None = None,
 ) -> TerritoryDayResult:
     """Drift each civilization's hold toward its influence, then settle ownership.
 
-    `residents` counts living people at each settlement. Unowned tiles are taken at 40;
+    `residents` counts living people at each settlement, and `garrisoned` living
+    members standing at each garrison. Unowned tiles are taken at 40;
     owners lose a tile below 25; a rival takes an owned tile only after beating the owner
     by 15 for 7 consecutive days; ties never change hands. An inhabited settlement's own
     tile always belongs to its civilization.
@@ -236,18 +263,34 @@ def advance_territory(
     capitals = {item.civilization_id: item.tile for item in settlement_list if item.capital}
     sources: dict[EntityId, list[tuple[HexCoord, int]]] = {}
     cut_off: list[EntityId] = []
-    for settlement in settlement_list:
-        strength = settlement_strength(residents.get(settlement.settlement_id, 0))
-        capital = capitals.get(settlement.civilization_id)
+    garrisoned = garrisoned or {}
+    projecting: list[tuple[EntityId, EntityId, HexCoord, int]] = [
+        (
+            settlement.settlement_id,
+            settlement.civilization_id,
+            settlement.tile,
+            settlement_strength(residents.get(settlement.settlement_id, 0)),
+        )
+        for settlement in settlement_list
+    ]
+    projecting.extend(
+        (
+            garrison.garrison_id,
+            garrison.civilization_id,
+            garrison.tile,
+            GARRISON_STRENGTH if garrisoned.get(garrison.garrison_id, 0) else 0,
+        )
+        for garrison in sorted(garrisons, key=lambda item: item.garrison_id)
+    )
+    for source_id, civilization_id, tile, strength in projecting:
+        capital = capitals.get(civilization_id)
         if strength and (
             capital is None
-            or not supply_connected(
-                world_map, settlement.tile, capital, settlement.civilization_id, owners
-            )
+            or not supply_connected(world_map, tile, capital, civilization_id, owners)
         ):
             strength //= 2
-            cut_off.append(settlement.settlement_id)
-        sources.setdefault(settlement.civilization_id, []).append((settlement.tile, strength))
+            cut_off.append(source_id)
+        sources.setdefault(civilization_id, []).append((tile, strength))
 
     previous = territory.held_by_tile()
     fields = {
@@ -335,9 +378,11 @@ def advance_territory(
                 for tile, civilization_id in sorted(new_owners.items())
             ),
             challenges=tuple(sorted(new_challenges, key=lambda item: item.tile)),
+            cut_off=tuple(sorted(cut_off)),
         ),
         changes=tuple(changes),
-        cut_off=tuple(cut_off),
+        severed=tuple(sorted(set(cut_off) - set(territory.cut_off))),
+        restored=tuple(sorted(set(territory.cut_off) - set(cut_off))),
     )
 
 

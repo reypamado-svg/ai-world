@@ -29,7 +29,7 @@ from sovereign_world.logistics import (
 from sovereign_world.people import Population, create_founders
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
-from sovereign_world.territory import Claim, Settlement, Territory
+from sovereign_world.territory import Claim, Garrison, Settlement, Territory
 from sovereign_world.work import ConstructionProject, WorkOrder
 from sovereign_world.worldgen import generate_world
 
@@ -50,6 +50,7 @@ class CivilizationState(BaseModel):
     received_messages: tuple[DiplomaticMessage, ...] = ()
     logistics_notices: tuple[LogisticsNotice, ...] = ()
     settlements: tuple[Settlement, ...] = ()
+    garrisons: tuple[Garrison, ...] = ()
     claims: tuple[Claim, ...] = ()
 
 
@@ -244,6 +245,20 @@ def validate_world(state: WorldState) -> None:
         capitals = [item for item in settlements if item.capital]
         if len(capitals) != 1 or capitals[0].tile != civilization.start_center:
             raise ValueError("a civilization has exactly one capital, at its start")
+        garrisons = civilization.garrisons
+        if garrisons != tuple(sorted(garrisons, key=lambda item: item.garrison_id)):
+            raise ValueError("garrisons must be sorted")
+        if len({item.garrison_id for item in garrisons}) != len(garrisons):
+            raise ValueError("garrisons must be unique")
+        stationed = [person_id for item in garrisons for person_id in item.member_ids]
+        if len(stationed) != len(set(stationed)):
+            raise ValueError("a person serves in at most one garrison")
+        if any(
+            item.civilization_id != civilization_id
+            or any(person_id not in civilization.population.people for person_id in item.member_ids)
+            for item in garrisons
+        ):
+            raise ValueError("a garrison belongs to its civilization and its people")
         if civilization.claims != tuple(
             sorted(civilization.claims, key=lambda item: item.claim_id)
         ):
@@ -307,8 +322,8 @@ def validate_world(state: WorldState) -> None:
         sender = state.civilizations.get(journey.sender_civilization_id)
         if sender is None or journey.recipient_civilization_id not in state.civilizations:
             raise ValueError("journey must name existing civilizations")
-        treaty = treaties_by_id.get(journey.treaty_id)
-        if (
+        treaty = treaties_by_id.get(journey.treaty_id) if journey.treaty_id else None
+        if journey.kind in required_kind and (
             treaty is None
             or treaty.kind.value != required_kind[journey.kind]
             or {treaty.proposer_civilization_id, treaty.recipient_civilization_id}

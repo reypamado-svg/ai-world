@@ -162,7 +162,8 @@ def test_a_settlement_cut_off_from_its_capital_projects_half() -> None:
     blocked = Territory(owners=(TileOwner(tile=HexCoord(7, 0), civilization_id=BLUE, since_day=0),))
     residents = {capital.settlement_id: 32, colony.settlement_id: 32}
     result = advance_territory(blocked, world, [capital, colony], residents, 0)
-    assert result.cut_off == (colony.settlement_id,)
+    assert result.territory.cut_off == (colony.settlement_id,)
+    assert result.severed == (colony.settlement_id,)
 
 
 def test_claims_never_change_control() -> None:

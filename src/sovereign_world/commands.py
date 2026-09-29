@@ -12,10 +12,11 @@ from sovereign_world.capabilities import CapabilityId
 from sovereign_world.diplomacy import Contact, DiplomaticMessage, MissionStatus, TreatyKind
 from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
-from sovereign_world.hexmap import HexCoord
+from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
+    INTERNAL_KINDS,
     MAX_TRAVELLERS,
     Journey,
     JourneyKind,
@@ -27,14 +28,13 @@ from sovereign_world.logistics import (
 )
 from sovereign_world.resources import Resource
 from sovereign_world.state import WorldState
-from sovereign_world.territory import visible_tiles
+from sovereign_world.territory import SETTLEMENT_SPACING, Garrison, Settlement, visible_tiles
 from sovereign_world.travel import passable
 
 
 class DecreeKind(StrEnum):
     FOOD_RESERVE_TARGET = "food_reserve_target"
     LABOR_PRIORITY = "labor_priority"
-    SETTLEMENT_RADIUS = "settlement_radius"
     POPULATION_GROWTH_POLICY = "population_growth_policy"
 
 
@@ -43,7 +43,6 @@ class DirectOrderKind(StrEnum):
     START_PROJECT = "start_project"
     CANCEL_PROJECT = "cancel_project"
     RELOCATE_GROUP = "relocate_group"
-    REQUEST_SURVEY = "request_survey"
     START_TEACHING = "start_teaching"
     START_EXPEDITION = "start_expedition"
     SEND_MESSAGE = "send_message"
@@ -54,6 +53,8 @@ class DirectOrderKind(StrEnum):
     DISPATCH_SHIPMENT = "dispatch_shipment"
     DISPATCH_MIGRATION = "dispatch_migration"
     CLAIM_BORDER = "claim_border"
+    FOUND_SETTLEMENT = "found_settlement"
+    STATION_GARRISON = "station_garrison"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -68,6 +69,9 @@ TREATY_END_ORDERS = frozenset({DirectOrderKind.CANCEL_TREATY, DirectOrderKind.RE
 JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.DISPATCH_SHIPMENT: JourneyKind.SHIPMENT,
     DirectOrderKind.DISPATCH_MIGRATION: JourneyKind.MIGRATION,
+    DirectOrderKind.FOUND_SETTLEMENT: JourneyKind.SETTLEMENT,
+    DirectOrderKind.STATION_GARRISON: JourneyKind.GARRISON,
+    DirectOrderKind.RELOCATE_GROUP: JourneyKind.RELOCATION,
 }
 REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
     JourneyKind.SHIPMENT: TreatyKind.TRADE,
@@ -170,6 +174,7 @@ class CouncilReport(BaseModel):
     person_ids: tuple[EntityId, ...]
     start_center: HexCoord
     known_tiles: tuple[HexCoord, ...]
+    known_terrain: tuple[tuple[HexCoord, Terrain], ...] = ()
     inventory: dict[Resource, int]
     project_ids: tuple[EntityId, ...]
     active_decrees: dict[str, int]
@@ -178,6 +183,8 @@ class CouncilReport(BaseModel):
     logistics_notices: tuple[LogisticsNotice, ...] = ()
     controlled_tiles: tuple[HexCoord, ...] = ()
     observed_control: tuple[ControlView, ...] = ()
+    settlements: tuple[Settlement, ...] = ()
+    garrisons: tuple[Garrison, ...] = ()
     recent_events: tuple[DomainEvent, ...] = ()
 
 
@@ -223,6 +230,9 @@ def build_council_report(
         ),
         start_center=civilization.start_center,
         known_tiles=tuple(sorted(civilization.known_tiles)),
+        known_terrain=tuple(
+            (tile, state.world_map.tile(tile).terrain) for tile in sorted(civilization.known_tiles)
+        ),
         inventory=dict(civilization.inventory.quantities),
         project_ids=tuple(sorted(civilization.projects)),
         active_decrees=dict(state.active_decrees.get(civilization_id, {})),
@@ -237,6 +247,8 @@ def build_council_report(
             )
         ),
         observed_control=_observed_control(state, civilization_id),
+        settlements=civilization.settlements,
+        garrisons=civilization.garrisons,
         recent_events=visible_events,
     )
 
@@ -299,6 +311,14 @@ def _travelling_people(state: WorldState, civilization_id: EntityId) -> set[Enti
     return busy
 
 
+def _garrisoned_people(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
+    return {
+        person_id
+        for garrison in state.civilizations[civilization_id].garrisons
+        for person_id in garrison.member_ids
+    }
+
+
 def journey_supplies(
     command: DirectOrder, state: WorldState
 ) -> tuple[int, dict[Resource, int]]:
@@ -317,6 +337,72 @@ def journey_supplies(
     return provisions, taken
 
 
+def _internal_journey_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved_cargo: dict[Resource, int],
+) -> CommandError | None:
+    """Validate founding, garrisoning, or relocating against what this civilization knows."""
+    kind = JOURNEY_ORDERS[command.kind]
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    route = command.route
+    own_settlements = {settlement.tile for settlement in civilization.settlements}
+    own_garrisons = {garrison.tile for garrison in civilization.garrisons}
+    origins = own_settlements | (own_garrisons if kind is JourneyKind.RELOCATION else set())
+    if (
+        len(route) < 2
+        or route[0] not in origins
+        or any(tile not in civilization.known_tiles for tile in route)
+        or any(not state.world_map.contains(tile) for tile in route)
+        or any(first.distance(second) != 1 for first, second in pairwise(route))
+        or not passable(state.world_map, route[1:])
+    ):
+        return error(
+            "invalid_route",
+            "the route must leave one of this civilization's own places over known land",
+        )
+    people = civilization.population.people
+    if any(people[person_id].location != route[0] for person_id in command.traveller_ids):
+        return error("traveller_not_home", "the party must set out together from its origin")
+    expectant = {birth.parent_ids[0] for birth in civilization.population.scheduled_births}
+    if expectant & set(command.traveller_ids):
+        return error("expectant_traveller", "a mother with a birth due cannot leave on a journey")
+    if command.cargo:
+        return error("invalid_cargo", "internal journeys carry no trade cargo")
+    destination = route[-1]
+    known_settlements = own_settlements | {contact.settlement for contact in civilization.contacts}
+    believed_owner = {
+        view.tile: view.owner for view in _observed_control(state, civilization_id)
+    }
+    foreign = believed_owner.get(destination) not in {None, civilization_id}
+    if kind is JourneyKind.RELOCATION and destination not in own_settlements - {route[0]}:
+        return error("invalid_destination", "people relocate to another of their own settlements")
+    if kind is JourneyKind.SETTLEMENT and (
+        foreign
+        or any(tile.distance(destination) < SETTLEMENT_SPACING for tile in known_settlements)
+    ):
+        return error(
+            "invalid_destination",
+            "a new settlement needs land not seen as foreign, three tiles from any settlement",
+        )
+    if kind is JourneyKind.GARRISON and (foreign or destination in known_settlements):
+        return error(
+            "invalid_destination", "a garrison holds land that is not a settlement or foreign"
+        )
+    provisions, taken = journey_supplies(command, state)
+    if provisions > CARGO_UNITS_PER_CARRIER * len(command.traveller_ids):
+        return error("cargo_over_capacity", "each traveller can bear 50 units of provisions")
+    food = civilization.inventory.quantities.get(Resource.FOOD, 0)
+    if reserved_cargo.get(Resource.FOOD, 0) + taken[Resource.FOOD] > food:
+        return error("insufficient_provisions", "not enough food to provision the party")
+    return None
+
+
 def _journey_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -330,6 +416,8 @@ def _journey_error(
     def error(code: str, message: str) -> CommandError:
         return CommandError(command_id=command.command_id, code=code, message=message)
 
+    if kind in INTERNAL_KINDS:
+        return _internal_journey_error(command, civilization_id, state, reserved_cargo)
     treaty = next(
         (item for item in state.active_treaties if item.treaty_id == command.treaty_id),
         None,
@@ -463,6 +551,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
         for person_id in (assignment.teacher_id, assignment.apprentice_id)
     }
     already_travelling = _travelling_people(state, envelope.civilization_id)
+    garrisoned = _garrisoned_people(state, envelope.civilization_id)
     reserved_cargo: dict[Resource, int] = {}
     for command in envelope.commands:
         if command.command_id in seen:
@@ -609,10 +698,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 )
             if command.kind in JOURNEY_ORDERS:
                 traveller_ids = command.traveller_ids
+                foreign = JOURNEY_ORDERS[command.kind] not in INTERNAL_KINDS
                 if (
                     command.journey_id is None
-                    or command.treaty_id is None
-                    or command.recipient_civilization_id is None
+                    or (foreign and command.treaty_id is None)
+                    or (foreign and command.recipient_civilization_id is None)
                     or not traveller_ids
                     or len(traveller_ids) > MAX_TRAVELLERS
                     or len(set(traveller_ids)) != len(traveller_ids)
@@ -691,6 +781,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 committed = (
                     committed_travellers | committed_at_home | teaching_people | already_travelling
                 )
+                if command.kind is not DirectOrderKind.RELOCATE_GROUP:
+                    committed |= garrisoned
                 if any(person_id in committed for person_id in travellers):
                     command_error = CommandError(
                         command_id=command.command_id,
@@ -698,7 +790,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         message="a traveller is already committed to another duty",
                     )
             if home_duty and command_error is None:
-                away = committed_travellers | already_travelling
+                away = committed_travellers | already_travelling | garrisoned
                 if any(person_id in away for person_id in home_duty):
                     command_error = CommandError(
                         command_id=command.command_id,
