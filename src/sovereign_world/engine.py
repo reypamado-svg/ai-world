@@ -44,7 +44,7 @@ from sovereign_world.logistics import (
     advance_journeys_day,
     notice,
 )
-from sovereign_world.people import advance_population_day
+from sovereign_world.people import advance_population_day, go_hungry, recover
 from sovereign_world.resources import InventoryDelta, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.scripted import Sovereign
@@ -288,10 +288,15 @@ def _adopt_migrant_capabilities(
     return tuple(learned)
 
 
-def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
-    """Resolve travel, then receipt and allegiance transfer only for physical arrivals."""
+def _advance_journeys(
+    state: WorldState, rng: StableRng
+) -> tuple[list[DomainEvent], frozenset[EntityId]]:
+    """Resolve travel, then receipt and allegiance transfer only for physical arrivals.
+
+    Also returns the travellers who ate today, from the pack or by foraging.
+    """
     if not state.journeys:
-        return []
+        return [], frozenset()
     result = advance_journeys_day(
         state.journeys,
         {
@@ -567,7 +572,7 @@ def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
                 hungry=foraging.hungry,
             )
         )
-    return events
+    return events, frozenset(result.fed_ids)
 
 
 def _run_councils(
@@ -1059,7 +1064,8 @@ def advance_day(
             _event(candidate, EventPhase.MOVEMENT, "message_lost", None, str(message_id))
         )
 
-    events.extend(_advance_journeys(candidate, rng))
+    journey_events, fed_on_the_road = _advance_journeys(candidate, rng)
+    events.extend(journey_events)
 
     for civilization_id in sorted(candidate.civilizations):
         civilization = candidate.civilizations[civilization_id]
@@ -1117,10 +1123,21 @@ def advance_day(
                 units=consumed,
             )
         )
+        # When food runs short, the hungriest eat first, so shortage is shared.
+        people = civilization.population.people
+        by_need = sorted(
+            home_living,
+            key=lambda person_id: (
+                -people[person_id].nutrition_debt,
+                people[person_id].health_bp,
+                person_id,
+            ),
+        )
+        fed_today = set(by_need[:consumed]) | (fed_on_the_road & set(people))
         if consumed < living_count:
             shortage = living_count - consumed
-            for person_id in home_living[consumed:]:
-                civilization.population.people[person_id].nutrition_debt += 1
+            for person_id in by_need[consumed:]:
+                go_hungry(people[person_id])
             events.append(
                 _event(
                     candidate,
@@ -1265,6 +1282,11 @@ def advance_day(
                     str(project_id),
                 )
             )
+        # Recovery follows the death roll, so the day food returns is still a dangerous one.
+        for person_id in sorted(fed_today):
+            person = civilization.population.people.get(person_id)
+            if person is not None and person.alive:
+                recover(person)
 
     candidate.day += 1
     validate_world(candidate)
