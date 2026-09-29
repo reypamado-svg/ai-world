@@ -128,6 +128,8 @@ class DiplomaticMessage(BaseModel):
     treaty_offer: TreatyOffer | None = None
     acceptance_of: EntityId | None = None
     cancellation_of: EntityId | None = None
+    declaration_of: EntityId | None = None
+    """The war this message declares; the recipient learns of it on delivery."""
 
     @model_validator(mode="after")
     def valid_shape(self) -> DiplomaticMessage:

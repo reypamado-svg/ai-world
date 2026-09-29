@@ -32,6 +32,7 @@ from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView
 from sovereign_world.territory import Claim, Garrison, Settlement, Territory
 from sovereign_world.tolls import TollPost, TollView
+from sovereign_world.war import Battle, BattleReport, Drill, War
 from sovereign_world.work import ConstructionProject, WorkOrder
 from sovereign_world.worldgen import generate_world
 
@@ -59,6 +60,9 @@ class CivilizationState(BaseModel):
     """Roads learned from a trade partner's map, at the grade and day it showed."""
     toll_intel: tuple[TollView, ...] = ()
     """Tolls this civilization's people have met, or learned from a partner's map."""
+    drills: tuple[Drill, ...] = ()
+    war_reports: tuple[BattleReport, ...] = ()
+    """Battles as this civilization's own survivors told them."""
 
 
 class WorldState(BaseModel):
@@ -77,6 +81,9 @@ class WorldState(BaseModel):
     journeys: tuple[Journey, ...] = ()
     territory: Territory = Field(default_factory=Territory)
     roads: tuple[Road, ...] = ()
+    wars: tuple[War, ...] = ()
+    battles: tuple[Battle, ...] = ()
+    """Every battle as it really happened; civilizations see only their own reports."""
     joined_roads: tuple[EntityId, ...] = ()
     """Trade treaties whose partners' settlements a continuous road now links."""
 
@@ -383,6 +390,17 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("territory must belong to an existing civilization")
         if state.world_map.tile(owner.tile).terrain.value == "water":
             raise ValueError("water cannot be controlled")
+    wars = state.wars
+    if wars != tuple(sorted(wars, key=lambda war: war.war_id)):
+        raise ValueError("wars must be sorted")
+    for war in wars:
+        if {war.aggressor_id, war.defender_id} - set(state.civilizations):
+            raise ValueError("a war is fought between existing civilizations")
+    active_pairs = [frozenset({war.aggressor_id, war.defender_id}) for war in wars if war.active]
+    if len(active_pairs) != len(set(active_pairs)):
+        raise ValueError("two civilizations fight at most one war at a time")
+    if state.battles != tuple(sorted(state.battles, key=lambda battle: battle.battle_id)):
+        raise ValueError("battles must be sorted")
     roads = state.roads
     if roads != tuple(sorted(roads, key=lambda road: road.tile)):
         raise ValueError("roads must be sorted by tile")

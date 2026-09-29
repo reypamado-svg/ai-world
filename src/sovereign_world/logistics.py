@@ -26,6 +26,7 @@ from sovereign_world.roads import (
 )
 from sovereign_world.tolls import TollGate, TollRules, cargo_charge, detour, food_charge
 from sovereign_world.travel import DAY, ENTRY_COST, MAX_PROGRESS, Roads, entry_cost, travel_days
+from sovereign_world.war import WarObjective
 
 CARGO_UNITS_PER_CARRIER = 50
 MAX_TRAVELLERS = 16
@@ -52,6 +53,8 @@ class JourneyKind(StrEnum):
     ROADWORK = "roadwork"
     DEPOSIT = "deposit"
     """Couriers carrying a toll post's chest to a storehouse, then back to their post."""
+    CAMPAIGN = "campaign"
+    """A war party: fighters marching on a foreign target, then home."""
 
 
 INTERNAL_KINDS = frozenset(
@@ -63,7 +66,9 @@ INTERNAL_KINDS = frozenset(
         JourneyKind.DEPOSIT,
     }
 )
-ROUND_TRIP_KINDS = frozenset({JourneyKind.SHIPMENT, JourneyKind.DEPOSIT})
+ROUND_TRIP_KINDS = frozenset({JourneyKind.SHIPMENT, JourneyKind.DEPOSIT, JourneyKind.CAMPAIGN})
+TREATY_KINDS = frozenset({JourneyKind.SHIPMENT, JourneyKind.MIGRATION})
+"""Journeys that may only travel under a matching treaty."""
 """Parties that deliver goods, then walk back to where they set out."""
 """Journeys within one civilization: no treaty, and the sender is also the recipient."""
 
@@ -85,6 +90,10 @@ class JourneyOutcome(StrEnum):
     """A road crew turned home before finishing its route."""
     TURNED_BACK = "turned_back"
     """A party that could neither pay a toll nor find a way round it."""
+    ROUTED = "routed"
+    """A war party that broke in battle and fled for home."""
+    AMBUSHED = "ambushed"
+    """A party robbed or driven back by enemy fighters on the road."""
 
 
 class StopReason(StrEnum):
@@ -127,16 +136,29 @@ class Journey(BaseModel):
     """Person-days already spent toward `work_grade` on the crew's current tile."""
     work_grade: RoadGrade | None = None
     """The grade the crew's labour so far was for; another crew reaching it first wastes it."""
+    objective: WarObjective | None = None
+    """What a war party does at the end of its route."""
+    plunder: dict[Resource, int] = Field(default_factory=dict)
+    """Goods a war party has seized and carries home."""
+    battles: tuple[EntityId, ...] = ()
+    """Battles this war party fought; home hears of them only when survivors return."""
     tolls_paid: tuple[HexCoord, ...] = ()
     """Toll posts this party has already passed, paying or free; each charges a journey once."""
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
         internal = self.kind in INTERNAL_KINDS
+        campaign = self.kind is JourneyKind.CAMPAIGN
         if internal != (self.sender_civilization_id == self.recipient_civilization_id):
             raise ValueError("only internal journeys stay within their civilization")
-        if internal != (self.treaty_id is None):
-            raise ValueError("foreign journeys need a treaty and internal ones have none")
+        if (self.kind in TREATY_KINDS) != (self.treaty_id is not None):
+            raise ValueError("trade and migration need a treaty, and nothing else carries one")
+        if campaign != (self.objective is not None):
+            raise ValueError("only a war party, and every war party, has an objective")
+        if not campaign and (self.plunder or self.battles):
+            raise ValueError("only a war party carries plunder or fights battles")
+        if campaign and (set(self.cargo) - {Resource.AXE} or self.carrying_cargo):
+            raise ValueError("a war party carries only its equipment")
         if internal and self.kind is not JourneyKind.DEPOSIT and (
             self.cargo or self.carrying_cargo
         ):
@@ -152,7 +174,9 @@ class Journey(BaseModel):
             raise ValueError("material quantities must be positive")
         if self.traveller_ids != tuple(sorted(set(self.traveller_ids))):
             raise ValueError("journey travellers must be unique and sorted")
-        if not self.traveller_ids or len(self.traveller_ids) > MAX_TRAVELLERS:
+        if not self.traveller_ids or (
+            not campaign and len(self.traveller_ids) > MAX_TRAVELLERS
+        ):
             raise ValueError("journey requires between one and sixteen travellers")
         if len(self.route) < 2:
             raise ValueError("a journey route requires an origin and a destination")
@@ -164,9 +188,11 @@ class Journey(BaseModel):
             raise ValueError("migration journeys carry no trade cargo")
         if self.kind is JourneyKind.SHIPMENT and not self.cargo:
             raise ValueError("a shipment requires cargo")
-        load = sum(self.cargo.values()) + self.provisions_packed
-        if load > CARGO_UNITS_PER_CARRIER * len(self.traveller_ids):
+        capacity = CARGO_UNITS_PER_CARRIER * len(self.traveller_ids)
+        if sum(self.cargo.values()) + self.provisions_packed > capacity:
             raise ValueError("cargo and provisions exceed carrier capacity")
+        if sum(self.cargo.values()) + self.provisions + sum(self.plunder.values()) > capacity:
+            raise ValueError("plunder fills only the room that eaten food has freed")
         if self.provisions > self.provisions_packed:
             raise ValueError("a pack cannot hold more than was packed")
         if (self.phase is JourneyPhase.COMPLETE) != (self.completed_day is not None):
@@ -368,6 +394,7 @@ def advance_journeys_day(
     arrival_allowed: Callable[[Journey], bool] | None = None,
     roads: Roads | None = None,
     tolls: TollRules | None = None,
+    halts: Callable[[Journey, HexCoord], bool] | None = None,
 ) -> JourneyDayResult:
     """Move each active party one route tile, resolving deaths, hazards, and delays.
 
@@ -527,13 +554,27 @@ def advance_journeys_day(
                 continue
             journey = worked
         moved, reached = _walk(
-            journey, living, world_map, grades, arrival_allowed, stop, toll_rules, encounters
+            journey,
+            living,
+            world_map,
+            grades,
+            arrival_allowed,
+            stop,
+            toll_rules,
+            encounters,
+            halts,
         )
         if not reached:
             updated.append(moved)
             continue
         route_index = moved.route_index
         if journey.phase is JourneyPhase.OUTBOUND and route_index == len(journey.route) - 1:
+            if journey.kind is JourneyKind.CAMPAIGN:
+                # The engine fights for the objective and turns the party home today.
+                moved = moved.model_copy(update={"arrived_day": day})
+                arrived.append(moved)
+                updated.append(moved)
+                continue
             if journey.kind is JourneyKind.DEPOSIT:
                 moved = moved.model_copy(
                     update={
@@ -697,6 +738,7 @@ def _walk(
     stop: Callable[[Journey, StopReason], Journey],
     tolls: TollRules,
     encounters: list[TollEncounter],
+    halts: Callable[[Journey, HexCoord], bool] | None = None,
 ) -> tuple[Journey, bool]:
     """Spend one day walking, entering as many tiles as the day covers.
 
@@ -737,6 +779,15 @@ def _walk(
         index = ahead
         for traveller in living:
             traveller.location = journey.route[index]
+        if (
+            halts is not None
+            and index != end
+            and halts(journey, journey.route[index])
+        ):
+            # A war party stops where enemies stand; the engine then fights there.
+            return journey.model_copy(
+                update={"route_index": index, "travel_progress": min(progress, DAY - 1)}
+            ), False
         if crew:
             here = journey.model_copy(
                 update={"route_index": index, "travel_progress": min(progress, DAY - 1)}
@@ -770,7 +821,12 @@ def _pass_toll(
     ahead = journey.route[index + 1]
     gate = tolls.gates.get(ahead)
     payer = journey.sender_civilization_id
-    if gate is None or gate.owner == payer or ahead in journey.tolls_paid:
+    if (
+        gate is None
+        or gate.owner == payer
+        or ahead in journey.tolls_paid
+        or journey.kind is JourneyKind.CAMPAIGN
+    ):
         return journey
     if tolls.exempt(payer, gate.owner):
         # Passing free, the party still sees the post and what it charges others.
