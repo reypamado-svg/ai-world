@@ -194,7 +194,9 @@ def test_goods_in_transit_are_turned_away_and_carried_home() -> None:
         if item.kind is NoticeKind.SHIPMENT_CARRIERS_RETURNED
     )
     assert returned.reported_outcome is JourneyOutcome.REFUSED
-    assert returned.cargo == {Resource.STONE: 80}
+    # 2 carriers pack 2 x (6 travel days + 2 margin) = 16 food and eat 2 a day for the
+    # 5 days they are still on the road, so 6 come home.
+    assert returned.cargo == {Resource.STONE: 80, Resource.FOOD: 6}
     assert returned.treaty_id == TRADE
     validate_world(state)
 

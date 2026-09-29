@@ -22,6 +22,7 @@ from sovereign_world.logistics import (
     JourneyOutcome,
     JourneyPhase,
     LogisticsNotice,
+    provisions_needed,
 )
 from sovereign_world.resources import Resource
 from sovereign_world.state import WorldState
@@ -109,6 +110,7 @@ class DirectOrder(BaseModel):
     journey_id: EntityId | None = None
     traveller_ids: tuple[EntityId, ...] = ()
     cargo: dict[Resource, int] = Field(default_factory=dict)
+    extra_provisions: int = Field(default=0, ge=0, le=CARGO_UNITS_PER_CARRIER * MAX_TRAVELLERS)
     priority: int = Field(default=50, ge=0, le=100)
 
 
@@ -241,6 +243,19 @@ def _travelling_people(state: WorldState, civilization_id: EntityId) -> set[Enti
     return busy
 
 
+def journey_supplies(command: DirectOrder) -> tuple[int, dict[Resource, int]]:
+    """Provisions to pack, and everything the order takes from the sender's storehouse."""
+    provisions = provisions_needed(
+        JOURNEY_ORDERS[command.kind],
+        len(command.route),
+        len(command.traveller_ids),
+        command.extra_provisions,
+    )
+    taken = dict(command.cargo)
+    taken[Resource.FOOD] = taken.get(Resource.FOOD, 0) + provisions
+    return provisions, taken
+
+
 def _journey_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -296,17 +311,25 @@ def _journey_error(
     expectant = {birth.parent_ids[0] for birth in civilization.population.scheduled_births}
     if expectant & set(command.traveller_ids):
         return error("expectant_traveller", "a mother with a birth due cannot leave on a journey")
-    if kind is JourneyKind.MIGRATION:
-        if command.cargo:
-            return error("invalid_cargo", "migration journeys carry no trade cargo")
-        return None
-    if not command.cargo or any(quantity <= 0 for quantity in command.cargo.values()):
+    if kind is JourneyKind.MIGRATION and command.cargo:
+        return error("invalid_cargo", "migration journeys carry no trade cargo")
+    if kind is JourneyKind.SHIPMENT and (
+        not command.cargo or any(quantity <= 0 for quantity in command.cargo.values())
+    ):
         return error("invalid_cargo", "a shipment requires positive cargo")
-    if sum(command.cargo.values()) > CARGO_UNITS_PER_CARRIER * len(command.traveller_ids):
-        return error("cargo_over_capacity", "each carrier can bear 50 units")
-    for resource, quantity in command.cargo.items():
+    provisions, taken = journey_supplies(command)
+    if sum(command.cargo.values()) + provisions > CARGO_UNITS_PER_CARRIER * len(
+        command.traveller_ids
+    ):
+        return error(
+            "cargo_over_capacity", "each traveller can bear 50 units of cargo and provisions"
+        )
+    for resource, quantity in taken.items():
         available = civilization.inventory.quantities.get(resource, 0)
         if reserved_cargo.get(resource, 0) + quantity > available:
+            cargo_only = reserved_cargo.get(resource, 0) + command.cargo.get(resource, 0)
+            if resource is Resource.FOOD and cargo_only <= available:
+                return error("insufficient_provisions", "not enough food to provision the party")
             return error("insufficient_goods", f"not enough {resource} to ship")
     return None
 
@@ -749,8 +772,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 ending_treaties.add(command.treaty_id)
             committed_travellers.update(travellers)
             committed_at_home.update(home_duty)
-            if command.kind is DirectOrderKind.DISPATCH_SHIPMENT:
-                for resource, quantity in command.cargo.items():
+            if command.kind in JOURNEY_ORDERS:
+                for resource, quantity in journey_supplies(command)[1].items():
                     reserved_cargo[resource] = reserved_cargo.get(resource, 0) + quantity
         accepted.append(command)
     return CommandValidation(accepted=tuple(accepted), errors=tuple(errors))

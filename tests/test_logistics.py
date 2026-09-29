@@ -322,7 +322,9 @@ def test_delivery_fails_without_living_recipients_and_goods_come_home() -> None:
         for item in state.civilizations[sender].logistics_notices
         if item.kind is NoticeKind.SHIPMENT_CARRIERS_RETURNED
     )
-    assert returned.cargo == {Resource.STONE: 80}
+    # 2 carriers pack 2 x (6 travel days + 2 margin) = 16 food and eat 2 a day for the
+    # 5 days they are still on the road, so 6 come home.
+    assert returned.cargo == {Resource.STONE: 80, Resource.FOOD: 6}
 
 
 def test_migrants_change_allegiance_only_on_arrival_with_history_intact() -> None:
@@ -477,6 +479,7 @@ def test_carriers_who_perish_carrying_undelivered_goods_destroy_them() -> None:
         day=5,
         rng=StableRng(21),
         treaties_in_force=frozenset({returning.treaty_id}),
+        world_map=state.world_map,
     )
 
     assert result.journeys[0].outcome is JourneyOutcome.PERISHED
@@ -730,7 +733,7 @@ def test_unfunded_shipment_is_recorded_privately_and_never_departs() -> None:
         project_id=EntityId("project:store"),
         project_kind=ProjectKind.STORAGE,
     )
-    ship = _shipment(state, sender, recipient, route, carriers=6, cargo={Resource.STONE: 280})
+    ship = _shipment(state, sender, recipient, route, carriers=7, cargo={Resource.STONE: 280})
 
     state, results = _run(state, 1, {sender: OneShotSovereign(build, ship)})
 

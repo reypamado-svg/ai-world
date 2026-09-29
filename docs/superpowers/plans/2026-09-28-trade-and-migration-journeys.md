@@ -53,6 +53,8 @@ Birth IDs were allocated from a per-civilization counter that starts where the s
 
 ## Future slice: travel provisions
 
+> Implemented in `2026-09-29-travel-provisions.md`. That plan settles the open questions below: packing is automatic, foraging has no depletion, and hunger damage stays permanent for now.
+
 **Why:** migrants in transit currently eat from their origin's stores. The origin's food use therefore drops on the arrival day, which lets it infer an arrival it never observed. Carrying provisions moves that signal to the departure day, which the origin already knows about.
 
 **Proposed rules:**

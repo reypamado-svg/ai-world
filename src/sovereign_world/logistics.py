@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from math import ceil
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from sovereign_world.hexmap import HexCoord
+from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person
 from sovereign_world.resources import Resource
@@ -19,6 +20,14 @@ HAZARD_THRESHOLD = 60
 DELAY_THRESHOLD = 900
 ROLL_SCALE = 10_000
 TRAVEL_HAZARD_CAUSE = "travel hazard"
+FORAGE_TERRAIN_BP: dict[Terrain, int] = {
+    Terrain.FOREST: 4_000,
+    Terrain.WATER: 3_500,
+    Terrain.GRASSLAND: 3_000,
+    Terrain.TUNDRA: 1_000,
+    Terrain.MOUNTAIN: 800,
+    Terrain.DESERT: 500,
+}
 
 
 class JourneyKind(StrEnum):
@@ -55,6 +64,8 @@ class Journey(BaseModel):
     route: tuple[HexCoord, ...]
     cargo: dict[Resource, int] = Field(default_factory=dict)
     carrying_cargo: bool = False
+    provisions_packed: int = Field(default=0, ge=0)
+    provisions: int = Field(default=0, ge=0)
     departed_day: int = Field(ge=0)
     route_index: int = Field(default=0, ge=0)
     phase: JourneyPhase = JourneyPhase.OUTBOUND
@@ -81,8 +92,11 @@ class Journey(BaseModel):
             raise ValueError("migration journeys carry no trade cargo")
         if self.kind is JourneyKind.SHIPMENT and not self.cargo:
             raise ValueError("a shipment requires cargo")
-        if sum(self.cargo.values()) > CARGO_UNITS_PER_CARRIER * len(self.traveller_ids):
-            raise ValueError("cargo exceeds carrier capacity")
+        load = sum(self.cargo.values()) + self.provisions_packed
+        if load > CARGO_UNITS_PER_CARRIER * len(self.traveller_ids):
+            raise ValueError("cargo and provisions exceed carrier capacity")
+        if self.provisions > self.provisions_packed:
+            raise ValueError("a pack cannot hold more than was packed")
         if (self.phase is JourneyPhase.COMPLETE) != (self.completed_day is not None):
             raise ValueError("only completed journeys carry a completion day")
         if self.phase is JourneyPhase.OUTBOUND and self.outcome is not JourneyOutcome.PENDING:
@@ -94,6 +108,25 @@ class Journey(BaseModel):
         return self.phase is not JourneyPhase.COMPLETE
 
 
+def provisions_needed(
+    kind: JourneyKind,
+    route_tiles: int,
+    travellers: int,
+    extra: int = 0,
+) -> int:
+    """Food packed at dispatch: the days on the road plus a margin for delays."""
+    steps = route_tiles - 1
+    days = steps * 2 if kind is JourneyKind.SHIPMENT else steps
+    margin = max(2, ceil(days / 4))
+    return travellers * (days + margin) + extra
+
+
+def forage_chance_bp(world_map: WorldMap, coord: HexCoord) -> int:
+    """Chance, in basis points, that one traveller finds a day's food on this tile."""
+    tile = world_map.tile(coord)
+    return FORAGE_TERRAIN_BP[tile.terrain] + tile.soil * 3 + (1_500 if tile.river else 0)
+
+
 class NoticeKind(StrEnum):
     SHIPMENT_DISPATCHED = "shipment_dispatched"
     SHIPMENT_UNFUNDED = "shipment_unfunded"
@@ -101,6 +134,7 @@ class NoticeKind(StrEnum):
     SHIPMENT_TURNED_AWAY = "shipment_turned_away"
     SHIPMENT_CARRIERS_RETURNED = "shipment_carriers_returned"
     MIGRATION_DEPARTED = "migration_departed"
+    MIGRATION_UNFUNDED = "migration_unfunded"
     MIGRANTS_RECEIVED = "migrants_received"
     MIGRANTS_TURNED_AWAY = "migrants_turned_away"
     MIGRANTS_RETURNED = "migrants_returned"
@@ -153,6 +187,13 @@ class HazardDeath:
 
 
 @dataclass(frozen=True, slots=True)
+class Foraging:
+    journey_id: EntityId
+    fed: int
+    hungry: int
+
+
+@dataclass(frozen=True, slots=True)
 class JourneyDayResult:
     journeys: tuple[Journey, ...]
     people_by_civilization: dict[EntityId, dict[EntityId, Person]]
@@ -165,6 +206,9 @@ class JourneyDayResult:
     refused: tuple[Journey, ...]
     returned: tuple[Journey, ...]
     cargo_returned: tuple[Journey, ...]
+    handed_over: dict[EntityId, int]
+    exhausted_ids: tuple[EntityId, ...]
+    foraging: tuple[Foraging, ...]
 
 
 def _roll(rng: StableRng, day: int, journey: Journey, purpose: str) -> int:
@@ -179,11 +223,14 @@ def advance_journeys_day(
     day: int,
     rng: StableRng,
     treaties_in_force: frozenset[EntityId],
+    world_map: WorldMap,
 ) -> JourneyDayResult:
     """Move each active party one route tile, resolving deaths, hazards, and delays.
 
     Arrival only marks the journey; the engine performs receipt and allegiance transfer.
     A party arriving under a treaty that is no longer in force is turned away.
+    Every party still on the road then eats from its pack or forages; a party whose
+    journey ends today hands its leftover pack to whichever storehouse it reached.
     """
     people = {
         civilization_id: {
@@ -340,8 +387,52 @@ def advance_journeys_day(
             )
             returned.append(moved)
         updated.append(moved)
+
+    handed_over: dict[EntityId, int] = {}
+    exhausted_ids: list[EntityId] = []
+    foraging: list[Foraging] = []
+    fed_journeys: list[Journey] = []
+    previous = {journey.journey_id: journey for journey in journeys}
+    for journey in updated:
+        was_active = previous[journey.journey_id].active
+        if not journey.active:
+            if was_active and journey.provisions:
+                # Only a party that reached a storehouse alive hands its food over.
+                if journey.journey_id not in perished_ids:
+                    handed_over[journey.journey_id] = journey.provisions
+                journey = journey.model_copy(update={"provisions": 0})
+            fed_journeys.append(journey)
+            continue
+        party = people.get(journey.sender_civilization_id, {})
+        hungry_mouths = sorted(
+            (
+                party[person_id]
+                for person_id in journey.traveller_ids
+                if person_id in party and party[person_id].alive
+            ),
+            key=lambda person: person.person_id,
+        )
+        eaten = min(len(hungry_mouths), journey.provisions)
+        remaining = journey.provisions - eaten
+        unfed = hungry_mouths[eaten:]
+        if journey.provisions and not remaining:
+            exhausted_ids.append(journey.journey_id)
+        if unfed:
+            chance = forage_chance_bp(world_map, journey.route[journey.route_index])
+            stream = rng.stream(f"day:{day}:logistics:forage:{journey.journey_id}")
+            found = 0
+            for person in unfed:
+                if int(stream.integers(0, ROLL_SCALE)) < chance:
+                    found += 1
+                else:
+                    person.nutrition_debt += 1
+            foraging.append(
+                Foraging(journey_id=journey.journey_id, fed=found, hungry=len(unfed) - found)
+            )
+        fed_journeys.append(journey.model_copy(update={"provisions": remaining}))
+
     return JourneyDayResult(
-        journeys=tuple(sorted(updated, key=lambda item: item.journey_id)),
+        journeys=tuple(sorted(fed_journeys, key=lambda item: item.journey_id)),
         people_by_civilization=people,
         delayed_ids=tuple(sorted(delayed_ids)),
         lost_ids=tuple(sorted(lost_ids)),
@@ -354,4 +445,7 @@ def advance_journeys_day(
         refused=tuple(refused),
         returned=tuple(returned),
         cargo_returned=tuple(cargo_returned),
+        handed_over=handed_over,
+        exhausted_ids=tuple(sorted(exhausted_ids)),
+        foraging=tuple(foraging),
     )

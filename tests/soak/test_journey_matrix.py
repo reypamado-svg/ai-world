@@ -163,6 +163,7 @@ def _simulate(
     ever_seen: set[EntityId] = set()
     dead: set[EntityId] = set()
     kinds: list[str] = []
+    packs: dict[EntityId, int] = {}
     for _ in range(DAYS):
         transition = advance_day(state, rng, sovereigns=sovereigns)
         state = transition.state
@@ -187,6 +188,11 @@ def _simulate(
             if journey.kind is JourneyKind.MIGRATION and journey.arrived_day is None:
                 recipient = state.civilizations[journey.recipient_civilization_id]
                 assert set(journey.traveller_ids).isdisjoint(recipient.population.people)
+        for journey in state.journeys:
+            previous = packs.get(journey.journey_id, journey.provisions_packed)
+            assert journey.provisions <= previous, "a pack grew on the road"
+            assert journey.active or journey.provisions == 0, "a finished party kept its food"
+            packs[journey.journey_id] = journey.provisions
         treaty_of = {journey.journey_id: journey.treaty_id for journey in state.journeys}
         ended_on = {treaty.treaty_id: treaty.ended_day for treaty in state.active_treaties}
         for event in transition.events.events:

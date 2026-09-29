@@ -65,7 +65,7 @@ class ProposingSovereign:
                     journey_id=EntityId("journey:first-caravan"),
                     treaty_id=EntityId("treaty:trade"),
                     recipient_civilization_id=self.partner,
-                    traveller_ids=people[0:2],
+                    traveller_ids=people[0:3],
                     route=self.route,
                     cargo=CARGO,
                 )
