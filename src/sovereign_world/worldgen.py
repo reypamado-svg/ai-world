@@ -127,15 +127,41 @@ def _viability(world_map: WorldMap, center: HexCoord) -> StartViability:
     )
 
 
+def _largest_landmass(world_map: WorldMap) -> frozenset[HexCoord]:
+    """The biggest set of land tiles connected without crossing water."""
+    unvisited = {tile.coord for tile in world_map.tiles if tile.terrain is not Terrain.WATER}
+    largest: set[HexCoord] = set()
+    for origin in sorted(unvisited):
+        if origin not in unvisited:
+            continue
+        component = {origin}
+        frontier = [origin]
+        unvisited.discard(origin)
+        while frontier:
+            coord = frontier.pop()
+            for neighbor in world_map.neighbors(coord):
+                if neighbor in unvisited:
+                    unvisited.discard(neighbor)
+                    component.add(neighbor)
+                    frontier.append(neighbor)
+        if len(component) > len(largest):
+            largest = component
+    return frozenset(largest)
+
+
 def _select_starts(
     world_map: WorldMap,
     count: int,
     min_distance: int,
 ) -> tuple[list[StartingRegion], list[str]]:
     candidates: list[tuple[StartViability, HexCoord]] = []
+    # Settle only on land that every other start can reach on foot.
+    landmass = _largest_landmass(world_map)
     for r in range(4, world_map.height - 4):
         for q in range(4, world_map.width - 4):
             center = HexCoord(q, r)
+            if center not in landmass:
+                continue
             viability = _viability(world_map, center)
             if (
                 viability.has_water

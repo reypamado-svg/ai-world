@@ -22,7 +22,6 @@ from sovereign_world.commands import (
     ProjectKind,
     build_council_report,
     journey_supplies,
-    settlement_tiles,
     validate_envelope,
 )
 from sovereign_world.diplomacy import (
@@ -310,7 +309,6 @@ def _advance_journeys(
             treaty.treaty_id for treaty in state.active_treaties if treaty.in_force
         ),
         world_map=state.world_map,
-        harbours=settlement_tiles(state),
     )
     state.journeys = result.journeys
     for civilization_id, people in result.people_by_civilization.items():
@@ -856,7 +854,6 @@ def advance_day(
             candidate.world_map,
             candidate.day,
             observations=civilization.observations,
-            harbours=settlement_tiles(candidate),
         )
         civilization.expeditions = expedition_result.expeditions
         civilization.observations = expedition_result.observations
@@ -962,7 +959,6 @@ def advance_day(
         day=candidate.day,
         rng=rng,
         world_map=candidate.world_map,
-        harbours=settlement_tiles(candidate),
     )
     candidate.diplomatic_missions = diplomacy_result.missions
     for civilization_id, people in diplomacy_result.people_by_civilization.items():

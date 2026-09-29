@@ -9,7 +9,7 @@
    - forest, desert or tundra 15;
    - mountain 30;
    - water impassable.
-2. **Harbours.** A settlement's own tile is always enterable at cost 10. 33 of 240 generated starting settlements sit on water tiles (lakeside or coastal sites chosen for their water), and without this rule nobody could ever return to them or reach them.
+2. **Settlements start on reachable land.** The world generator used to check for water near a starting site but never that the site itself was land: 33 of 240 generated starts sat on water tiles, which would have made those civilizations unreachable. It now picks starts only on the largest connected landmass, never on water, so every civilization can reach every other on foot. Across 120 sampled worlds this placed no start on water, and no world failed to generate.
 3. **Progress.** Every travelling party — expedition, ambassador, shipment or migration — keeps `travel_progress`:
    - Each day it is not delayed or lost, the party gains 10.
    - When its progress covers the next tile's cost, it pays that cost, steps onto the tile, and carries the remainder forward.
@@ -24,7 +24,8 @@
 ## Validation
 
 - Unit tests:
-  - entry costs, including harbours;
+  - entry costs;
+  - every start on land that all others can reach on foot;
   - progress stepping over grassland, forest and mountain;
   - routes into water refused;
   - an expedition blocked by water;

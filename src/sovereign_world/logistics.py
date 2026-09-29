@@ -114,12 +114,11 @@ def journey_days(
     kind: JourneyKind,
     world_map: WorldMap,
     route: tuple[HexCoord, ...],
-    harbours: frozenset[HexCoord],
 ) -> int:
     """Days on the road without delays: out and back for a shipment, one way for migrants."""
-    days = travel_days(world_map, route[1:], harbours)
+    days = travel_days(world_map, route[1:])
     if kind is JourneyKind.SHIPMENT:
-        days += travel_days(world_map, tuple(reversed(route))[1:], harbours)
+        days += travel_days(world_map, tuple(reversed(route))[1:])
     return days
 
 
@@ -233,7 +232,6 @@ def advance_journeys_day(
     rng: StableRng,
     treaties_in_force: frozenset[EntityId],
     world_map: WorldMap,
-    harbours: frozenset[HexCoord] = frozenset(),
 ) -> JourneyDayResult:
     """Move each active party one route tile, resolving deaths, hazards, and delays.
 
@@ -344,7 +342,7 @@ def advance_journeys_day(
             continue
         direction = 1 if journey.phase is JourneyPhase.OUTBOUND else -1
         route_index = max(0, journey.route_index + direction)
-        cost = entry_cost(world_map, journey.route[route_index], harbours)
+        cost = entry_cost(world_map, journey.route[route_index])
         if cost is None:
             raise ValueError("a journey route cannot enter impassable terrain")
         entered, progress = step(journey.travel_progress, cost)

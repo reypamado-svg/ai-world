@@ -177,7 +177,6 @@ def advance_diplomacy_day(
     day: int,
     rng: StableRng,
     world_map: WorldMap,
-    harbours: frozenset[HexCoord] = frozenset(),
 ) -> DiplomacyDayResult:
     """Advance each ambassador along its known route without revealing foreign state.
 
@@ -219,7 +218,7 @@ def advance_diplomacy_day(
             route_index += 1
         progress = mission.travel_progress
         if route_index < len(mission.route):
-            cost = entry_cost(world_map, mission.route[route_index], harbours)
+            cost = entry_cost(world_map, mission.route[route_index])
             if cost is None:
                 raise ValueError("an ambassador route cannot enter impassable terrain")
             entered, progress = step(progress, cost)

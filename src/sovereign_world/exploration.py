@@ -72,7 +72,6 @@ def advance_expeditions(
     day: int,
     *,
     observations: tuple[Observation, ...] = (),
-    harbours: frozenset[HexCoord] = frozenset(),
 ) -> ExpeditionDayResult:
     """Advance each active expedition toward its next tile and refresh its private map.
 
@@ -130,7 +129,7 @@ def advance_expeditions(
             failed_ids.append(expedition.expedition_id)
             continue
         observer_id = min(expedition.explorer_ids)
-        cost = entry_cost(world_map, destination, harbours)
+        cost = entry_cost(world_map, destination)
         if cost is None:
             observation_by_tile[destination] = Observation(
                 tile=destination,

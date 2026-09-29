@@ -3,6 +3,7 @@ from dataclasses import replace
 from logistics_helpers import OneShotSovereign, clear_journey_id, envelope, treaty_world
 
 from sovereign_world.commands import DirectOrder, DirectOrderKind, validate_envelope
+from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.diplomacy import TreatyKind
 from sovereign_world.engine import advance_day
 from sovereign_world.exploration import ExpeditionStatus
@@ -10,7 +11,7 @@ from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
 from sovereign_world.logistics import JourneyKind, journey_days
 from sovereign_world.rng import StableRng
-from sovereign_world.state import WorldState
+from sovereign_world.state import WorldState, build_initial_state
 from sovereign_world.travel import DAY, entry_cost, step, travel_days
 
 
@@ -34,7 +35,7 @@ def _migration(state, sender, recipient, route, journey_id: str) -> DirectOrder:
     )
 
 
-def test_each_terrain_has_its_entry_cost_and_settlements_are_harbours() -> None:
+def test_each_terrain_has_its_entry_cost() -> None:
     state, _, _, route = treaty_world()
     tile = route[1]
     for terrain, cost in (
@@ -46,8 +47,7 @@ def test_each_terrain_has_its_entry_cost_and_settlements_are_harbours() -> None:
         (Terrain.WATER, None),
     ):
         _paint(state, terrain, tile)
-        assert entry_cost(state.world_map, tile, frozenset()) == cost
-    assert entry_cost(state.world_map, tile, frozenset({tile})) == DAY, "a harbour"
+        assert entry_cost(state.world_map, tile) == cost
 
 
 def test_rough_ground_takes_longer_and_progress_carries_over() -> None:
@@ -67,14 +67,11 @@ def test_travel_days_and_provisions_follow_the_terrain() -> None:
     state, _, _, route = treaty_world()
     _paint(state, Terrain.MOUNTAIN, route[1])
     _paint(state, Terrain.FOREST, route[2])
-    harbours = frozenset({route[0], route[-1]})
 
-    assert travel_days(state.world_map, route[1:], harbours) == 6, "3 + 1.5 + 1, rounded up"
-    assert journey_days(JourneyKind.MIGRATION, state.world_map, route, harbours) == 6
-    outbound_and_back = 6 + travel_days(state.world_map, (route[2], route[1], route[0]), harbours)
-    assert journey_days(JourneyKind.SHIPMENT, state.world_map, route, harbours) == (
-        outbound_and_back
-    )
+    assert travel_days(state.world_map, route[1:]) == 6, "3 + 1.5 + 1, rounded up"
+    assert journey_days(JourneyKind.MIGRATION, state.world_map, route) == 6
+    outbound_and_back = 6 + travel_days(state.world_map, (route[2], route[1], route[0]))
+    assert journey_days(JourneyKind.SHIPMENT, state.world_map, route) == outbound_and_back
 
 
 def test_migrants_take_three_days_to_cross_a_mountain() -> None:
@@ -164,19 +161,22 @@ def test_explorers_meet_unknown_water_and_stop_there() -> None:
     assert civilization.population.people[explorer].location == route[-2]
 
 
-def test_a_settlement_on_water_can_still_be_reached() -> None:
-    state, sender, recipient, route = treaty_world(TreatyKind.MIGRATION)
-    _paint(state, Terrain.WATER, route[-1])
-    order = _migration(state, sender, recipient, route, clear_journey_id("lakeside"))
-
-    assert validate_envelope(envelope(state, sender, order), state).errors == ()
-    rng = StableRng(state.config.seed)
-    sovereigns = {sender: OneShotSovereign(order)}
-    received = False
-    for _ in range(len(route) + 1):
-        result = advance_day(state, rng, sovereigns=sovereigns)
-        state = result.state
-        received = received or any(
-            event.kind == "migrants_received" for event in result.events.events
-        )
-    assert received
+def test_every_start_is_on_land_all_can_reach_on_foot() -> None:
+    for width in (24, 48):
+        for seed in range(12):
+            state = build_initial_state(
+                RunManifest.new(
+                    config=WorldConfig(seed=seed, width=width, height=width),
+                    engine_version="0.1.0",
+                )
+            )
+            starts = [civilization.start_center for civilization in state.civilizations.values()]
+            assert all(entry_cost(state.world_map, start) is not None for start in starts)
+            reachable = {starts[0]}
+            frontier = [starts[0]]
+            while frontier:
+                for neighbor in state.world_map.neighbors(frontier.pop()):
+                    if neighbor not in reachable and entry_cost(state.world_map, neighbor):
+                        reachable.add(neighbor)
+                        frontier.append(neighbor)
+            assert set(starts) <= reachable, (width, seed)

@@ -245,11 +245,6 @@ def _travelling_people(state: WorldState, civilization_id: EntityId) -> set[Enti
     return busy
 
 
-def settlement_tiles(state: WorldState) -> frozenset[HexCoord]:
-    """Tiles that are always enterable, whatever their terrain."""
-    return frozenset(civilization.start_center for civilization in state.civilizations.values())
-
-
 def journey_supplies(
     command: DirectOrder, state: WorldState
 ) -> tuple[int, dict[Resource, int]]:
@@ -259,7 +254,6 @@ def journey_supplies(
             JOURNEY_ORDERS[command.kind],
             state.world_map,
             command.route,
-            settlement_tiles(state),
         ),
         len(command.traveller_ids),
         command.extra_provisions,
@@ -312,7 +306,7 @@ def _journey_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:], settlement_tiles(state))
+        or not passable(state.world_map, route[1:])
     ):
         return error(
             "invalid_route",
@@ -694,7 +688,6 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                             for tile in route[1:]
                             if tile in state.civilizations[envelope.civilization_id].known_tiles
                         ),
-                        settlement_tiles(state),
                     )
                 ):
                     command_error = CommandError(
@@ -746,7 +739,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     or any(tile not in civilization.known_tiles for tile in command.route)
                     or any(not state.world_map.contains(tile) for tile in command.route)
                     or any(first.distance(second) != 1 for first, second in pairwise(command.route))
-                    or not passable(state.world_map, command.route[1:], settlement_tiles(state))
+                    or not passable(state.world_map, command.route[1:])
                 ):
                     command_error = CommandError(
                         command_id=command.command_id,

@@ -23,26 +23,20 @@ ENTRY_COST: dict[Terrain, int | None] = {
 MAX_PROGRESS = max(cost for cost in ENTRY_COST.values() if cost is not None) + DAY
 
 
-def entry_cost(world_map: WorldMap, coord: HexCoord, harbours: frozenset[HexCoord]) -> int | None:
-    """What entering a tile costs; a settlement's own tile is always enterable."""
-    if coord in harbours:
-        return DAY
+def entry_cost(world_map: WorldMap, coord: HexCoord) -> int | None:
+    """What entering a tile costs, or None if it cannot be entered."""
     return ENTRY_COST[world_map.tile(coord).terrain]
 
 
-def passable(
-    world_map: WorldMap, tiles: Iterable[HexCoord], harbours: frozenset[HexCoord]
-) -> bool:
-    return all(entry_cost(world_map, tile, harbours) is not None for tile in tiles)
+def passable(world_map: WorldMap, tiles: Iterable[HexCoord]) -> bool:
+    return all(entry_cost(world_map, tile) is not None for tile in tiles)
 
 
-def travel_days(
-    world_map: WorldMap, entered: Iterable[HexCoord], harbours: frozenset[HexCoord]
-) -> int:
+def travel_days(world_map: WorldMap, entered: Iterable[HexCoord]) -> int:
     """Whole days needed to enter each tile in turn, ignoring delays."""
     total = 0
     for tile in entered:
-        cost = entry_cost(world_map, tile, harbours)
+        cost = entry_cost(world_map, tile)
         if cost is None:
             raise ValueError(f"tile {tile} is impassable")
         total += cost
