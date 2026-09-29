@@ -7,6 +7,18 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 
+from sovereign_world.armoury import (
+    BASIS,
+    RECIPES,
+    CraftJob,
+    craft_materials,
+    crew_needed,
+    crewed_engines,
+    engines_in,
+    kit_assignment,
+    personal_kits,
+    settlement_bonus_after_engines,
+)
 from sovereign_world.capabilities import (
     CapabilityId,
     CapabilityRecord,
@@ -86,6 +98,7 @@ from sovereign_world.war import (
     BATTLE_WON_POINTS,
     DRILL_CAP,
     DRILL_DAYS_PER_POINT,
+    SETTLEMENT_DEFENCE_BP,
     Battle,
     BattleReport,
     Drill,
@@ -1549,13 +1562,23 @@ def _fight(
         for person_id in party.traveller_ids
         if attackers_people[person_id].alive and able_to_fight(attackers_people[person_id])
     ]
-    axes = party.cargo.get(Resource.AXE, 0)
+    enemy_homes = {settlement.tile for settlement in state.civilizations[enemy].settlements}
+    at_home = tile in enemy_homes
+    # Engines need hands: their crews, the last fighters in id order, fight at half strength.
+    working = crewed_engines(len(attacker_ids), engines_in(party.cargo)) if at_home else {}
+    crew = set(attacker_ids[len(attacker_ids) - crew_needed(working) :]) if working else set()
+    issued = kit_assignment(attacker_ids, personal_kits(party.cargo))
     attackers = [
-        fighter(attackers_people[person_id], armed=index < axes)
-        for index, person_id in enumerate(attacker_ids)
+        fighter(
+            attackers_people[person_id],
+            issued.get(person_id),
+            attacking=True,
+            crewing=person_id in crew,
+        )
+        for person_id in attacker_ids
     ]
     enemy_people = state.civilizations[enemy].population.people
-    store_axes = state.civilizations[enemy].inventory.quantities.get(Resource.AXE, 0)
+    store = state.civilizations[enemy].inventory.quantities
     defending_parties = [
         journey
         for journey in state.journeys
@@ -1564,24 +1587,26 @@ def _fight(
         and journey.sender_civilization_id == enemy
         and any(person_id in marching for person_id in journey.traveller_ids)
     ]
-    party_axes = {
-        person_id: index < journey.cargo.get(Resource.AXE, 0)
-        for journey in defending_parties
-        for index, person_id in enumerate(
-            item for item in journey.traveller_ids if item in marching
+    # Home defenders arm from their store; defending war parties use what they carry.
+    defender_kits = kit_assignment(home_side, personal_kits(dict(store)))
+    for journey in defending_parties:
+        defender_kits.update(
+            kit_assignment(
+                [item for item in journey.traveller_ids if item in marching],
+                personal_kits(journey.cargo),
+            )
         )
-    }
     defenders = [
-        fighter(enemy_people[person_id], armed=index < store_axes)
-        for index, person_id in enumerate(home_side)
-    ] + [fighter(enemy_people[person_id], armed=party_axes[person_id]) for person_id in marching]
-    enemy_homes = {settlement.tile for settlement in state.civilizations[enemy].settlements}
-    at_home = tile in enemy_homes
+        fighter(enemy_people[person_id], defender_kits.get(person_id), attacking=False)
+        for person_id in [*home_side, *marching]
+    ]
+    terrain_bp = defence_bonus_bp(state.world_map.tile(tile).terrain, settlement=False)
+    walls_bp = settlement_bonus_after_engines(SETTLEMENT_DEFENCE_BP, working) if at_home else BASIS
     battle_id = EntityId(f"battle:{state.day:06d}:{party.journey_id}")
     outcome = resolve_battle(
         attackers,
         defenders,
-        defence_bp=defence_bonus_bp(state.world_map.tile(tile).terrain, settlement=at_home),
+        defence_bp=terrain_bp * walls_bp // BASIS,
         attacker_morale_bp=morale_bp(attackers, at_home=False, supplied=True),
         defender_morale_bp=(
             morale_bp(defenders, at_home=True, supplied=True)
@@ -1590,6 +1615,7 @@ def _fight(
         ),
         rng=rng,
         stream=f"day:{state.day}:war:{battle_id}",
+        catapults=working.get(Resource.CATAPULT, 0),
     )
     battle = Battle(
         battle_id=battle_id,
@@ -1649,9 +1675,30 @@ def _fight(
         _replace_journey(state, journey)
     party = party.model_copy(update={"battles": (*party.battles, battle_id)})
     if not outcome.attackers_won:
+        abandoned = engines_in(party.cargo)
         party = party.model_copy(
-            update={"phase": JourneyPhase.RETURNING, "outcome": JourneyOutcome.ROUTED}
+            update={
+                "phase": JourneyPhase.RETURNING,
+                "outcome": JourneyOutcome.ROUTED,
+                "cargo": personal_kits(party.cargo),
+            }
         )
+        if abandoned:
+            # A routed party leaves its engines behind; defenders at home take them in.
+            if home_side:
+                victor = state.civilizations[enemy]
+                victor.inventory, _ = victor.inventory.store_with_waste(abandoned)
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "engines_abandoned",
+                    str(sender),
+                    str(battle_id),
+                    engines=sum(abandoned.values()),
+                    taken=bool(home_side),
+                )
+            )
         events.append(_event(state, EventPhase.MOVEMENT, "side_broke", str(sender), str(battle_id)))
     else:
         events.append(_event(state, EventPhase.MOVEMENT, "side_broke", str(enemy), str(battle_id)))
@@ -1842,15 +1889,91 @@ def _war_party_home(state: WorldState, party: Journey) -> dict[Resource, int]:
     """Survivors bring home their axes, their plunder, and news of their battles."""
     sender = party.sender_civilization_id
     people = state.civilizations[sender].population.people
-    survivors = sum(people[person_id].alive for person_id in party.traveller_ids)
     goods = dict(party.plunder)
-    axes = min(party.cargo.get(Resource.AXE, 0), survivors)
-    if axes:
-        goods[Resource.AXE] = goods.get(Resource.AXE, 0) + axes
+    issued = kit_assignment(list(party.traveller_ids), personal_kits(party.cargo))
+    for person_id, kit in issued.items():
+        if people[person_id].alive:
+            goods[kit.resource] = goods.get(kit.resource, 0) + 1
+    for resource, count in engines_in(party.cargo).items():
+        goods[resource] = goods.get(resource, 0) + count
     battles = {battle.battle_id: battle for battle in state.battles}
     for battle_id in party.battles:
         _file_report(state, sender, _battle_report(battles[battle_id], sender))
     return goods
+
+
+def _start_craft(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> DomainEvent:
+    """Take the materials now; the workers then make the items day by day."""
+    assert command.craft_item is not None
+    civilization = state.civilizations[civilization_id]
+    materials = craft_materials(command.craft_item, command.craft_quantity)
+    job_id = EntityId(f"craft:{civilization_id}:{state.day}:{command.command_id}")
+    if any(
+        civilization.inventory.quantities.get(resource, 0) < quantity
+        for resource, quantity in materials.items()
+    ):
+        return _event(state, EventPhase.WORK, "craft_unfunded", str(civilization_id), str(job_id))
+    civilization.inventory = civilization.inventory.apply_delta(
+        InventoryDelta(changes={resource: -quantity for resource, quantity in materials.items()})
+    )
+    job = CraftJob(
+        job_id=job_id,
+        item=command.craft_item,
+        quantity=command.craft_quantity,
+        worker_ids=tuple(sorted(command.worker_ids)),
+        started_day=state.day,
+        person_days_needed=RECIPES[command.craft_item].person_days * command.craft_quantity,
+    )
+    civilization.craft_jobs = (*civilization.craft_jobs, job)
+    return _event(
+        state,
+        EventPhase.WORK,
+        "craft_started",
+        str(civilization_id),
+        str(job_id),
+        item=job.item.value,
+        quantity=job.quantity,
+    )
+
+
+def _advance_crafting(state: WorldState) -> list[DomainEvent]:
+    """Workers at their settlements put in a day each; finished items go into the store."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        homes = {settlement.tile for settlement in civilization.settlements}
+        people = civilization.population.people
+        kept: list[CraftJob] = []
+        for job in civilization.craft_jobs:
+            present = sum(
+                people[person_id].alive
+                and people[person_id].location in homes
+                and person_id not in away
+                for person_id in job.worker_ids
+            )
+            job = job.model_copy(update={"person_days_done": job.person_days_done + present})
+            if not job.done:
+                kept.append(job)
+                continue
+            civilization.inventory, waste = civilization.inventory.store_with_waste(
+                {job.item: job.quantity}
+            )
+            events.append(
+                _event(
+                    state,
+                    EventPhase.WORK,
+                    "equipment_crafted",
+                    str(civilization_id),
+                    str(job.job_id),
+                    item=job.item.value,
+                    quantity=job.quantity - waste.get(job.item, 0),
+                )
+            )
+        civilization.craft_jobs = tuple(kept)
+    return events
 
 
 def _advance_drills(state: WorldState) -> list[DomainEvent]:
@@ -2119,6 +2242,12 @@ def _run_councils(
                         )
             elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.SET_TOLL:
                 events.append(_set_toll(state, civilization_id, command))
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.CRAFT_EQUIPMENT
+                and command.craft_item is not None
+            ):
+                events.append(_start_craft(state, civilization_id, command))
             elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.DRILL:
                 civilization = state.civilizations[civilization_id]
                 drill = Drill(
@@ -2622,6 +2751,7 @@ def advance_day(
     events.extend(journey_events)
     events.extend(_resolve_war(candidate, rng))
     events.extend(_advance_drills(candidate))
+    events.extend(_advance_crafting(candidate))
     events.extend(_advance_tolls(candidate))
 
     for civilization_id in sorted(candidate.civilizations):
@@ -2636,7 +2766,10 @@ def advance_day(
         stationed = {
             person_id for garrison in civilization.garrisons for person_id in garrison.member_ids
         }
-        drilling = {person_id for drill in civilization.drills for person_id in drill.person_ids}
+        # People at drill or in the armoury eat but neither farm nor do other work.
+        drilling = {
+            person_id for drill in civilization.drills for person_id in drill.person_ids
+        } | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids}
         home_living = tuple(
             person_id for person_id in civilization.population.living_ids if person_id not in away
         )

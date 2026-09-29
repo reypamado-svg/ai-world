@@ -9,6 +9,7 @@ from math import ceil
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from sovereign_world.armoury import WAR_GEAR, cargo_load, slowed, slows
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person, go_hungry
@@ -157,8 +158,8 @@ class Journey(BaseModel):
             raise ValueError("only a war party, and every war party, has an objective")
         if not campaign and (self.plunder or self.battles):
             raise ValueError("only a war party carries plunder or fights battles")
-        if campaign and (set(self.cargo) - {Resource.AXE} or self.carrying_cargo):
-            raise ValueError("a war party carries only its equipment")
+        if campaign and (set(self.cargo) - WAR_GEAR or self.carrying_cargo):
+            raise ValueError("a war party carries only its kits and engines")
         if internal and self.kind is not JourneyKind.DEPOSIT and (
             self.cargo or self.carrying_cargo
         ):
@@ -189,9 +190,10 @@ class Journey(BaseModel):
         if self.kind is JourneyKind.SHIPMENT and not self.cargo:
             raise ValueError("a shipment requires cargo")
         capacity = CARGO_UNITS_PER_CARRIER * len(self.traveller_ids)
-        if sum(self.cargo.values()) + self.provisions_packed > capacity:
+        gear = cargo_load(self.cargo) if campaign else sum(self.cargo.values())
+        if gear + self.provisions_packed > capacity:
             raise ValueError("cargo and provisions exceed carrier capacity")
-        if sum(self.cargo.values()) + self.provisions + sum(self.plunder.values()) > capacity:
+        if gear + self.provisions + sum(self.plunder.values()) > capacity:
             raise ValueError("plunder fills only the room that eaten food has freed")
         if self.provisions > self.provisions_packed:
             raise ValueError("a pack cannot hold more than was packed")
@@ -211,12 +213,17 @@ def journey_days(
     world_map: WorldMap,
     route: tuple[HexCoord, ...],
     roads: Roads | None = None,
+    *,
+    heavy: bool = False,
 ) -> int:
-    """Days on the road without delays: out and back for goods, one way for migrants."""
+    """Days on the road without delays: out and back for goods, one way for migrants.
+
+    Heavy siege engines make every day of it half as long again.
+    """
     days = travel_days(world_map, route[1:], roads)
     if kind in ROUND_TRIP_KINDS:
         days += travel_days(world_map, tuple(reversed(route))[1:], roads)
-    return days
+    return slowed(days) if heavy else days
 
 
 def roadwork_days(
@@ -758,6 +765,8 @@ def _walk(
         cost = entry_cost(world_map, journey.route[ahead], grades)
         if cost is None:
             raise ValueError("a journey route cannot enter impassable terrain")
+        if journey.kind is JourneyKind.CAMPAIGN and slows(journey.cargo):
+            cost = slowed(cost)
         if progress < cost:
             break
         if outbound:

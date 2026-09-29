@@ -17,6 +17,13 @@ class Resource(StrEnum):
     METAL = "metal"
     AXE = "axe"
     TOOL = "tool"
+    SLING = "sling"
+    SPEAR = "spear"
+    BOW = "bow"
+    BRONZE_ARMS = "bronze_arms"
+    LADDER = "ladder"
+    RAM = "ram"
+    CATAPULT = "catapult"
 
 
 class InsufficientResource(ValueError):

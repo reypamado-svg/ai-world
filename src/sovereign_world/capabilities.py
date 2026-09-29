@@ -23,6 +23,9 @@ class CapabilityId(StrEnum):
     WRITING = "writing"
     SURVEYING = "surveying"
     ORGANIZED_LOGISTICS = "organized_logistics"
+    ARCHERY = "archery"
+    BRONZE_WORKING = "bronze_working"
+    SIEGECRAFT = "siegecraft"
 
 
 REGIONAL_CAPABILITY_BY_STRENGTH: dict[str, CapabilityId] = {

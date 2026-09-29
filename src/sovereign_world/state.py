@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sovereign_world.armoury import CraftJob
 from sovereign_world.capabilities import CapabilityRecord, TeachingAssignment, regional_capability
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.diplomacy import (
@@ -61,6 +62,7 @@ class CivilizationState(BaseModel):
     toll_intel: tuple[TollView, ...] = ()
     """Tolls this civilization's people have met, or learned from a partner's map."""
     drills: tuple[Drill, ...] = ()
+    craft_jobs: tuple[CraftJob, ...] = ()
     war_reports: tuple[BattleReport, ...] = ()
     """Battles as this civilization's own survivors told them."""
 
