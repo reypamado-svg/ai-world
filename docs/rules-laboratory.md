@@ -10,6 +10,12 @@ Each civilization starts with one practical regional capability and a small priv
 
 Maps remain private. A civilization learns about a tile only through its own starting observations or travel, and its council report never contains a rival's observations. Sightings are saved in the authoritative state, so replays reconstruct the same discoveries and event sequence without querying any AI provider.
 
+## Contact and ambassadors
+
+An expedition creates a foreign contact only when it physically reaches a foreign settlement. That contact belongs only to the explorers' civilization; the other civilization receives no alert merely because it was seen.
+
+After contact, a sovereign may send a living ambassador along a known, adjacent route to that settlement. The engine carries the immutable original message while the ambassador travels. Travel can be delayed or lost, and an arriving message can carry a clearly marked distorted representation. Only the receiving civilization's council report receives the delivered words. These outcomes are recorded and replayed exactly.
+
 ## Set up on Windows
 
 From the project directory, create a Python 3.12 virtual environment and install the project:
