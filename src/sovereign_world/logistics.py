@@ -13,6 +13,7 @@ from sovereign_world.ids import EntityId
 from sovereign_world.people import Person, go_hungry
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
+from sovereign_world.travel import MAX_PROGRESS, entry_cost, step, travel_days
 
 CARGO_UNITS_PER_CARRIER = 50
 MAX_TRAVELLERS = 16
@@ -66,6 +67,7 @@ class Journey(BaseModel):
     carrying_cargo: bool = False
     provisions_packed: int = Field(default=0, ge=0)
     provisions: int = Field(default=0, ge=0)
+    travel_progress: int = Field(default=0, ge=0, lt=MAX_PROGRESS)
     departed_day: int = Field(ge=0)
     route_index: int = Field(default=0, ge=0)
     phase: JourneyPhase = JourneyPhase.OUTBOUND
@@ -108,15 +110,21 @@ class Journey(BaseModel):
         return self.phase is not JourneyPhase.COMPLETE
 
 
-def provisions_needed(
+def journey_days(
     kind: JourneyKind,
-    route_tiles: int,
-    travellers: int,
-    extra: int = 0,
+    world_map: WorldMap,
+    route: tuple[HexCoord, ...],
+    harbours: frozenset[HexCoord],
 ) -> int:
+    """Days on the road without delays: out and back for a shipment, one way for migrants."""
+    days = travel_days(world_map, route[1:], harbours)
+    if kind is JourneyKind.SHIPMENT:
+        days += travel_days(world_map, tuple(reversed(route))[1:], harbours)
+    return days
+
+
+def provisions_needed(days: int, travellers: int, extra: int = 0) -> int:
     """Food packed at dispatch: the days on the road plus a margin for delays."""
-    steps = route_tiles - 1
-    days = steps * 2 if kind is JourneyKind.SHIPMENT else steps
     margin = max(2, ceil(days / 4))
     return travellers * (days + margin) + extra
 
@@ -225,6 +233,7 @@ def advance_journeys_day(
     rng: StableRng,
     treaties_in_force: frozenset[EntityId],
     world_map: WorldMap,
+    harbours: frozenset[HexCoord] = frozenset(),
 ) -> JourneyDayResult:
     """Move each active party one route tile, resolving deaths, hazards, and delays.
 
@@ -333,11 +342,20 @@ def advance_journeys_day(
             delayed_ids.append(journey.journey_id)
             updated.append(journey.model_copy(update={"delayed_days": journey.delayed_days + 1}))
             continue
-        step = 1 if journey.phase is JourneyPhase.OUTBOUND else -1
-        route_index = max(0, journey.route_index + step)
+        direction = 1 if journey.phase is JourneyPhase.OUTBOUND else -1
+        route_index = max(0, journey.route_index + direction)
+        cost = entry_cost(world_map, journey.route[route_index], harbours)
+        if cost is None:
+            raise ValueError("a journey route cannot enter impassable terrain")
+        entered, progress = step(journey.travel_progress, cost)
+        if not entered:
+            updated.append(journey.model_copy(update={"travel_progress": progress}))
+            continue
         for traveller in living:
             traveller.location = journey.route[route_index]
-        moved = journey.model_copy(update={"route_index": route_index})
+        moved = journey.model_copy(
+            update={"route_index": route_index, "travel_progress": progress}
+        )
         if journey.phase is JourneyPhase.OUTBOUND and route_index == len(journey.route) - 1:
             recipient_living = any(
                 person.alive

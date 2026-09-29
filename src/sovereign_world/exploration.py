@@ -11,12 +11,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person
+from sovereign_world.travel import MAX_PROGRESS, entry_cost, step
 
 
 class ExpeditionStatus(StrEnum):
     ACTIVE = "active"
     RETURNED = "returned"
     FAILED = "failed"
+    BLOCKED = "blocked"
 
 
 class Observation(BaseModel):
@@ -36,6 +38,7 @@ class Expedition(BaseModel):
     explorer_ids: tuple[EntityId, ...]
     route: tuple[HexCoord, ...]
     next_route_index: int = Field(default=0, ge=0)
+    travel_progress: int = Field(default=0, ge=0, lt=MAX_PROGRESS)
     status: ExpeditionStatus = ExpeditionStatus.ACTIVE
 
     @model_validator(mode="after")
@@ -59,6 +62,7 @@ class ExpeditionDayResult:
     observed_tiles: tuple[HexCoord, ...]
     returned_ids: tuple[EntityId, ...]
     failed_ids: tuple[EntityId, ...]
+    blocked_ids: tuple[EntityId, ...] = ()
 
 
 def advance_expeditions(
@@ -68,8 +72,13 @@ def advance_expeditions(
     day: int,
     *,
     observations: tuple[Observation, ...] = (),
+    harbours: frozenset[HexCoord] = frozenset(),
 ) -> ExpeditionDayResult:
-    """Move each active expedition one route tile and refresh its private map."""
+    """Advance each active expedition toward its next tile and refresh its private map.
+
+    Rough terrain takes more than a day to enter; water stops the expedition, which
+    observes the water it cannot cross.
+    """
     updated_people = {
         person_id: person.model_copy(deep=True) for person_id, person in people.items()
     }
@@ -78,6 +87,7 @@ def advance_expeditions(
     observed_tiles: list[HexCoord] = []
     returned_ids: list[EntityId] = []
     failed_ids: list[EntityId] = []
+    blocked_ids: list[EntityId] = []
     for expedition in sorted(expeditions, key=lambda item: item.expedition_id):
         if expedition.status is not ExpeditionStatus.ACTIVE:
             updated_expeditions.append(expedition)
@@ -119,9 +129,36 @@ def advance_expeditions(
             )
             failed_ids.append(expedition.expedition_id)
             continue
+        observer_id = min(expedition.explorer_ids)
+        cost = entry_cost(world_map, destination, harbours)
+        if cost is None:
+            observation_by_tile[destination] = Observation(
+                tile=destination,
+                observed_day=day,
+                observer_id=observer_id,
+            )
+            observed_tiles.append(destination)
+            updated_expeditions.append(
+                expedition.model_copy(
+                    update={
+                        "next_route_index": route_index,
+                        "status": ExpeditionStatus.BLOCKED,
+                        "travel_progress": 0,
+                    }
+                )
+            )
+            blocked_ids.append(expedition.expedition_id)
+            continue
+        entered, progress = step(expedition.travel_progress, cost)
+        if not entered:
+            updated_expeditions.append(
+                expedition.model_copy(
+                    update={"next_route_index": route_index, "travel_progress": progress}
+                )
+            )
+            continue
         for explorer in living_explorers:
             explorer.location = destination
-        observer_id = min(expedition.explorer_ids)
         observation_by_tile[destination] = Observation(
             tile=destination,
             observed_day=day,
@@ -136,7 +173,11 @@ def advance_expeditions(
         )
         updated_expeditions.append(
             expedition.model_copy(
-                update={"next_route_index": route_index, "status": status}
+                update={
+                    "next_route_index": route_index,
+                    "status": status,
+                    "travel_progress": progress,
+                }
             )
         )
         if status is ExpeditionStatus.RETURNED:
@@ -148,4 +189,5 @@ def advance_expeditions(
         observed_tiles=tuple(sorted(set(observed_tiles))),
         returned_ids=tuple(sorted(returned_ids)),
         failed_ids=tuple(sorted(failed_ids)),
+        blocked_ids=tuple(sorted(blocked_ids)),
     )

@@ -22,10 +22,12 @@ from sovereign_world.logistics import (
     JourneyOutcome,
     JourneyPhase,
     LogisticsNotice,
+    journey_days,
     provisions_needed,
 )
 from sovereign_world.resources import Resource
 from sovereign_world.state import WorldState
+from sovereign_world.travel import passable
 
 
 class DecreeKind(StrEnum):
@@ -243,11 +245,22 @@ def _travelling_people(state: WorldState, civilization_id: EntityId) -> set[Enti
     return busy
 
 
-def journey_supplies(command: DirectOrder) -> tuple[int, dict[Resource, int]]:
+def settlement_tiles(state: WorldState) -> frozenset[HexCoord]:
+    """Tiles that are always enterable, whatever their terrain."""
+    return frozenset(civilization.start_center for civilization in state.civilizations.values())
+
+
+def journey_supplies(
+    command: DirectOrder, state: WorldState
+) -> tuple[int, dict[Resource, int]]:
     """Provisions to pack, and everything the order takes from the sender's storehouse."""
     provisions = provisions_needed(
-        JOURNEY_ORDERS[command.kind],
-        len(command.route),
+        journey_days(
+            JOURNEY_ORDERS[command.kind],
+            state.world_map,
+            command.route,
+            settlement_tiles(state),
+        ),
         len(command.traveller_ids),
         command.extra_provisions,
     )
@@ -299,6 +312,7 @@ def _journey_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
+        or not passable(state.world_map, route[1:], settlement_tiles(state))
     ):
         return error(
             "invalid_route",
@@ -317,7 +331,7 @@ def _journey_error(
         not command.cargo or any(quantity <= 0 for quantity in command.cargo.values())
     ):
         return error("invalid_cargo", "a shipment requires positive cargo")
-    provisions, taken = journey_supplies(command)
+    provisions, taken = journey_supplies(command, state)
     if sum(command.cargo.values()) + provisions > CARGO_UNITS_PER_CARRIER * len(
         command.traveller_ids
     ):
@@ -673,6 +687,15 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     or route[0] not in locations
                     or any(not state.world_map.contains(tile) for tile in route)
                     or any(first.distance(second) != 1 for first, second in pairwise(route))
+                    or not passable(
+                        state.world_map,
+                        (
+                            tile
+                            for tile in route[1:]
+                            if tile in state.civilizations[envelope.civilization_id].known_tiles
+                        ),
+                        settlement_tiles(state),
+                    )
                 ):
                     command_error = CommandError(
                         command_id=command.command_id,
@@ -723,6 +746,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     or any(tile not in civilization.known_tiles for tile in command.route)
                     or any(not state.world_map.contains(tile) for tile in command.route)
                     or any(first.distance(second) != 1 for first, second in pairwise(command.route))
+                    or not passable(state.world_map, command.route[1:], settlement_tiles(state))
                 ):
                     command_error = CommandError(
                         command_id=command.command_id,
@@ -773,7 +797,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             committed_travellers.update(travellers)
             committed_at_home.update(home_duty)
             if command.kind in JOURNEY_ORDERS:
-                for resource, quantity in journey_supplies(command)[1].items():
+                for resource, quantity in journey_supplies(command, state)[1].items():
                     reserved_cargo[resource] = reserved_cargo.get(resource, 0) + quantity
         accepted.append(command)
     return CommandValidation(accepted=tuple(accepted), errors=tuple(errors))

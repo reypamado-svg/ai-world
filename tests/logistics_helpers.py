@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 from sovereign_world.commands import CommandEnvelope, CouncilReport, DirectOrder
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.diplomacy import ActiveTreaty, Contact, TreatyKind, TreatyOffer
 from sovereign_world.exploration import Observation
-from sovereign_world.hexmap import HexCoord
+from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
 from sovereign_world.rng import StableRng
 from sovereign_world.state import WorldState, build_initial_state
@@ -30,6 +31,14 @@ def linked_world(
     home = sender.start_center
     step = 1 if home.q + distance < state.config.width else -1
     route = tuple(HexCoord(home.q + index * step, home.r) for index in range(distance + 1))
+    # Lay grassland along the route so scenarios test their own rules, not the terrain.
+    grass = {
+        tile: replace(state.world_map.tile(tile), terrain=Terrain.GRASSLAND) for tile in route
+    }
+    state.world_map = replace(
+        state.world_map,
+        tiles=tuple(grass.get(tile.coord, tile) for tile in state.world_map.tiles),
+    )
     recipient.start_center = route[-1]
     for person in recipient.population.people.values():
         person.location = route[-1]

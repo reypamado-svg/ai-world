@@ -35,7 +35,9 @@ def test_message_arrives_with_a_link_to_its_original_words() -> None:
     missions = (message,)
     people = {sender: state.civilizations[sender].population.people}
     for day in range(10):
-        result = advance_diplomacy_day(missions, people, day=day, rng=StableRng(99))
+        result = advance_diplomacy_day(
+            missions, people, day=day, rng=StableRng(99), world_map=state.world_map
+        )
         missions = result.missions
         people = result.people_by_civilization
         if result.delivered:
@@ -65,7 +67,7 @@ def test_dead_ambassador_loses_the_message() -> None:
     )
 
     result = advance_diplomacy_day(
-        (message,), {sender: people}, day=0, rng=StableRng(99)
+        (message,), {sender: people}, day=0, rng=StableRng(99), world_map=state.world_map
     )
 
     assert result.missions[0].status is MissionStatus.LOST

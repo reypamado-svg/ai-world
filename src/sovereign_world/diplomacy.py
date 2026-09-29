@@ -7,10 +7,11 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from sovereign_world.hexmap import HexCoord
+from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person
 from sovereign_world.rng import StableRng
+from sovereign_world.travel import MAX_PROGRESS, entry_cost, step
 
 
 class MissionStatus(StrEnum):
@@ -120,6 +121,7 @@ class DiplomaticMessage(BaseModel):
     source_text: str = Field(min_length=1, max_length=1_000)
     departed_day: int = Field(ge=0)
     next_route_index: int = Field(default=0, ge=0)
+    travel_progress: int = Field(default=0, ge=0, lt=MAX_PROGRESS)
     status: MissionStatus = MissionStatus.IN_TRANSIT
     delivered_day: int | None = Field(default=None, ge=0)
     delivered_text: str | None = Field(default=None, max_length=1_100)
@@ -174,8 +176,13 @@ def advance_diplomacy_day(
     *,
     day: int,
     rng: StableRng,
+    world_map: WorldMap,
+    harbours: frozenset[HexCoord] = frozenset(),
 ) -> DiplomacyDayResult:
-    """Advance each ambassador one known route tile without revealing foreign state."""
+    """Advance each ambassador along its known route without revealing foreign state.
+
+    Rough terrain takes more than a day to enter.
+    """
     people = {
         civilization_id: {
             person_id: person.model_copy(deep=True)
@@ -210,15 +217,32 @@ def advance_diplomacy_day(
         route_index = mission.next_route_index
         if route_index < len(mission.route) and mission.route[route_index] == ambassador.location:
             route_index += 1
+        progress = mission.travel_progress
         if route_index < len(mission.route):
+            cost = entry_cost(world_map, mission.route[route_index], harbours)
+            if cost is None:
+                raise ValueError("an ambassador route cannot enter impassable terrain")
+            entered, progress = step(progress, cost)
+            if not entered:
+                updated.append(
+                    mission.model_copy(
+                        update={"next_route_index": route_index, "travel_progress": progress}
+                    )
+                )
+                continue
             ambassador.location = mission.route[route_index]
             route_index += 1
         if route_index < len(mission.route):
-            updated.append(mission.model_copy(update={"next_route_index": route_index}))
+            updated.append(
+                mission.model_copy(
+                    update={"next_route_index": route_index, "travel_progress": progress}
+                )
+            )
             continue
         completed = mission.model_copy(
             update={
                 "next_route_index": route_index,
+                "travel_progress": 0,
                 "status": MissionStatus.DELIVERED,
                 "delivered_day": day,
                 "delivered_text": _delivered_words(mission, rng, day),
