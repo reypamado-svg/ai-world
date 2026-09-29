@@ -110,7 +110,9 @@ class Journey(BaseModel):
     materials: dict[Resource, int] = Field(default_factory=dict)
     """Road materials not yet laid; hauled separately from the crew's packs."""
     work_done: int = Field(default=0, ge=0)
-    """Person-days already spent on the next grade of the crew's current tile."""
+    """Person-days already spent toward `work_grade` on the crew's current tile."""
+    work_grade: RoadGrade | None = None
+    """The grade the crew's labour so far was for; another crew reaching it first wastes it."""
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
@@ -124,7 +126,7 @@ class Journey(BaseModel):
         roadwork = self.kind is JourneyKind.ROADWORK
         if roadwork != (self.road_grade is not None):
             raise ValueError("only a road crew, and every road crew, has a target grade")
-        if not roadwork and (self.materials or self.work_done):
+        if not roadwork and (self.materials or self.work_done or self.work_grade):
             raise ValueError("only a road crew carries materials or does road work")
         if any(quantity <= 0 for quantity in self.materials.values()):
             raise ValueError("material quantities must be positive")
@@ -370,6 +372,7 @@ def advance_journeys_day(
                 "phase": JourneyPhase.RETURNING,
                 "outcome": JourneyOutcome.STOPPED,
                 "work_done": 0,
+                "work_grade": None,
             }
         )
 
@@ -463,7 +466,7 @@ def advance_journeys_day(
                 if worked is not None:
                     grades[worked.tile] = worked.grade
                     roads_built.append(worked)
-                updated.append(_worked_journey(journey, living, world_map, worked))
+                updated.append(_worked_journey(journey, living, world_map, grades, worked))
                 continue
             journey = worked
         moved, reached = _walk(journey, living, world_map, grades, arrival_allowed, stop)
@@ -688,9 +691,10 @@ def _roadwork_day(
                     "phase": JourneyPhase.RETURNING,
                     "outcome": JourneyOutcome.DELIVERED,
                     "work_done": 0,
+                    "work_grade": None,
                 }
             )
-        return journey.model_copy(update={"work_done": 0})
+        return journey.model_copy(update={"work_done": 0, "work_grade": None})
     if upcoming in STONE_LAYING and not any(
         person.skills.get(STONEWORKING, 0) > 0 for person in living
     ):
@@ -702,7 +706,7 @@ def _roadwork_day(
         return stop(journey, StopReason.MATERIALS)
     base = ENTRY_COST[world_map.tile(here).terrain]
     assert base is not None
-    if journey.work_done + len(living) < step_labour(base, upcoming):
+    if _labour(journey, upcoming) + len(living) < step_labour(base, upcoming):
         return None
     return RoadBuilt(
         journey_id=journey.journey_id,
@@ -712,16 +716,28 @@ def _roadwork_day(
     )
 
 
+def _labour(journey: Journey, grade: RoadGrade | None) -> int:
+    """Labour this crew has already put toward the grade; none if that grade changed."""
+    return journey.work_done if journey.work_grade == grade else 0
+
+
 def _worked_journey(
     journey: Journey,
     living: list[Person],
     world_map: WorldMap,
+    grades: dict[HexCoord, RoadGrade],
     built: RoadBuilt | None,
 ) -> Journey:
     """The crew after a day of work: labour counted, and materials laid for a finished grade."""
-    work_done = journey.work_done + len(living)
     if built is None:
-        return journey.model_copy(update={"work_done": work_done})
+        upcoming = next_grade(grades.get(journey.route[journey.route_index]))
+        return journey.model_copy(
+            update={
+                "work_done": _labour(journey, upcoming) + len(living),
+                "work_grade": upcoming,
+            }
+        )
+    work_done = _labour(journey, built.grade) + len(living)
     base = ENTRY_COST[world_map.tile(built.tile).terrain]
     assert base is not None
     materials = dict(journey.materials)
@@ -730,6 +746,7 @@ def _worked_journey(
     return journey.model_copy(
         update={
             "work_done": work_done - step_labour(base, built.grade),
+            "work_grade": next_grade(built.grade),
             "materials": {resource: left for resource, left in materials.items() if left},
         }
     )

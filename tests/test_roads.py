@@ -12,7 +12,13 @@ from sovereign_world.engine import TransitionResult, advance_day
 from sovereign_world.exploration import Expedition, Observation
 from sovereign_world.hexmap import HexCoord, Terrain, Tile, WorldMap
 from sovereign_world.ids import EntityId
-from sovereign_world.logistics import JourneyOutcome, NoticeKind
+from sovereign_world.logistics import (
+    Journey,
+    JourneyKind,
+    JourneyOutcome,
+    NoticeKind,
+    advance_journeys_day,
+)
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import GRADES, Road, RoadGrade, grades_of
@@ -389,3 +395,44 @@ def test_explorers_cover_more_ground_on_roads_and_note_their_grade() -> None:
     assert seen[route[2]].observed_day == 0
     known = {view.tile: view.grade for view in build_council_report(state, home).known_roads}
     assert known[route[2]] is RoadGrade.PAVED
+
+
+def test_labour_for_a_grade_another_crew_finished_is_not_carried_over() -> None:
+    state, home, _, route = _world()
+    people = state.civilizations[home].population.living_ids
+
+    def crew(prefix: str, members: tuple[EntityId, ...], work_done: int) -> Journey:
+        return Journey(
+            journey_id=EntityId(clear_journey_id(prefix, days=1)),
+            kind=JourneyKind.ROADWORK,
+            sender_civilization_id=home,
+            recipient_civilization_id=home,
+            traveller_ids=tuple(sorted(members)),
+            route=route[:2],
+            provisions_packed=40 * len(members),
+            provisions=40 * len(members),
+            departed_day=0,
+            road_grade=RoadGrade.TRACK,
+            work_done=work_done,
+            work_grade=RoadGrade.FOOTPATH,
+        )
+
+    first = crew("a", people[-8:], 9)
+    second = crew("b", people[:1], 9)
+    result = advance_journeys_day(
+        (first, second),
+        {home: state.civilizations[home].population.people},
+        day=0,
+        rng=StableRng(state.config.seed),
+        treaties_in_force=frozenset(),
+        world_map=state.world_map,
+    )
+
+    assert [(built.journey_id, built.grade) for built in result.roads_built] == [
+        (first.journey_id, RoadGrade.FOOTPATH)
+    ]
+    after = {journey.journey_id: journey for journey in result.journeys}
+    assert after[first.journey_id].work_grade is RoadGrade.TRACK
+    assert after[first.journey_id].work_done == 7, "the finishing crew's overflow counts on"
+    assert after[second.journey_id].work_grade is RoadGrade.TRACK
+    assert after[second.journey_id].work_done == 1, "work on the finished footpath is spent"

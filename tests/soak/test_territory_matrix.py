@@ -24,17 +24,14 @@ DAYS = 90
 
 
 class ExpandingSovereign:
-    """Baseline orders, settlers sent to the nearest open known site at each council, and a
-    road crew sent to raise a track to the first colony once it stands."""
+    """Baseline orders, settlers sent to the nearest open known site at each council, and
+    road crews sent to raise a track to the first colony once it stands."""
 
     def decide(self, report: CouncilReport) -> CommandEnvelope:
-        orders = list(plan_baseline_commands(report))
+        orders = [*plan_baseline_commands(report), *self._roads(report)]
         founding = self._found(report) if report.day else None
         if founding is not None:
             orders.append(founding)
-        road = self._road(report)
-        if road is not None:
-            orders.append(road)
         return CommandEnvelope(
             schema_version=1,
             civilization_id=report.civilization_id,
@@ -68,21 +65,25 @@ class ExpandingSovereign:
                     frontier.append(neighbor)
         return routes
 
-    def _road(self, report: CouncilReport) -> DirectOrder | None:
+    def _roads(self, report: CouncilReport) -> list[DirectOrder]:
+        """Three small crews, since a council cannot see which mothers are expecting."""
         colonies = [settlement for settlement in report.settlements if not settlement.capital]
         if not colonies:
-            return None
+            return []
         route = self._routes(report, self._foreign(report)).get(colonies[0].tile)
         if route is None:
-            return None
-        return DirectOrder(
-            command_id=f"road:{report.day}",
-            kind=DirectOrderKind.BUILD_ROAD,
-            journey_id=EntityId(f"journey:{report.civilization_id}:road:{report.day}"),
-            traveller_ids=report.person_ids[6:14],
-            route=route,
-            road_grade=RoadGrade.TRACK,
-        )
+            return []
+        return [
+            DirectOrder(
+                command_id=f"road:{report.day}:{crew}",
+                kind=DirectOrderKind.BUILD_ROAD,
+                journey_id=EntityId(f"journey:{report.civilization_id}:road:{report.day}:{crew}"),
+                traveller_ids=report.person_ids[6 + 3 * crew : 9 + 3 * crew],
+                route=route,
+                road_grade=RoadGrade.TRACK,
+            )
+            for crew in range(3)
+        ]
 
     def _found(self, report: CouncilReport) -> DirectOrder | None:
         taken = {settlement.tile for settlement in report.settlements} | {
