@@ -23,11 +23,17 @@ CONSERVED = (Resource.STONE, Resource.TIMBER)
 
 
 class TradingSovereign:
-    """Dispatch a caravan and a small migrant party at every council."""
+    """Dispatch a caravan and a small migrant party at every council, then maybe end a treaty."""
 
-    def __init__(self, partner: EntityId, route: tuple[HexCoord, ...]) -> None:
+    def __init__(
+        self,
+        partner: EntityId,
+        route: tuple[HexCoord, ...],
+        ending: DirectOrderKind | None = None,
+    ) -> None:
         self.partner = partner
         self.route = route
+        self.ending = ending
 
     def decide(self, report: CouncilReport) -> CommandEnvelope:
         council = report.day // 30
@@ -53,6 +59,27 @@ class TradingSovereign:
                 route=self.route,
             ),
         )
+        if report.day == 30 and self.ending is DirectOrderKind.REPUDIATE_TREATY:
+            orders += (
+                DirectOrder(
+                    command_id="repudiate",
+                    kind=DirectOrderKind.REPUDIATE_TREATY,
+                    treaty_id=EntityId("treaty:trade"),
+                ),
+            )
+        if report.day == 30 and self.ending is DirectOrderKind.CANCEL_TREATY:
+            orders += (
+                DirectOrder(
+                    command_id="cancel",
+                    kind=DirectOrderKind.CANCEL_TREATY,
+                    message_id=EntityId(f"message:{report.civilization_id}:cancel"),
+                    ambassador_id=people[10],
+                    recipient_civilization_id=self.partner,
+                    message_text="We withdraw from the migration treaty.",
+                    route=self.route,
+                    treaty_id=EntityId("treaty:migration"),
+                ),
+            )
         return CommandEnvelope(
             schema_version=1,
             civilization_id=report.civilization_id,
@@ -117,9 +144,18 @@ def _simulate(
     store: WorldStore | None = None,
 ) -> tuple[WorldState, list[str]]:
     first, second, route = sovereigns_for
+    ending = (DirectOrderKind.REPUDIATE_TREATY, DirectOrderKind.CANCEL_TREATY, None)[
+        initial.config.seed % 3
+    ]
     sovereigns = {
-        first: TradingSovereign(second, route),
-        second: TradingSovereign(first, tuple(reversed(route))),
+        first: TradingSovereign(
+            second, route, ending if ending is DirectOrderKind.REPUDIATE_TREATY else None
+        ),
+        second: TradingSovereign(
+            first,
+            tuple(reversed(route)),
+            ending if ending is DirectOrderKind.CANCEL_TREATY else None,
+        ),
     }
     state = initial.model_copy(deep=True)
     rng = StableRng(state.config.seed)
@@ -151,6 +187,16 @@ def _simulate(
             if journey.kind is JourneyKind.MIGRATION and journey.arrived_day is None:
                 recipient = state.civilizations[journey.recipient_civilization_id]
                 assert set(journey.traveller_ids).isdisjoint(recipient.population.people)
+        treaty_of = {journey.journey_id: journey.treaty_id for journey in state.journeys}
+        ended_on = {treaty.treaty_id: treaty.ended_day for treaty in state.active_treaties}
+        for event in transition.events.events:
+            if event.subject_id not in treaty_of:
+                continue
+            ended_day = ended_on[treaty_of[EntityId(event.subject_id)]]
+            if event.kind in {"shipment_received", "migrants_received"}:
+                assert ended_day is None or ended_day > event.day, "received after the end"
+            if event.kind in {"shipment_dispatched", "migration_dispatched"}:
+                assert ended_day is None or ended_day >= event.day, "dispatched after the end"
     return state, kinds
 
 
@@ -167,6 +213,10 @@ def test_seeded_journey_histories_conserve_goods_people_and_replay(
 
     assert "shipment_dispatched" in kinds
     assert "migration_dispatched" in kinds
+    if seed % 3 == 0:
+        assert "treaty_breached" in kinds
+    if seed % 3 == 1:
+        assert "treaty_cancelled" in kinds or "message_lost" in kinds
     assert any(journey.outcome is not JourneyOutcome.PENDING for journey in final.journeys), (
         "no journey resolved"
     )

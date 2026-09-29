@@ -45,10 +45,21 @@ class DirectOrderKind(StrEnum):
     SEND_MESSAGE = "send_message"
     OFFER_TREATY = "offer_treaty"
     ACCEPT_TREATY = "accept_treaty"
+    CANCEL_TREATY = "cancel_treaty"
+    REPUDIATE_TREATY = "repudiate_treaty"
     DISPATCH_SHIPMENT = "dispatch_shipment"
     DISPATCH_MIGRATION = "dispatch_migration"
 
 
+MESSAGE_ORDERS = frozenset(
+    {
+        DirectOrderKind.SEND_MESSAGE,
+        DirectOrderKind.OFFER_TREATY,
+        DirectOrderKind.ACCEPT_TREATY,
+        DirectOrderKind.CANCEL_TREATY,
+    }
+)
+TREATY_END_ORDERS = frozenset({DirectOrderKind.CANCEL_TREATY, DirectOrderKind.REPUDIATE_TREATY})
 JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.DISPATCH_SHIPMENT: JourneyKind.SHIPMENT,
     DirectOrderKind.DISPATCH_MIGRATION: JourneyKind.MIGRATION,
@@ -162,13 +173,14 @@ def build_council_report(
             for person_id in journey.traveller_ids:
                 latest_migration[person_id] = journey
     # A civilization loses sight of its emigrants at departure, whatever becomes of them,
-    # unless the party walks back home after a failed delivery.
+    # unless the party walks back home after a failed or refused delivery.
     emigrants = {
         person_id
         for person_id, journey in latest_migration.items()
         if journey.sender_civilization_id == civilization_id
         and not (
-            journey.phase is JourneyPhase.COMPLETE and journey.outcome is JourneyOutcome.FAILED
+            journey.phase is JourneyPhase.COMPLETE
+            and journey.outcome in {JourneyOutcome.FAILED, JourneyOutcome.REFUSED}
         )
     }
     visible_events = tuple(
@@ -248,6 +260,7 @@ def _journey_error(
     )
     if (
         treaty is None
+        or not treaty.in_force
         or treaty.kind is not REQUIRED_TREATY[kind]
         or {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
         != {civilization_id, command.recipient_civilization_id}
@@ -298,6 +311,44 @@ def _journey_error(
     return None
 
 
+def _treaty_end_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    ending: set[EntityId],
+) -> CommandError | None:
+    """Validate a cancellation or repudiation of a treaty this civilization is party to."""
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    treaty = next(
+        (item for item in state.active_treaties if item.treaty_id == command.treaty_id),
+        None,
+    )
+    if (
+        treaty is None
+        or not treaty.in_force
+        or civilization_id
+        not in {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+    ):
+        return error("unknown_treaty", "only a treaty in force with this civilization can end")
+    if treaty.treaty_id in ending:
+        return error("duplicate_treaty_act", "the treaty is already being ended in this council")
+    if command.kind is DirectOrderKind.REPUDIATE_TREATY:
+        return None
+    if command.recipient_civilization_id != treaty.counterparty(civilization_id):
+        return error("invalid_treaty_party", "a cancellation must go to the other party")
+    if any(
+        message.cancellation_of == treaty.treaty_id
+        and message.sender_civilization_id == civilization_id
+        and message.status is MissionStatus.IN_TRANSIT
+        for message in state.diplomatic_missions
+    ):
+        return error("cancellation_pending", "a cancellation notice is already travelling")
+    return None
+
+
 def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandValidation:
     if envelope.civilization_id not in state.civilizations:
         return CommandValidation(
@@ -318,6 +369,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     seen_messages: set[EntityId] = set()
     seen_treaties: set[EntityId] = set()
     seen_journeys: set[EntityId] = set()
+    ending_treaties: set[EntityId] = set()
     committed_travellers: set[EntityId] = set()
     committed_at_home: set[EntityId] = set()
     teaching_people = {
@@ -399,11 +451,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     )
                 else:
                     seen_expeditions.add(command.expedition_id)
-            if command.kind in {
-                DirectOrderKind.SEND_MESSAGE,
-                DirectOrderKind.OFFER_TREATY,
-                DirectOrderKind.ACCEPT_TREATY,
-            }:
+            if command.kind in MESSAGE_ORDERS:
                 message_required = (
                     command.message_id,
                     command.ambassador_id,
@@ -458,6 +506,12 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     code="invalid_treaty",
                     message="treaty acceptance requires the offered treaty ID",
                 )
+            if command.kind in TREATY_END_ORDERS and command.treaty_id is None:
+                command_error = CommandError(
+                    command_id=command.command_id,
+                    code="invalid_treaty",
+                    message="ending a treaty requires its ID",
+                )
             if command.kind in JOURNEY_ORDERS:
                 traveller_ids = command.traveller_ids
                 if (
@@ -494,11 +548,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 person_ids += (command.teacher_id, command.apprentice_id)
             if command.kind is DirectOrderKind.START_EXPEDITION and command_error is None:
                 person_ids += command.explorer_ids
-            if command.kind in {
-                DirectOrderKind.SEND_MESSAGE,
-                DirectOrderKind.OFFER_TREATY,
-                DirectOrderKind.ACCEPT_TREATY,
-            } and command_error is None:
+            if command.kind in MESSAGE_ORDERS and command_error is None:
                 assert command.ambassador_id is not None
                 person_ids += (command.ambassador_id,)
             if command.kind in JOURNEY_ORDERS and command_error is None:
@@ -533,11 +583,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 travellers = command.explorer_ids
             elif command.kind in JOURNEY_ORDERS:
                 travellers = command.traveller_ids
-            elif command.kind in {
-                DirectOrderKind.SEND_MESSAGE,
-                DirectOrderKind.OFFER_TREATY,
-                DirectOrderKind.ACCEPT_TREATY,
-            } and command.ambassador_id is not None:
+            elif command.kind in MESSAGE_ORDERS and command.ambassador_id is not None:
                 travellers = (command.ambassador_id,)
             home_duty: tuple[EntityId, ...] = ()
             if command.kind is DirectOrderKind.START_PROJECT:
@@ -564,6 +610,16 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="person_travelling",
                         message="a person away on a journey cannot work or teach at home",
                     )
+            if (
+                command.kind in JOURNEY_ORDERS
+                and command_error is None
+                and command.treaty_id in ending_treaties
+            ):
+                command_error = CommandError(
+                    command_id=command.command_id,
+                    code="no_active_treaty",
+                    message="this council already ended that treaty",
+                )
             if command.kind in JOURNEY_ORDERS and command_error is None:
                 command_error = _journey_error(
                     command, envelope.civilization_id, state, reserved_cargo
@@ -602,11 +658,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                             "expedition route must start locally and use adjacent in-bounds tiles"
                         ),
                     )
-            if command.kind in {
-                DirectOrderKind.SEND_MESSAGE,
-                DirectOrderKind.OFFER_TREATY,
-                DirectOrderKind.ACCEPT_TREATY,
-            } and command_error is None:
+            if command.kind in MESSAGE_ORDERS and command_error is None:
                 assert command.ambassador_id is not None
                 assert command.recipient_civilization_id is not None
                 civilization = state.civilizations[envelope.civilization_id]
@@ -685,9 +737,16 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="invalid_treaty_party",
                         message="acceptance must return to the treaty proposer",
                     )
+            if command.kind in TREATY_END_ORDERS and command_error is None:
+                command_error = _treaty_end_error(
+                    command, envelope.civilization_id, state, ending_treaties
+                )
             if command_error is not None:
                 errors.append(command_error)
                 continue
+            if command.kind in TREATY_END_ORDERS:
+                assert command.treaty_id is not None
+                ending_treaties.add(command.treaty_id)
             committed_travellers.update(travellers)
             committed_at_home.update(home_duty)
             if command.kind is DirectOrderKind.DISPATCH_SHIPMENT:

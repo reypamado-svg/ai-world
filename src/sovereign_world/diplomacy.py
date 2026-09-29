@@ -25,6 +25,11 @@ class TreatyKind(StrEnum):
     MIGRATION = "migration"
 
 
+class TreatyEndKind(StrEnum):
+    CANCELLED = "cancelled"
+    BREACHED = "breached"
+
+
 class Contact(BaseModel):
     """A single civilization's dated sighting of a foreign settlement."""
 
@@ -65,12 +70,41 @@ class ActiveTreaty(BaseModel):
     kind: TreatyKind
     offered_day: int = Field(ge=0)
     activated_day: int = Field(ge=0)
+    ended_day: int | None = Field(default=None, ge=0)
+    end_kind: TreatyEndKind | None = None
+    ended_by: EntityId | None = None
 
     @model_validator(mode="after")
     def valid_dates(self) -> ActiveTreaty:
         if self.activated_day < self.offered_day:
             raise ValueError("treaty cannot activate before its offer")
+        ending = (self.ended_day, self.end_kind, self.ended_by)
+        if any(value is None for value in ending) and any(
+            value is not None for value in ending
+        ):
+            raise ValueError("an ended treaty records its day, kind, and party")
+        if self.ended_day is not None and self.ended_day < self.activated_day:
+            raise ValueError("treaty cannot end before it activates")
+        if self.ended_by is not None and self.ended_by not in {
+            self.proposer_civilization_id,
+            self.recipient_civilization_id,
+        }:
+            raise ValueError("only a party can end a treaty")
         return self
+
+    @property
+    def in_force(self) -> bool:
+        return self.ended_day is None
+
+    def counterparty(self, civilization_id: EntityId) -> EntityId:
+        if civilization_id == self.proposer_civilization_id:
+            return self.recipient_civilization_id
+        if civilization_id == self.recipient_civilization_id:
+            return self.proposer_civilization_id
+        raise ValueError(f"{civilization_id} is not a party to {self.treaty_id}")
+
+    def ended(self, day: int, kind: TreatyEndKind, by: EntityId) -> ActiveTreaty:
+        return self.model_copy(update={"ended_day": day, "end_kind": kind, "ended_by": by})
 
 
 class DiplomaticMessage(BaseModel):
@@ -91,6 +125,7 @@ class DiplomaticMessage(BaseModel):
     delivered_text: str | None = Field(default=None, max_length=1_100)
     treaty_offer: TreatyOffer | None = None
     acceptance_of: EntityId | None = None
+    cancellation_of: EntityId | None = None
 
     @model_validator(mode="after")
     def valid_shape(self) -> DiplomaticMessage:
@@ -104,8 +139,9 @@ class DiplomaticMessage(BaseModel):
             raise ValueError("delivered messages require delivered text")
         if self.status is not MissionStatus.DELIVERED and self.delivered_text is not None:
             raise ValueError("only delivered messages can contain delivered text")
-        if self.treaty_offer is not None and self.acceptance_of is not None:
-            raise ValueError("a message cannot offer and accept a treaty")
+        carried = (self.treaty_offer, self.acceptance_of, self.cancellation_of)
+        if sum(item is not None for item in carried) > 1:
+            raise ValueError("a message carries at most one treaty act")
         if self.treaty_offer is not None and (
             self.treaty_offer.proposer_civilization_id != self.sender_civilization_id
             or self.treaty_offer.recipient_civilization_id != self.recipient_civilization_id
