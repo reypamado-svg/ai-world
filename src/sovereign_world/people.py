@@ -12,6 +12,14 @@ from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId, IdAllocator
 from sovereign_world.worldgen import StartingRegion
 
+# Unfed days the body's reserves absorb before hunger adds any risk of death.
+HUNGER_GRACE_DAYS = 10
+# Body condition is lost on unfed days about three times faster than it returns on fed days.
+UNFED_HEALTH_LOSS_BP = 100
+FED_HEALTH_GAIN_BP = 35
+# Below this body condition a person cannot conceive.
+FERTILE_HEALTH_BP = 8_000
+
 
 class Sex(StrEnum):
     FEMALE = "female"
@@ -119,6 +127,22 @@ def create_founders(
     )
 
 
+def go_hungry(person: Person) -> None:
+    """An unfed day: acute hunger builds and the body wastes."""
+    person.nutrition_debt += 1
+    person.health_bp = max(0, person.health_bp - UNFED_HEALTH_LOSS_BP)
+
+
+def recover(person: Person) -> None:
+    """A fed day, applied after that day's death roll.
+
+    Acute hunger halves, so its danger fades within days of eating again, while body
+    condition rebuilds slowly over months.
+    """
+    person.nutrition_debt //= 2
+    person.health_bp = min(10_000, person.health_bp + FED_HEALTH_GAIN_BP)
+
+
 def birth_person_id(civilization_id: EntityId, sequence: int) -> EntityId:
     """Scope birth IDs by birth civilization so person IDs stay globally unique."""
     return EntityId(f"person:{civilization_id.rsplit(':', 1)[-1]}-{sequence:010d}")
@@ -127,7 +151,7 @@ def birth_person_id(civilization_id: EntityId, sequence: int) -> EntityId:
 def _mortality_threshold(person: Person) -> tuple[int, str]:
     if person.health_bp <= 0:
         return 1_000_000, "critical health"
-    nutrition = min(700_000, person.nutrition_debt * 1_000)
+    nutrition = min(700_000, max(0, person.nutrition_debt - HUNGER_GRACE_DAYS) * 1_000)
     disease = min(700_000, person.disease_load * 50)
     years = person.age_days // 365
     natural = max(0, years - 65) ** 2 * 40
@@ -143,12 +167,18 @@ def _eligible_pairs(people: dict[EntityId, Person]) -> list[tuple[Person, Person
     females = [
         person
         for person in people.values()
-        if person.alive and person.sex is Sex.FEMALE and 18 * 365 <= person.age_days <= 42 * 365
+        if person.alive
+        and person.sex is Sex.FEMALE
+        and 18 * 365 <= person.age_days <= 42 * 365
+        and person.health_bp >= FERTILE_HEALTH_BP
     ]
     males = [
         person
         for person in people.values()
-        if person.alive and person.sex is Sex.MALE and 18 * 365 <= person.age_days <= 60 * 365
+        if person.alive
+        and person.sex is Sex.MALE
+        and 18 * 365 <= person.age_days <= 60 * 365
+        and person.health_bp >= FERTILE_HEALTH_BP
     ]
     pairs: list[tuple[Person, Person]] = []
     for female in sorted(females, key=lambda person: person.person_id):

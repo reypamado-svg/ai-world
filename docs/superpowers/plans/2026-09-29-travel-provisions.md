@@ -39,7 +39,7 @@
 
 ## Deliberate choices
 
-- **Hunger damage stays permanent.** This matches the rule for everyone at home: nothing ever reduces nutrition debt. So a long, barren trip permanently shortens travellers' lives. Whether hunger should ever heal is left as a separate decision, because it changes starvation for the whole world.
+- **Hunger damage heals.** At first this plan kept hunger damage permanent; `2026-09-29-hunger-recovery.md` makes it heal, for everyone, at home and on the road.
 - **The engine packs automatically,** so a sovereign cannot under-pack for delays it cannot predict. `extra_provisions` still lets it pack more.
 - **No tile depletion,** so saved state does not grow with every foraged tile.
 

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
 from sovereign_world.ids import EntityId
-from sovereign_world.people import Person
+from sovereign_world.people import Person, go_hungry
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 
@@ -209,6 +209,7 @@ class JourneyDayResult:
     handed_over: dict[EntityId, int]
     exhausted_ids: tuple[EntityId, ...]
     foraging: tuple[Foraging, ...]
+    fed_ids: tuple[EntityId, ...]
 
 
 def _roll(rng: StableRng, day: int, journey: Journey, purpose: str) -> int:
@@ -391,6 +392,7 @@ def advance_journeys_day(
     handed_over: dict[EntityId, int] = {}
     exhausted_ids: list[EntityId] = []
     foraging: list[Foraging] = []
+    fed_ids: list[EntityId] = []
     fed_journeys: list[Journey] = []
     previous = {journey.journey_id: journey for journey in journeys}
     for journey in updated:
@@ -415,6 +417,7 @@ def advance_journeys_day(
         eaten = min(len(hungry_mouths), journey.provisions)
         remaining = journey.provisions - eaten
         unfed = hungry_mouths[eaten:]
+        fed_ids.extend(person.person_id for person in hungry_mouths[:eaten])
         if journey.provisions and not remaining:
             exhausted_ids.append(journey.journey_id)
         if unfed:
@@ -424,8 +427,9 @@ def advance_journeys_day(
             for person in unfed:
                 if int(stream.integers(0, ROLL_SCALE)) < chance:
                     found += 1
+                    fed_ids.append(person.person_id)
                 else:
-                    person.nutrition_debt += 1
+                    go_hungry(person)
             foraging.append(
                 Foraging(journey_id=journey.journey_id, fed=found, hungry=len(unfed) - found)
             )
@@ -448,4 +452,5 @@ def advance_journeys_day(
         handed_over=handed_over,
         exhausted_ids=tuple(sorted(exhausted_ids)),
         foraging=tuple(foraging),
+        fed_ids=tuple(sorted(fed_ids)),
     )
