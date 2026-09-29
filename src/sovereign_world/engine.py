@@ -15,6 +15,7 @@ from sovereign_world.capabilities import (
 )
 from sovereign_world.commands import (
     JOURNEY_ORDERS,
+    MESSAGE_ORDERS,
     Decree,
     DirectOrder,
     DirectOrderKind,
@@ -26,6 +27,7 @@ from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
     DiplomaticMessage,
+    TreatyEndKind,
     TreatyOffer,
     advance_diplomacy_day,
 )
@@ -82,6 +84,23 @@ def _add_notice(state: WorldState, civilization_id: EntityId, item: LogisticsNot
     )
 
 
+def _end_treaty(
+    state: WorldState,
+    treaty_id: EntityId,
+    kind: TreatyEndKind,
+    by: EntityId,
+) -> ActiveTreaty | None:
+    """End a treaty still in force; an already-ended treaty keeps its first ending."""
+    treaty = next((item for item in state.active_treaties if item.treaty_id == treaty_id), None)
+    if treaty is None or not treaty.in_force:
+        return None
+    ended = treaty.ended(state.day, kind, by)
+    state.active_treaties = tuple(
+        ended if item.treaty_id == treaty_id else item for item in state.active_treaties
+    )
+    return ended
+
+
 def _dispatch_journey(
     state: WorldState,
     civilization_id: EntityId,
@@ -107,6 +126,7 @@ def _dispatch_journey(
                     day=state.day,
                     kind=NoticeKind.SHIPMENT_UNFUNDED,
                     journey_id=command.journey_id,
+                    treaty_id=command.treaty_id,
                     counterpart_civilization_id=command.recipient_civilization_id,
                     cargo=cargo,
                 ),
@@ -260,6 +280,9 @@ def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
         },
         day=state.day,
         rng=rng,
+        treaties_in_force=frozenset(
+            treaty.treaty_id for treaty in state.active_treaties if treaty.in_force
+        ),
     )
     state.journeys = result.journeys
     for civilization_id, people in result.people_by_civilization.items():
@@ -405,6 +428,40 @@ def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
                 None,
                 str(journey.journey_id),
                 cause="no living recipients",
+            )
+        )
+    for journey in result.refused:
+        recipient_id = journey.recipient_civilization_id
+        sender_people = state.civilizations[journey.sender_civilization_id].population.people
+        turned_away = tuple(
+            person_id
+            for person_id in journey.traveller_ids
+            if person_id in sender_people and sender_people[person_id].alive
+        )
+        _add_notice(
+            state,
+            recipient_id,
+            notice(
+                state.day,
+                (
+                    NoticeKind.SHIPMENT_TURNED_AWAY
+                    if journey.kind is JourneyKind.SHIPMENT
+                    else NoticeKind.MIGRANTS_TURNED_AWAY
+                ),
+                journey,
+                journey.sender_civilization_id,
+                cargo=journey.cargo,
+                person_ids=turned_away,
+            ),
+        )
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                f"{journey.kind.value}_refused",
+                str(recipient_id),
+                str(journey.journey_id),
+                treaty=str(journey.treaty_id),
             )
         )
     cargo_home = {journey.journey_id for journey in result.cargo_returned}
@@ -583,12 +640,26 @@ def _run_councils(
                 events.extend(_dispatch_journey(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
-                and command.kind
-                in {
-                    DirectOrderKind.SEND_MESSAGE,
-                    DirectOrderKind.OFFER_TREATY,
-                    DirectOrderKind.ACCEPT_TREATY,
-                }
+                and command.kind is DirectOrderKind.REPUDIATE_TREATY
+                and command.treaty_id is not None
+            ):
+                breached = _end_treaty(
+                    state, command.treaty_id, TreatyEndKind.BREACHED, civilization_id
+                )
+                if breached is not None:
+                    events.append(
+                        _event(
+                            state,
+                            EventPhase.COMMAND,
+                            "treaty_breached",
+                            str(civilization_id),
+                            str(breached.treaty_id),
+                            injured=str(breached.counterparty(civilization_id)),
+                        )
+                    )
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind in MESSAGE_ORDERS
                 and command.message_id is not None
                 and command.ambassador_id is not None
                 and command.recipient_civilization_id is not None
@@ -624,6 +695,11 @@ def _run_councils(
                                 acceptance_of=(
                                     command.treaty_id
                                     if command.kind is DirectOrderKind.ACCEPT_TREATY
+                                    else None
+                                ),
+                                cancellation_of=(
+                                    command.treaty_id
+                                    if command.kind is DirectOrderKind.CANCEL_TREATY
                                     else None
                                 ),
                             ),
@@ -844,6 +920,38 @@ def advance_day(
                     str(message.treaty_offer.offer_id),
                 )
             )
+        if message.cancellation_of is not None:
+            notified = next(
+                (
+                    treaty
+                    for treaty in candidate.active_treaties
+                    if treaty.treaty_id == message.cancellation_of
+                ),
+                None,
+            )
+            cancelled = (
+                _end_treaty(
+                    candidate,
+                    message.cancellation_of,
+                    TreatyEndKind.CANCELLED,
+                    message.sender_civilization_id,
+                )
+                if notified is not None
+                and {message.sender_civilization_id, message.recipient_civilization_id}
+                == {notified.proposer_civilization_id, notified.recipient_civilization_id}
+                else None
+            )
+            if cancelled is not None:
+                events.append(
+                    _event(
+                        candidate,
+                        EventPhase.MOVEMENT,
+                        "treaty_cancelled",
+                        str(message.recipient_civilization_id),
+                        str(cancelled.treaty_id),
+                        by=str(message.sender_civilization_id),
+                    )
+                )
         if message.acceptance_of is not None:
             offer = next(
                 (

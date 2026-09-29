@@ -3,7 +3,13 @@ import subprocess
 import sys
 
 import pytest
-from logistics_helpers import OneShotSovereign, ScheduledSovereign, envelope, treaty_world
+from logistics_helpers import (
+    OneShotSovereign,
+    ScheduledSovereign,
+    clear_journey_id,
+    envelope,
+    treaty_world,
+)
 
 from sovereign_world.capabilities import CapabilityId, CapabilityRecord
 from sovereign_world.commands import (
@@ -105,20 +111,6 @@ def _journey_id_with_roll(low: int, high: int, *, day: int = 0, seed: int = 21) 
     raise AssertionError("no probe matched")
 
 
-def _clear_road_id(prefix: str, *, start_day: int = 0, days: int = 8, seed: int = 21) -> str:
-    """Find a journey ID whose travel rolls allow a move on every day in the window."""
-    rng = StableRng(seed)
-    for index in range(100_000):
-        journey_id = f"journey:{prefix}-{index}"
-        if all(
-            int(rng.stream(f"day:{day}:logistics:travel:{journey_id}").integers(0, 10_000))
-            >= DELAY_THRESHOLD
-            for day in range(start_day, start_day + days)
-        ):
-            return journey_id
-    raise AssertionError("no clear road found")
-
-
 def test_shipment_requires_an_active_trade_treaty() -> None:
     for kind in (None, TreatyKind.MIGRATION, TreatyKind.PEACE):
         state, sender, recipient, route = treaty_world(kind)
@@ -209,7 +201,7 @@ def test_one_envelope_cannot_ship_the_same_goods_or_carriers_twice() -> None:
 
 def test_goods_reach_the_recipient_only_on_physical_arrival() -> None:
     state, sender, recipient, route = treaty_world()
-    order = _shipment(state, sender, recipient, route, journey_id=_clear_road_id("goods"))
+    order = _shipment(state, sender, recipient, route, journey_id=clear_journey_id("goods"))
     sovereigns = {sender: OneShotSovereign(order)}
     rng = StableRng(state.config.seed)
     recipient_stone = state.civilizations[recipient].inventory.quantities[Resource.STONE]
@@ -242,7 +234,7 @@ def test_goods_reach_the_recipient_only_on_physical_arrival() -> None:
 
 def test_logistics_knowledge_stays_private_until_observed() -> None:
     state, sender, recipient, route = treaty_world()
-    order = _shipment(state, sender, recipient, route, journey_id=_clear_road_id("private"))
+    order = _shipment(state, sender, recipient, route, journey_id=clear_journey_id("private"))
     sovereigns = {sender: OneShotSovereign(order)}
     state, results = _run(state, 2, sovereigns)
 
@@ -316,7 +308,7 @@ def test_delivery_fails_without_living_recipients_and_goods_come_home() -> None:
         person.death_day = 0
     sender_stone = state.civilizations[sender].inventory.quantities[Resource.STONE]
 
-    order = _shipment(state, sender, recipient, route, journey_id=_clear_road_id("failed"))
+    order = _shipment(state, sender, recipient, route, journey_id=clear_journey_id("failed"))
     state, results = _run(state, 12, {sender: OneShotSovereign(order)})
 
     kinds = _kinds(results)
@@ -348,7 +340,9 @@ def test_migrants_change_allegiance_only_on_arrival_with_history_intact() -> Non
     )
     origin.population.people[mother].skills[CapabilityId.HERBAL_CARE.value] = 250
     migrants = tuple(sorted((mother, origin.population.living_ids[-1])))
-    order = _migration(state, sender, recipient, route, migrants, journey_id=_clear_road_id("kin"))
+    order = _migration(
+        state, sender, recipient, route, migrants, journey_id=clear_journey_id("kin")
+    )
     before = {person_id: origin.population.people[person_id].model_copy() for person_id in migrants}
     sovereigns = {sender: OneShotSovereign(order)}
     rng = StableRng(state.config.seed)
@@ -477,7 +471,13 @@ def test_carriers_who_perish_carrying_undelivered_goods_destroy_them() -> None:
         outcome=JourneyOutcome.FAILED,
     )
 
-    result = advance_journeys_day((returning,), people, day=5, rng=StableRng(21))
+    result = advance_journeys_day(
+        (returning,),
+        people,
+        day=5,
+        rng=StableRng(21),
+        treaties_in_force=frozenset({returning.treaty_id}),
+    )
 
     assert result.journeys[0].outcome is JourneyOutcome.PERISHED
     assert not result.journeys[0].carrying_cargo
@@ -492,7 +492,7 @@ def test_failed_migration_walks_home_and_rejoins_the_roster() -> None:
         person.death_day = 0
     migrants = state.civilizations[sender].population.living_ids[-2:]
     order = _migration(
-        state, sender, recipient, route, migrants, journey_id=_clear_road_id("homesick")
+        state, sender, recipient, route, migrants, journey_id=clear_journey_id("homesick")
     )
 
     state, results = _run(state, 3, {sender: OneShotSovereign(order)})
@@ -529,7 +529,7 @@ def test_former_explorer_can_migrate_without_breaking_the_world() -> None:
         recipient,
         route,
         (explorer,),
-        journey_id=_clear_road_id("explorer", start_day=30),
+        journey_id=clear_journey_id("explorer", start_day=30),
     )
     sovereigns = {sender: ScheduledSovereign({0: (expedition,), 30: (migration,)})}
 
@@ -545,7 +545,7 @@ def test_a_migrant_sent_back_home_reappears_on_the_home_roster() -> None:
     state, sender, recipient, route = treaty_world(TreatyKind.MIGRATION)
     traveller = state.civilizations[sender].population.living_ids[-1]
     outbound = _migration(
-        state, sender, recipient, route, (traveller,), journey_id=_clear_road_id("out")
+        state, sender, recipient, route, (traveller,), journey_id=clear_journey_id("out")
     )
     homeward = _migration(
         state,
@@ -553,7 +553,7 @@ def test_a_migrant_sent_back_home_reappears_on_the_home_roster() -> None:
         sender,
         tuple(reversed(route)),
         (traveller,),
-        journey_id=_clear_road_id("back", start_day=30),
+        journey_id=clear_journey_id("back", start_day=30),
     )
     sovereigns = {
         sender: ScheduledSovereign({0: (outbound,)}),
@@ -586,7 +586,7 @@ def test_origin_forgets_a_capability_whose_last_practitioner_emigrates() -> None
         )
     )
     order = _migration(
-        state, sender, recipient, route, (scribe,), journey_id=_clear_road_id("scribe")
+        state, sender, recipient, route, (scribe,), journey_id=clear_journey_id("scribe")
     )
 
     state, results = _run(state, 4, {sender: OneShotSovereign(order)})
@@ -700,7 +700,7 @@ def test_travellers_contribute_no_labour_at_home() -> None:
     )
     state.journeys = (
         Journey(
-            journey_id=EntityId(_clear_road_id("labour")),
+            journey_id=EntityId(clear_journey_id("labour")),
             kind=JourneyKind.SHIPMENT,
             treaty_id=EntityId("treaty:trade"),
             sender_civilization_id=sender,
@@ -744,7 +744,7 @@ def test_unfunded_shipment_is_recorded_privately_and_never_departs() -> None:
 
 def test_receipt_beyond_storage_capacity_is_wasted() -> None:
     state, sender, recipient, route = treaty_world()
-    order = _shipment(state, sender, recipient, route, journey_id=_clear_road_id("overflow"))
+    order = _shipment(state, sender, recipient, route, journey_id=clear_journey_id("overflow"))
     state, _ = _run(state, len(route) - 2, {sender: OneShotSovereign(order)})
     storehouse = state.civilizations[recipient].inventory
     stone = storehouse.quantities[Resource.STONE]

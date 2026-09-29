@@ -37,6 +37,7 @@ class JourneyOutcome(StrEnum):
     DELIVERED = "delivered"
     LOST = "lost"
     FAILED = "failed"
+    REFUSED = "refused"
     PERISHED = "perished"
 
 
@@ -97,9 +98,11 @@ class NoticeKind(StrEnum):
     SHIPMENT_DISPATCHED = "shipment_dispatched"
     SHIPMENT_UNFUNDED = "shipment_unfunded"
     SHIPMENT_RECEIVED = "shipment_received"
+    SHIPMENT_TURNED_AWAY = "shipment_turned_away"
     SHIPMENT_CARRIERS_RETURNED = "shipment_carriers_returned"
     MIGRATION_DEPARTED = "migration_departed"
     MIGRANTS_RECEIVED = "migrants_received"
+    MIGRANTS_TURNED_AWAY = "migrants_turned_away"
     MIGRANTS_RETURNED = "migrants_returned"
 
 
@@ -112,6 +115,7 @@ class LogisticsNotice(BaseModel):
     day: int = Field(ge=0)
     kind: NoticeKind
     journey_id: EntityId
+    treaty_id: EntityId
     counterpart_civilization_id: EntityId
     cargo: dict[Resource, int] = Field(default_factory=dict)
     person_ids: tuple[EntityId, ...] = ()
@@ -133,6 +137,7 @@ def notice(
         day=day,
         kind=kind,
         journey_id=journey.journey_id,
+        treaty_id=journey.treaty_id,
         counterpart_civilization_id=counterpart,
         cargo=dict(cargo or {}),
         person_ids=person_ids,
@@ -157,6 +162,7 @@ class JourneyDayResult:
     hazard_deaths: tuple[HazardDeath, ...]
     arrived: tuple[Journey, ...]
     failed: tuple[Journey, ...]
+    refused: tuple[Journey, ...]
     returned: tuple[Journey, ...]
     cargo_returned: tuple[Journey, ...]
 
@@ -172,10 +178,12 @@ def advance_journeys_day(
     *,
     day: int,
     rng: StableRng,
+    treaties_in_force: frozenset[EntityId],
 ) -> JourneyDayResult:
     """Move each active party one route tile, resolving deaths, hazards, and delays.
 
     Arrival only marks the journey; the engine performs receipt and allegiance transfer.
+    A party arriving under a treaty that is no longer in force is turned away.
     """
     people = {
         civilization_id: {
@@ -190,6 +198,7 @@ def advance_journeys_day(
     hazard_deaths: list[HazardDeath] = []
     arrived: list[Journey] = []
     failed: list[Journey] = []
+    refused: list[Journey] = []
     returned: list[Journey] = []
     cargo_returned: list[Journey] = []
     for journey in sorted(journeys, key=lambda item: item.journey_id):
@@ -286,7 +295,16 @@ def advance_journeys_day(
                 person.alive
                 for person in people.get(journey.recipient_civilization_id, {}).values()
             )
-            if recipient_living:
+            if recipient_living and journey.treaty_id not in treaties_in_force:
+                moved = moved.model_copy(
+                    update={
+                        "arrived_day": day,
+                        "outcome": JourneyOutcome.REFUSED,
+                        "phase": JourneyPhase.RETURNING,
+                    }
+                )
+                refused.append(moved)
+            elif recipient_living:
                 moved = moved.model_copy(
                     update={
                         "arrived_day": day,
@@ -333,6 +351,7 @@ def advance_journeys_day(
         ),
         arrived=tuple(arrived),
         failed=tuple(failed),
+        refused=tuple(refused),
         returned=tuple(returned),
         cargo_returned=tuple(cargo_returned),
     )

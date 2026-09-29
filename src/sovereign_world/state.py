@@ -300,5 +300,6 @@ def validate_world(state: WorldState) -> None:
         if journey.carrying_cargo and journey.outcome not in {
             JourneyOutcome.PENDING,
             JourneyOutcome.FAILED,
+            JourneyOutcome.REFUSED,
         }:
             raise ValueError("only undelivered cargo can still be carried")

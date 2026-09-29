@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from sovereign_world.commands import CommandEnvelope, CouncilReport, DirectOrder
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.diplomacy import ActiveTreaty, Contact, TreatyKind, TreatyOffer
 from sovereign_world.exploration import Observation
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
+from sovereign_world.rng import StableRng
 from sovereign_world.state import WorldState, build_initial_state
 
 
@@ -129,3 +132,51 @@ class ScheduledSovereign:
             correlation_id=report.report_id,
             commands=self.orders_by_day.get(report.day, ()),
         )
+
+
+def roll_matching_id(
+    prefix: str,
+    stream: str,
+    predicate: Callable[[int], bool],
+    *,
+    start_day: int = 0,
+    days: int = 1,
+    seed: int = 21,
+) -> str:
+    """Find an ID whose named daily travel rolls all satisfy the predicate.
+
+    `stream` is "logistics" for journeys or "diplomacy" for ambassador messages.
+    """
+    rng = StableRng(seed)
+    for index in range(100_000):
+        candidate = f"{prefix}-{index}"
+        if all(
+            predicate(
+                int(rng.stream(f"day:{day}:{stream}:travel:{candidate}").integers(0, 10_000))
+            )
+            for day in range(start_day, start_day + days)
+        ):
+            return candidate
+    raise AssertionError("no matching roll found")
+
+
+def clear_journey_id(prefix: str, *, start_day: int = 0, days: int = 8) -> str:
+    """A journey ID that moves, without delay or hazard, on every day in the window."""
+    return roll_matching_id(
+        f"journey:{prefix}",
+        "logistics",
+        lambda roll: roll >= 900,
+        start_day=start_day,
+        days=days,
+    )
+
+
+def clear_message_id(prefix: str, *, start_day: int = 0, days: int = 8) -> str:
+    """A message ID whose ambassador moves, without delay or loss, on every day in the window."""
+    return roll_matching_id(
+        f"message:{prefix}",
+        "diplomacy",
+        lambda roll: roll >= 900,
+        start_day=start_day,
+        days=days,
+    )
