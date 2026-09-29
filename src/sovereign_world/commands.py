@@ -9,7 +9,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field
 
 from sovereign_world.capabilities import CapabilityId
-from sovereign_world.diplomacy import Contact, DiplomaticMessage
+from sovereign_world.diplomacy import Contact, DiplomaticMessage, TreatyKind
 from sovereign_world.events import DomainEvent
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
@@ -33,6 +33,8 @@ class DirectOrderKind(StrEnum):
     START_TEACHING = "start_teaching"
     START_EXPEDITION = "start_expedition"
     SEND_MESSAGE = "send_message"
+    OFFER_TREATY = "offer_treaty"
+    ACCEPT_TREATY = "accept_treaty"
 
 
 class ProjectKind(StrEnum):
@@ -69,6 +71,8 @@ class DirectOrder(BaseModel):
     ambassador_id: EntityId | None = None
     recipient_civilization_id: EntityId | None = None
     message_text: str = Field(default="", max_length=1_000)
+    treaty_id: EntityId | None = None
+    treaty_kind: TreatyKind | None = None
     priority: int = Field(default=50, ge=0, le=100)
 
 
@@ -170,6 +174,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     seen_assignments: set[EntityId] = set()
     seen_expeditions: set[EntityId] = set()
     seen_messages: set[EntityId] = set()
+    seen_treaties: set[EntityId] = set()
     for command in envelope.commands:
         if command.command_id in seen:
             errors.append(
@@ -242,7 +247,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     )
                 else:
                     seen_expeditions.add(command.expedition_id)
-            if command.kind is DirectOrderKind.SEND_MESSAGE:
+            if command.kind in {
+                DirectOrderKind.SEND_MESSAGE,
+                DirectOrderKind.OFFER_TREATY,
+                DirectOrderKind.ACCEPT_TREATY,
+            }:
                 message_required = (
                     command.message_id,
                     command.ambassador_id,
@@ -257,7 +266,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         command_id=command.command_id,
                         code="invalid_message",
                         message=(
-                            "send-message requires an ID, ambassador, recipient, text, and route"
+                            "message requires an ID, ambassador, recipient, text, and route"
                         ),
                     )
                 else:
@@ -274,6 +283,29 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         )
                     else:
                         seen_messages.add(command.message_id)
+            if command.kind is DirectOrderKind.OFFER_TREATY:
+                if command.treaty_id is None or command.treaty_kind is None:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_treaty",
+                        message="treaty offer requires an ID and kind",
+                    )
+                elif command.treaty_id in seen_treaties or any(
+                    offer.offer_id == command.treaty_id for offer in state.treaty_offers
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="duplicate_treaty",
+                        message="treaty ID is repeated",
+                    )
+                else:
+                    seen_treaties.add(command.treaty_id)
+            if command.kind is DirectOrderKind.ACCEPT_TREATY and command.treaty_id is None:
+                command_error = CommandError(
+                    command_id=command.command_id,
+                    code="invalid_treaty",
+                    message="treaty acceptance requires the offered treaty ID",
+                )
             person_ids = command.worker_ids
             if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
@@ -281,7 +313,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 person_ids += (command.teacher_id, command.apprentice_id)
             if command.kind is DirectOrderKind.START_EXPEDITION and command_error is None:
                 person_ids += command.explorer_ids
-            if command.kind is DirectOrderKind.SEND_MESSAGE and command_error is None:
+            if command.kind in {
+                DirectOrderKind.SEND_MESSAGE,
+                DirectOrderKind.OFFER_TREATY,
+                DirectOrderKind.ACCEPT_TREATY,
+            } and command_error is None:
                 assert command.ambassador_id is not None
                 person_ids += (command.ambassador_id,)
             for person_id in person_ids:
@@ -343,7 +379,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                             "expedition route must start locally and use adjacent in-bounds tiles"
                         ),
                     )
-            if command.kind is DirectOrderKind.SEND_MESSAGE and command_error is None:
+            if command.kind in {
+                DirectOrderKind.SEND_MESSAGE,
+                DirectOrderKind.OFFER_TREATY,
+                DirectOrderKind.ACCEPT_TREATY,
+            } and command_error is None:
                 assert command.ambassador_id is not None
                 assert command.recipient_civilization_id is not None
                 civilization = state.civilizations[envelope.civilization_id]
@@ -393,6 +433,34 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                             "message route must be known, adjacent, and end at the "
                             "discovered settlement"
                         ),
+                    )
+            if command.kind is DirectOrderKind.ACCEPT_TREATY and command_error is None:
+                assert command.treaty_id is not None
+                assert command.recipient_civilization_id is not None
+                civilization = state.civilizations[envelope.civilization_id]
+                offered = next(
+                    (
+                        message.treaty_offer
+                        for message in civilization.received_messages
+                        if message.treaty_offer is not None
+                        and message.treaty_offer.offer_id == command.treaty_id
+                    ),
+                    None,
+                )
+                if offered is None:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="unknown_treaty",
+                        message="only a delivered treaty offer may be accepted",
+                    )
+                elif (
+                    offered.proposer_civilization_id != command.recipient_civilization_id
+                    or offered.recipient_civilization_id != envelope.civilization_id
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_treaty_party",
+                        message="acceptance must return to the treaty proposer",
                     )
             if command_error is not None:
                 errors.append(command_error)
