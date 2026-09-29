@@ -131,12 +131,22 @@ def craft_materials(item: Resource, quantity: int) -> dict[Resource, int]:
     }
 
 
-def kit_assignment(fighter_ids: list[EntityId], kits: dict[Resource, int]) -> dict[EntityId, Kit]:
+FORMATION_SPEAR = Kit(Resource.SPEAR, UnitType.SPEARMAN, 14_000, defence_bp=13_750)
+"""A spearman trained in formations holds a line better still."""
+
+
+def kit_assignment(
+    fighter_ids: list[EntityId],
+    kits: dict[Resource, int],
+    *,
+    formations: bool = False,
+) -> dict[EntityId, Kit]:
     """Hand out kits, best first, to fighters in id order; the rest fight as levies."""
     issued: dict[EntityId, Kit] = {}
     queue = [resource for resource in KIT_PRIORITY for _ in range(kits.get(resource, 0))]
     for person_id, resource in zip(sorted(fighter_ids), queue, strict=False):
-        issued[person_id] = KITS[resource]
+        kit = KITS[resource]
+        issued[person_id] = FORMATION_SPEAR if formations and resource is Resource.SPEAR else kit
     return issued
 
 

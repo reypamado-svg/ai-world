@@ -9,7 +9,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from sovereign_world.armoury import CraftJob
-from sovereign_world.capabilities import CapabilityRecord, TeachingAssignment, regional_capability
+from sovereign_world.capabilities import (
+    CapabilityId,
+    CapabilityRecord,
+    TeachingAssignment,
+    regional_capability,
+)
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.diplomacy import (
     ActiveTreaty,
@@ -28,6 +33,7 @@ from sovereign_world.logistics import (
     LogisticsNotice,
 )
 from sovereign_world.people import Population, create_founders
+from sovereign_world.research import ResearchAssignment
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView
@@ -63,6 +69,9 @@ class CivilizationState(BaseModel):
     """Tolls this civilization's people have met, or learned from a partner's map."""
     drills: tuple[Drill, ...] = ()
     craft_jobs: tuple[CraftJob, ...] = ()
+    research: tuple[ResearchAssignment, ...] = ()
+    research_points: dict[CapabilityId, int] = Field(default_factory=dict)
+    """Progress toward each topic not yet discovered."""
     war_reports: tuple[BattleReport, ...] = ()
     """Battles as this civilization's own survivors told them."""
 
