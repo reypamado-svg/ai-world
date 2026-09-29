@@ -3,6 +3,7 @@ from sovereign_world.commands import CommandEnvelope, DirectOrder, DirectOrderKi
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.diplomacy import Contact, MissionStatus
 from sovereign_world.engine import advance_day
+from sovereign_world.hexmap import Terrain
 from sovereign_world.ids import EntityId
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
@@ -128,7 +129,12 @@ def test_expedition_creates_contact_only_when_it_reaches_foreign_settlement() ->
     sender_state = state.civilizations[sender]
     explorer = sender_state.population.living_ids[0]
     origin = sender_state.population.people[explorer].location
-    destination = state.world_map.neighbors(origin)[0]
+    # A grassland neighbour is one day's walk, so contact happens on the first day.
+    destination = next(
+        tile
+        for tile in state.world_map.neighbors(origin)
+        if state.world_map.tile(tile).terrain is Terrain.GRASSLAND
+    )
     state.civilizations[foreign].start_center = destination
 
     class ExplorerSovereign:
