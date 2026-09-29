@@ -50,3 +50,28 @@ Birth IDs were allocated from a per-civilization counter that starts where the s
 - Focused unit tests cover the logistics module. They check that a treaty is required, route and cargo validation, delay, hazard loss, travel death, failed delivery, and a transfer only after arrival.
 - An acceptance scenario ratifies trade and migration treaties through ambassadors. It then shows goods and people actually arriving, checks that each report is private, and replays the history to the same hashes.
 - A soak matrix runs seeded treaty-and-journey histories and checks the invariants and replay hash every day.
+
+## Future slice: travel provisions
+
+**Why:** migrants in transit currently eat from their origin's stores. The origin's food use therefore drops on the arrival day, which lets it infer an arrival it never observed. Carrying provisions moves that signal to the departure day, which the origin already knows about.
+
+**Proposed rules:**
+
+1. At dispatch, the engine packs provisions from the origin's food store: route length × travellers, plus a margin for delays. For a shipment, it packs for the round trip. An optional order field can request extra.
+2. Provisions share the 50-unit load of each traveller with any cargo. Without enough food in store, the order is refused, or the shipment is recorded as unfunded.
+3. Travellers stop eating at home from the day they leave. Each day, each living traveller eats 1 unit from the pack.
+4. When the pack runs out, the party forages on its current tile, using a seeded roll based on the tile's soil, water and terrain. It gets at most 1 unit per person per day, and tiles are not depleted. Anyone left unfed gains hunger, as people starving at home do.
+5. On arrival, migrants' leftover provisions go to the recipient's storehouse. Carriers keep theirs for the way home.
+6. New records and events: provisions carried on each journey, `provisions_exhausted`, and `foraged`, each resolved with its own named random stream.
+
+**Costs and open questions:**
+
+- Hunger damage is permanent: nothing ever reduces hunger, and each point adds 0.1% to the daily chance of dying for life. So a long, barren trip permanently shortens travellers' lives. Whether hunger should ever heal is a separate decision affecting the whole world.
+- Provisions reduce the goods a caravan can carry, and delays now cost food as well as time.
+- Food-poor civilizations will have more journeys refused.
+- Foraging without depletion lets a busy route be foraged forever for free. Adding depletion means storing state for every foraged tile.
+- Travellers no longer count at home, so the birth check (food on hand per person) and existing seeded histories shift slightly.
+- The saved-state format changes again, so histories saved before this slice will fail hash checks. This costs less if it lands before any long-lived world exists.
+- The stress tests' conservation check must track food carried in packs.
+
+**Size:** medium. The work sits mostly in `logistics.py`, the food step in `engine.py`, command validation and the tests.
