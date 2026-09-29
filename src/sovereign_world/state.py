@@ -17,9 +17,15 @@ from sovereign_world.diplomacy import (
     MissionStatus,
     TreatyOffer,
 )
-from sovereign_world.exploration import Expedition, Observation
+from sovereign_world.exploration import Expedition, ExpeditionStatus, Observation
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
+from sovereign_world.logistics import (
+    Journey,
+    JourneyKind,
+    JourneyOutcome,
+    LogisticsNotice,
+)
 from sovereign_world.people import Population, create_founders
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
@@ -41,6 +47,7 @@ class CivilizationState(BaseModel):
     teaching_assignments: tuple[TeachingAssignment, ...] = ()
     contacts: tuple[Contact, ...] = ()
     received_messages: tuple[DiplomaticMessage, ...] = ()
+    logistics_notices: tuple[LogisticsNotice, ...] = ()
 
 
 class WorldState(BaseModel):
@@ -56,6 +63,7 @@ class WorldState(BaseModel):
     diplomatic_missions: tuple[DiplomaticMessage, ...] = ()
     treaty_offers: tuple[TreatyOffer, ...] = ()
     active_treaties: tuple[ActiveTreaty, ...] = ()
+    journeys: tuple[Journey, ...] = ()
 
 
 def _canonical_payload(state: WorldState) -> str:
@@ -163,6 +171,8 @@ def validate_world(state: WorldState) -> None:
         if len({expedition.expedition_id for expedition in expeditions}) != len(expeditions):
             raise ValueError("expeditions must be unique")
         for expedition in expeditions:
+            if expedition.status is not ExpeditionStatus.ACTIVE:
+                continue
             for person_id in expedition.explorer_ids:
                 if person_id not in civilization.population.people:
                     raise ValueError("expedition explorer must be local")
@@ -209,6 +219,19 @@ def validate_world(state: WorldState) -> None:
             for message in received
         ):
             raise ValueError("received messages must be delivered to this civilization")
+        notices = civilization.logistics_notices
+        if notices != tuple(sorted(notices, key=lambda item: item.notice_id)):
+            raise ValueError("logistics notices must be sorted")
+        if len({item.notice_id for item in notices}) != len(notices):
+            raise ValueError("logistics notices must be unique")
+    person_owners: dict[EntityId, EntityId] = {}
+    for civilization_id, civilization in state.civilizations.items():
+        for person_id, person in civilization.population.people.items():
+            if person_id in person_owners:
+                raise ValueError("person IDs must be globally unique")
+            if person.person_id != person_id or person.civilization_id != civilization_id:
+                raise ValueError("person record must match its civilization")
+            person_owners[person_id] = civilization_id
     missions = state.diplomatic_missions
     if missions != tuple(sorted(missions, key=lambda message: message.message_id)):
         raise ValueError("diplomatic missions must be sorted")
@@ -218,7 +241,10 @@ def validate_world(state: WorldState) -> None:
         sender = state.civilizations.get(message.sender_civilization_id)
         if sender is None or message.recipient_civilization_id not in state.civilizations:
             raise ValueError("diplomatic mission must name existing civilizations")
-        if message.ambassador_id not in sender.population.people:
+        if (
+            message.status is MissionStatus.IN_TRANSIT
+            and message.ambassador_id not in sender.population.people
+        ):
             raise ValueError("diplomatic ambassador must belong to sender")
     offers = state.treaty_offers
     if offers != tuple(sorted(offers, key=lambda offer: offer.offer_id)):
@@ -240,3 +266,39 @@ def validate_world(state: WorldState) -> None:
     if any(treaty.treaty_id not in {offer.offer_id for offer in offers} for treaty in treaties):
         raise ValueError("active treaty requires a recorded offer")
 
+    journeys = state.journeys
+    if journeys != tuple(sorted(journeys, key=lambda journey: journey.journey_id)):
+        raise ValueError("journeys must be sorted")
+    if len({journey.journey_id for journey in journeys}) != len(journeys):
+        raise ValueError("journeys must be unique")
+    treaties_by_id = {treaty.treaty_id: treaty for treaty in treaties}
+    required_kind = {JourneyKind.SHIPMENT: "trade", JourneyKind.MIGRATION: "migration"}
+    busy: set[EntityId] = set()
+    for journey in journeys:
+        sender = state.civilizations.get(journey.sender_civilization_id)
+        if sender is None or journey.recipient_civilization_id not in state.civilizations:
+            raise ValueError("journey must name existing civilizations")
+        treaty = treaties_by_id.get(journey.treaty_id)
+        if (
+            treaty is None
+            or treaty.kind.value != required_kind[journey.kind]
+            or {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+            != {journey.sender_civilization_id, journey.recipient_civilization_id}
+        ):
+            raise ValueError("journey requires a matching active treaty")
+        if not journey.active:
+            continue
+        for person_id in journey.traveller_ids:
+            if person_id not in sender.population.people:
+                raise ValueError("travelling party must belong to its sender")
+            if person_id in busy:
+                raise ValueError("a person cannot travel on two journeys at once")
+            busy.add(person_id)
+            person = sender.population.people[person_id]
+            if person.alive and person.location != journey.route[journey.route_index]:
+                raise ValueError("living travellers must stand on their route position")
+        if journey.carrying_cargo and journey.outcome not in {
+            JourneyOutcome.PENDING,
+            JourneyOutcome.FAILED,
+        }:
+            raise ValueError("only undelivered cargo can still be carried")
