@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from math import ceil
@@ -13,6 +14,7 @@ from sovereign_world.ids import EntityId
 from sovereign_world.people import Person, go_hungry
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
+from sovereign_world.travel import MAX_PROGRESS, entry_cost, step, travel_days
 
 CARGO_UNITS_PER_CARRIER = 50
 MAX_TRAVELLERS = 16
@@ -33,6 +35,13 @@ FORAGE_TERRAIN_BP: dict[Terrain, int] = {
 class JourneyKind(StrEnum):
     SHIPMENT = "shipment"
     MIGRATION = "migration"
+    SETTLEMENT = "settlement"
+    GARRISON = "garrison"
+    RELOCATION = "relocation"
+
+
+INTERNAL_KINDS = frozenset({JourneyKind.SETTLEMENT, JourneyKind.GARRISON, JourneyKind.RELOCATION})
+"""Journeys within one civilization: no treaty, and the sender is also the recipient."""
 
 
 class JourneyPhase(StrEnum):
@@ -57,7 +66,7 @@ class Journey(BaseModel):
 
     journey_id: EntityId
     kind: JourneyKind
-    treaty_id: EntityId
+    treaty_id: EntityId | None = None
     sender_civilization_id: EntityId
     recipient_civilization_id: EntityId
     traveller_ids: tuple[EntityId, ...]
@@ -66,6 +75,7 @@ class Journey(BaseModel):
     carrying_cargo: bool = False
     provisions_packed: int = Field(default=0, ge=0)
     provisions: int = Field(default=0, ge=0)
+    travel_progress: int = Field(default=0, ge=0, lt=MAX_PROGRESS)
     departed_day: int = Field(ge=0)
     route_index: int = Field(default=0, ge=0)
     phase: JourneyPhase = JourneyPhase.OUTBOUND
@@ -76,8 +86,13 @@ class Journey(BaseModel):
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
-        if self.sender_civilization_id == self.recipient_civilization_id:
-            raise ValueError("a journey requires a foreign recipient")
+        internal = self.kind in INTERNAL_KINDS
+        if internal != (self.sender_civilization_id == self.recipient_civilization_id):
+            raise ValueError("only internal journeys stay within their civilization")
+        if internal != (self.treaty_id is None):
+            raise ValueError("foreign journeys need a treaty and internal ones have none")
+        if internal and (self.cargo or self.carrying_cargo):
+            raise ValueError("internal journeys carry no trade cargo")
         if self.traveller_ids != tuple(sorted(set(self.traveller_ids))):
             raise ValueError("journey travellers must be unique and sorted")
         if not self.traveller_ids or len(self.traveller_ids) > MAX_TRAVELLERS:
@@ -108,15 +123,20 @@ class Journey(BaseModel):
         return self.phase is not JourneyPhase.COMPLETE
 
 
-def provisions_needed(
+def journey_days(
     kind: JourneyKind,
-    route_tiles: int,
-    travellers: int,
-    extra: int = 0,
+    world_map: WorldMap,
+    route: tuple[HexCoord, ...],
 ) -> int:
+    """Days on the road without delays: out and back for a shipment, one way for migrants."""
+    days = travel_days(world_map, route[1:])
+    if kind is JourneyKind.SHIPMENT:
+        days += travel_days(world_map, tuple(reversed(route))[1:])
+    return days
+
+
+def provisions_needed(days: int, travellers: int, extra: int = 0) -> int:
     """Food packed at dispatch: the days on the road plus a margin for delays."""
-    steps = route_tiles - 1
-    days = steps * 2 if kind is JourneyKind.SHIPMENT else steps
     margin = max(2, ceil(days / 4))
     return travellers * (days + margin) + extra
 
@@ -138,6 +158,10 @@ class NoticeKind(StrEnum):
     MIGRANTS_RECEIVED = "migrants_received"
     MIGRANTS_TURNED_AWAY = "migrants_turned_away"
     MIGRANTS_RETURNED = "migrants_returned"
+    PARTY_DISPATCHED = "party_dispatched"
+    PARTY_ARRIVED = "party_arrived"
+    PARTY_RETURNED = "party_returned"
+    PARTY_UNFUNDED = "party_unfunded"
 
 
 class LogisticsNotice(BaseModel):
@@ -149,7 +173,7 @@ class LogisticsNotice(BaseModel):
     day: int = Field(ge=0)
     kind: NoticeKind
     journey_id: EntityId
-    treaty_id: EntityId
+    treaty_id: EntityId | None
     counterpart_civilization_id: EntityId
     cargo: dict[Resource, int] = Field(default_factory=dict)
     person_ids: tuple[EntityId, ...] = ()
@@ -225,6 +249,7 @@ def advance_journeys_day(
     rng: StableRng,
     treaties_in_force: frozenset[EntityId],
     world_map: WorldMap,
+    arrival_allowed: Callable[[Journey], bool] | None = None,
 ) -> JourneyDayResult:
     """Move each active party one route tile, resolving deaths, hazards, and delays.
 
@@ -333,12 +358,43 @@ def advance_journeys_day(
             delayed_ids.append(journey.journey_id)
             updated.append(journey.model_copy(update={"delayed_days": journey.delayed_days + 1}))
             continue
-        step = 1 if journey.phase is JourneyPhase.OUTBOUND else -1
-        route_index = max(0, journey.route_index + step)
+        direction = 1 if journey.phase is JourneyPhase.OUTBOUND else -1
+        route_index = max(0, journey.route_index + direction)
+        cost = entry_cost(world_map, journey.route[route_index])
+        if cost is None:
+            raise ValueError("a journey route cannot enter impassable terrain")
+        entered, progress = step(journey.travel_progress, cost)
+        if not entered:
+            updated.append(journey.model_copy(update={"travel_progress": progress}))
+            continue
         for traveller in living:
             traveller.location = journey.route[route_index]
-        moved = journey.model_copy(update={"route_index": route_index})
+        moved = journey.model_copy(
+            update={"route_index": route_index, "travel_progress": progress}
+        )
         if journey.phase is JourneyPhase.OUTBOUND and route_index == len(journey.route) - 1:
+            if journey.kind in INTERNAL_KINDS:
+                if arrival_allowed is None or arrival_allowed(moved):
+                    moved = moved.model_copy(
+                        update={
+                            "arrived_day": day,
+                            "outcome": JourneyOutcome.DELIVERED,
+                            "phase": JourneyPhase.COMPLETE,
+                            "completed_day": day,
+                        }
+                    )
+                    arrived.append(moved)
+                else:
+                    moved = moved.model_copy(
+                        update={
+                            "arrived_day": day,
+                            "outcome": JourneyOutcome.FAILED,
+                            "phase": JourneyPhase.RETURNING,
+                        }
+                    )
+                    failed.append(moved)
+                updated.append(moved)
+                continue
             recipient_living = any(
                 person.alive
                 for person in people.get(journey.recipient_civilization_id, {}).values()

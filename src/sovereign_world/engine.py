@@ -28,14 +28,17 @@ from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
     DiplomaticMessage,
+    MissionStatus,
     TreatyEndKind,
     TreatyOffer,
     advance_diplomacy_day,
 )
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
-from sovereign_world.exploration import Expedition, advance_expeditions
+from sovereign_world.exploration import Expedition, ExpeditionStatus, advance_expeditions
+from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.logistics import (
+    INTERNAL_KINDS,
     TRAVEL_HAZARD_CAUSE,
     Journey,
     JourneyKind,
@@ -49,6 +52,13 @@ from sovereign_world.resources import InventoryDelta, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, validate_world
+from sovereign_world.territory import (
+    SETTLEMENT_SPACING,
+    Claim,
+    Garrison,
+    Settlement,
+    advance_territory,
+)
 from sovereign_world.work import ConstructionProject, WorkKind, WorkOrder, execute_work_day
 
 
@@ -113,6 +123,161 @@ def _store_provisions(state: WorldState, civilization_id: EntityId, units: int) 
     return units - waste.get(Resource.FOOD, 0)
 
 
+FAILED_EVENT = {
+    JourneyKind.SETTLEMENT: "founding_failed",
+    JourneyKind.GARRISON: "garrison_failed",
+}
+
+
+def _arrival_allowed(state: WorldState, journey: Journey) -> bool:
+    """Whether an internal party may found, garrison, or join at its destination today."""
+    destination = journey.route[-1]
+    civilization_id = journey.sender_civilization_id
+    owner = state.territory.owner_of().get(destination)
+    settlements = [
+        settlement.tile
+        for civilization in state.civilizations.values()
+        for settlement in civilization.settlements
+    ]
+    if journey.kind is JourneyKind.SETTLEMENT:
+        return owner in {None, civilization_id} and all(
+            tile.distance(destination) >= SETTLEMENT_SPACING for tile in settlements
+        )
+    if journey.kind is JourneyKind.GARRISON:
+        return owner in {None, civilization_id} and destination not in settlements
+    return True
+
+
+def _settle_arrival(state: WorldState, journey: Journey, provisions: int) -> list[DomainEvent]:
+    """Found a settlement, station a garrison, or join a settlement at the party's destination."""
+    civilization_id = journey.sender_civilization_id
+    civilization = state.civilizations[civilization_id]
+    destination = journey.route[-1]
+    arrivals = tuple(
+        person_id
+        for person_id in journey.traveller_ids
+        if person_id in civilization.population.people
+        and civilization.population.people[person_id].alive
+    )
+    stored = _store_provisions(state, civilization_id, provisions)
+    _add_notice(
+        state,
+        civilization_id,
+        notice(
+            state.day,
+            NoticeKind.PARTY_ARRIVED,
+            journey,
+            civilization_id,
+            cargo={Resource.FOOD: stored} if stored else None,
+            person_ids=arrivals,
+        ),
+    )
+    location = {"q": destination.q, "r": destination.r}
+    if journey.kind is JourneyKind.SETTLEMENT:
+        settlement = Settlement(
+            settlement_id=EntityId(
+                f"settlement:{civilization_id.rsplit(':', 1)[-1]}-"
+                f"{len(civilization.settlements) + 1:04d}"
+            ),
+            civilization_id=civilization_id,
+            tile=destination,
+            founded_day=state.day,
+        )
+        civilization.settlements = tuple(
+            sorted((*civilization.settlements, settlement), key=lambda item: item.settlement_id)
+        )
+        return [
+            _event(
+                state,
+                EventPhase.PROJECT,
+                "settlement_founded",
+                str(civilization_id),
+                str(settlement.settlement_id),
+                settlers=len(arrivals),
+                **location,
+            )
+        ]
+    if journey.kind is JourneyKind.GARRISON:
+        existing = next(
+            (garrison for garrison in civilization.garrisons if garrison.tile == destination), None
+        )
+        if existing is not None:
+            stationed = existing.model_copy(
+                update={"member_ids": tuple(sorted({*existing.member_ids, *arrivals}))}
+            )
+        else:
+            stationed = Garrison(
+                garrison_id=EntityId(f"garrison:{journey.journey_id}"),
+                civilization_id=civilization_id,
+                tile=destination,
+                member_ids=tuple(sorted(arrivals)),
+                since_day=state.day,
+            )
+        civilization.garrisons = tuple(
+            sorted(
+                (
+                    *(item for item in civilization.garrisons if item.tile != destination),
+                    stationed,
+                ),
+                key=lambda item: item.garrison_id,
+            )
+        )
+        return [
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "garrison_stationed",
+                str(civilization_id),
+                str(stationed.garrison_id),
+                members=len(stationed.member_ids),
+                **location,
+            )
+        ]
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "group_relocated",
+            str(civilization_id),
+            str(journey.journey_id),
+            people=len(arrivals),
+            **location,
+        )
+    ]
+
+
+DISPATCH_EVENT = {
+    JourneyKind.SETTLEMENT: "settlers_dispatched",
+    JourneyKind.GARRISON: "garrison_dispatched",
+    JourneyKind.RELOCATION: "relocation_dispatched",
+}
+
+
+def _leave_garrisons(
+    state: WorldState, civilization_id: EntityId, leaving: frozenset[EntityId]
+) -> list[DomainEvent]:
+    """Remove people from their garrisons; a garrison left with nobody is disbanded."""
+    civilization = state.civilizations[civilization_id]
+    kept: list[Garrison] = []
+    events: list[DomainEvent] = []
+    for garrison in civilization.garrisons:
+        members = tuple(person_id for person_id in garrison.member_ids if person_id not in leaving)
+        if members:
+            kept.append(garrison.model_copy(update={"member_ids": members}))
+        else:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "garrison_disbanded",
+                    str(civilization_id),
+                    str(garrison.garrison_id),
+                )
+            )
+    civilization.garrisons = tuple(kept)
+    return events
+
+
 def _dispatch_journey(
     state: WorldState,
     civilization_id: EntityId,
@@ -120,21 +285,21 @@ def _dispatch_journey(
 ) -> list[DomainEvent]:
     """Start a validated journey; goods and packed food leave the sender's storehouse now."""
     assert command.journey_id is not None
-    assert command.treaty_id is not None
-    assert command.recipient_civilization_id is not None
     kind = JOURNEY_ORDERS[command.kind]
+    internal = kind in INTERNAL_KINDS
+    recipient_id = civilization_id if internal else command.recipient_civilization_id
+    assert recipient_id is not None
     civilization = state.civilizations[civilization_id]
     cargo = dict(sorted(command.cargo.items()))
-    provisions, taken = journey_supplies(command)
+    provisions, taken = journey_supplies(command, state)
     if any(
         civilization.inventory.quantities.get(resource, 0) < quantity
         for resource, quantity in taken.items()
     ):
-        unfunded = (
-            NoticeKind.SHIPMENT_UNFUNDED
-            if kind is JourneyKind.SHIPMENT
-            else NoticeKind.MIGRATION_UNFUNDED
-        )
+        unfunded = {
+            JourneyKind.SHIPMENT: NoticeKind.SHIPMENT_UNFUNDED,
+            JourneyKind.MIGRATION: NoticeKind.MIGRATION_UNFUNDED,
+        }.get(kind, NoticeKind.PARTY_UNFUNDED)
         _add_notice(
             state,
             civilization_id,
@@ -143,8 +308,8 @@ def _dispatch_journey(
                 day=state.day,
                 kind=unfunded,
                 journey_id=command.journey_id,
-                treaty_id=command.treaty_id,
-                counterpart_civilization_id=command.recipient_civilization_id,
+                treaty_id=None if internal else command.treaty_id,
+                counterpart_civilization_id=recipient_id,
                 cargo=dict(sorted(taken.items())),
             ),
         )
@@ -163,9 +328,9 @@ def _dispatch_journey(
     journey = Journey(
         journey_id=command.journey_id,
         kind=kind,
-        treaty_id=command.treaty_id,
+        treaty_id=None if internal else command.treaty_id,
         sender_civilization_id=civilization_id,
-        recipient_civilization_id=command.recipient_civilization_id,
+        recipient_civilization_id=recipient_id,
         traveller_ids=tuple(sorted(command.traveller_ids)),
         route=command.route,
         cargo=cargo,
@@ -175,16 +340,20 @@ def _dispatch_journey(
         departed_day=state.day,
     )
     state.journeys = tuple(sorted((*state.journeys, journey), key=lambda item: item.journey_id))
+    disbanded = (
+        _leave_garrisons(state, civilization_id, frozenset(journey.traveller_ids))
+        if kind is JourneyKind.RELOCATION
+        else []
+    )
     _add_notice(
         state,
         civilization_id,
         notice(
             state.day,
-            (
-                NoticeKind.SHIPMENT_DISPATCHED
-                if kind is JourneyKind.SHIPMENT
-                else NoticeKind.MIGRATION_DEPARTED
-            ),
+            {
+                JourneyKind.SHIPMENT: NoticeKind.SHIPMENT_DISPATCHED,
+                JourneyKind.MIGRATION: NoticeKind.MIGRATION_DEPARTED,
+            }.get(kind, NoticeKind.PARTY_DISPATCHED),
             journey,
             journey.recipient_civilization_id,
             cargo=cargo,
@@ -195,16 +364,17 @@ def _dispatch_journey(
         _event(
             state,
             EventPhase.MOVEMENT,
-            f"{kind.value}_dispatched",
+            DISPATCH_EVENT.get(kind, f"{kind.value}_dispatched"),
             str(civilization_id),
             str(journey.journey_id),
             recipient=str(journey.recipient_civilization_id),
-            treaty=str(journey.treaty_id),
+            treaty=str(journey.treaty_id or ""),
             travellers=len(journey.traveller_ids),
             cargo_units=sum(cargo.values()),
             provisions=provisions,
             route_tiles=len(journey.route),
-        )
+        ),
+        *disbanded,
     ]
 
 
@@ -309,6 +479,7 @@ def _advance_journeys(
             treaty.treaty_id for treaty in state.active_treaties if treaty.in_force
         ),
         world_map=state.world_map,
+        arrival_allowed=lambda journey: _arrival_allowed(state, journey),
     )
     state.journeys = result.journeys
     for civilization_id, people in result.people_by_civilization.items():
@@ -370,6 +541,11 @@ def _advance_journeys(
             )
         )
     for journey in result.arrived:
+        if journey.kind in INTERNAL_KINDS:
+            events.extend(
+                _settle_arrival(state, journey, result.handed_over.get(journey.journey_id, 0))
+            )
+            continue
         recipient_id = journey.recipient_civilization_id
         events.append(
             _event(
@@ -451,14 +627,15 @@ def _advance_journeys(
                 )
             )
     for journey in result.failed:
+        internal = journey.kind in INTERNAL_KINDS
         events.append(
             _event(
                 state,
                 EventPhase.MOVEMENT,
-                f"{journey.kind.value}_failed",
-                None,
+                FAILED_EVENT.get(journey.kind, f"{journey.kind.value}_failed"),
+                str(journey.sender_civilization_id) if internal else None,
                 str(journey.journey_id),
-                cause="no living recipients",
+                cause="the site is no longer available" if internal else "no living recipients",
             )
         )
     for journey in result.refused:
@@ -526,11 +703,10 @@ def _advance_journeys(
             sender_id,
             notice(
                 state.day,
-                (
-                    NoticeKind.SHIPMENT_CARRIERS_RETURNED
-                    if journey.kind is JourneyKind.SHIPMENT
-                    else NoticeKind.MIGRANTS_RETURNED
-                ),
+                {
+                    JourneyKind.SHIPMENT: NoticeKind.SHIPMENT_CARRIERS_RETURNED,
+                    JourneyKind.MIGRATION: NoticeKind.MIGRANTS_RETURNED,
+                }.get(journey.kind, NoticeKind.PARTY_RETURNED),
                 journey,
                 journey.recipient_civilization_id,
                 cargo=restored,
@@ -573,6 +749,117 @@ def _advance_journeys(
             )
         )
     return events, frozenset(result.fed_ids)
+
+
+def _residents(state: WorldState) -> dict[EntityId, int]:
+    """Living people at each settlement who are not away exploring, on embassy, or travelling."""
+    away = {
+        person_id
+        for journey in state.journeys
+        if journey.active
+        for person_id in journey.traveller_ids
+    }
+    away.update(
+        message.ambassador_id
+        for message in state.diplomatic_missions
+        if message.status is MissionStatus.IN_TRANSIT
+    )
+    counts: dict[EntityId, int] = {}
+    for civilization in state.civilizations.values():
+        away_here = away | {
+            person_id
+            for expedition in civilization.expeditions
+            if expedition.status is ExpeditionStatus.ACTIVE
+            for person_id in expedition.explorer_ids
+        }
+        for settlement in civilization.settlements:
+            counts[settlement.settlement_id] = sum(
+                person.alive and person.location == settlement.tile and person_id not in away_here
+                for person_id, person in civilization.population.people.items()
+            )
+    return counts
+
+
+def _tile_id(tile: HexCoord) -> str:
+    return f"tile:{tile.q},{tile.r}"
+
+
+def _advance_territory(state: WorldState) -> list[DomainEvent]:
+    """Derive today's control from settlements and terrain; claims are never consulted."""
+    events: list[DomainEvent] = []
+    for civilization_id, civilization in sorted(state.civilizations.items()):
+        people = civilization.population.people
+        fallen = frozenset(
+            person_id
+            for garrison in civilization.garrisons
+            for person_id in garrison.member_ids
+            if not people[person_id].alive
+        )
+        if fallen:
+            events.extend(_leave_garrisons(state, civilization_id, fallen))
+    garrisons = [
+        garrison
+        for civilization in state.civilizations.values()
+        for garrison in civilization.garrisons
+    ]
+    garrisoned = {
+        garrison.garrison_id: sum(
+            state.civilizations[garrison.civilization_id].population.people[person_id].location
+            == garrison.tile
+            for person_id in garrison.member_ids
+        )
+        for garrison in garrisons
+    }
+    result = advance_territory(
+        state.territory,
+        state.world_map,
+        (
+            settlement
+            for civilization in state.civilizations.values()
+            for settlement in civilization.settlements
+        ),
+        _residents(state),
+        state.day,
+        garrisons,
+        garrisoned,
+    )
+    state.territory = result.territory
+    owner_of_source = {
+        **{
+            settlement.settlement_id: settlement.civilization_id
+            for civilization in state.civilizations.values()
+            for settlement in civilization.settlements
+        },
+        **{garrison.garrison_id: garrison.civilization_id for garrison in garrisons},
+    }
+    for kind, sources in (("route_severed", result.severed), ("route_restored", result.restored)):
+        events.extend(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                kind,
+                str(owner_of_source.get(source_id, "")) or None,
+                str(source_id),
+            )
+            for source_id in sources
+        )
+    return events + [
+        _event(
+            state,
+            EventPhase.PROJECT,
+            "control_gained" if change.gained else "control_lost",
+            str(change.civilization_id),
+            _tile_id(change.tile),
+            q=change.tile.q,
+            r=change.tile.r,
+            **(
+                {"from": str(change.previous_owner)}
+                if change.gained and change.previous_owner is not None
+                else {}
+            ),
+        )
+        for change in result.changes
+    ]
 
 
 def _run_councils(
@@ -693,6 +980,27 @@ def _run_councils(
                         "expedition_started",
                         str(civilization_id),
                         str(command.expedition_id),
+                    )
+                )
+            elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.CLAIM_BORDER:
+                claim = Claim(
+                    claim_id=f"claim:{state.day}:{command.command_id}",
+                    civilization_id=civilization_id,
+                    claimed_day=state.day,
+                    tiles=tuple(sorted(set(command.claimed_tiles))),
+                )
+                civilization = state.civilizations[civilization_id]
+                civilization.claims = tuple(
+                    sorted((*civilization.claims, claim), key=lambda item: item.claim_id)
+                )
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.COMMAND,
+                        "claim_recorded",
+                        str(civilization_id),
+                        claim.claim_id,
+                        tiles=len(claim.tiles),
                     )
                 )
             elif isinstance(command, DirectOrder) and command.kind in JOURNEY_ORDERS:
@@ -854,6 +1162,7 @@ def advance_day(
             candidate.world_map,
             candidate.day,
             observations=civilization.observations,
+            owners=candidate.territory.owner_of(),
         )
         civilization.expeditions = expedition_result.expeditions
         civilization.observations = expedition_result.observations
@@ -890,6 +1199,16 @@ def advance_day(
                     candidate,
                     EventPhase.MOVEMENT,
                     "expedition_failed",
+                    str(civilization_id),
+                    str(expedition_id),
+                )
+            )
+        for expedition_id in expedition_result.blocked_ids:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.MOVEMENT,
+                    "expedition_blocked",
                     str(civilization_id),
                     str(expedition_id),
                 )
@@ -948,6 +1267,7 @@ def advance_day(
         },
         day=candidate.day,
         rng=rng,
+        world_map=candidate.world_map,
     )
     candidate.diplomatic_missions = diplomacy_result.missions
     for civilization_id, people in diplomacy_result.people_by_civilization.items():
@@ -1076,6 +1396,9 @@ def advance_day(
             if journey.active and journey.sender_civilization_id == civilization_id
             for person_id in journey.traveller_ids
         }
+        stationed = {
+            person_id for garrison in civilization.garrisons for person_id in garrison.member_ids
+        }
         home_living = tuple(
             person_id
             for person_id in civilization.population.living_ids
@@ -1153,7 +1476,7 @@ def advance_day(
             {
                 person_id: person
                 for person_id, person in civilization.population.people.items()
-                if person_id not in away
+                if person_id not in away and person_id not in stationed
             },
             civilization.inventory,
             civilization.projects,
@@ -1287,6 +1610,8 @@ def advance_day(
             person = civilization.population.people.get(person_id)
             if person is not None and person.alive:
                 recover(person)
+
+    events.extend(_advance_territory(candidate))
 
     candidate.day += 1
     validate_world(candidate)

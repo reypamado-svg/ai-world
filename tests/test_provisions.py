@@ -66,10 +66,10 @@ def _tile(q: int, terrain: Terrain, soil: int, river: bool = False) -> Tile:
 
 
 def test_packing_covers_the_road_plus_a_delay_margin() -> None:
-    assert provisions_needed(JourneyKind.SHIPMENT, 4, 2) == 2 * (6 + 2)
-    assert provisions_needed(JourneyKind.MIGRATION, 4, 3) == 3 * (3 + 2)
-    assert provisions_needed(JourneyKind.SHIPMENT, 13, 1) == 24 + 6
-    assert provisions_needed(JourneyKind.MIGRATION, 13, 1, extra=5) == 12 + 3 + 5
+    assert provisions_needed(6, 2) == 2 * (6 + 2)
+    assert provisions_needed(3, 3) == 3 * (3 + 2)
+    assert provisions_needed(24, 1) == 24 + 6
+    assert provisions_needed(12, 1, extra=5) == 12 + 3 + 5
 
 
 def test_foraging_depends_on_the_land() -> None:
@@ -100,7 +100,7 @@ def test_food_leaves_at_dispatch_and_travellers_never_eat_twice() -> None:
     state, results = _run(state, 2, {sender: OneShotSovereign(order)})
 
     journey = state.journeys[0]
-    packed = provisions_needed(JourneyKind.MIGRATION, len(route), 3)
+    packed = provisions_needed(len(route) - 1, 3)
     assert journey.provisions_packed == packed
     home_eaten = [_consumed(result, sender) for result in results]
     assert home_eaten == [living - 3, living - 3], "migrants do not eat at home"
@@ -114,7 +114,7 @@ def test_received_migrants_bring_their_leftover_food() -> None:
     state, sender, recipient, route = treaty_world(TreatyKind.MIGRATION)
     migrants = state.civilizations[sender].population.living_ids[-2:]
     order = _migration(state, sender, recipient, route, migrants, clear_journey_id("gift"))
-    packed = provisions_needed(JourneyKind.MIGRATION, len(route), 2)
+    packed = provisions_needed(len(route) - 1, 2)
 
     state, results = _run(state, len(route) - 1, {sender: OneShotSovereign(order)})
 
@@ -237,7 +237,7 @@ def test_extra_provisions_are_packed_on_request() -> None:
 
     state, _ = _run(state, 1, {sender: OneShotSovereign(order)})
 
-    expected = provisions_needed(JourneyKind.MIGRATION, len(route), 2) + 7
+    expected = provisions_needed(len(route) - 1, 2) + 7
     assert state.journeys[0].provisions_packed == expected
 
 

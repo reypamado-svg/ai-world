@@ -1,3 +1,5 @@
+from logistics_helpers import move_home
+
 from sovereign_world.commands import (
     CommandEnvelope,
     DirectOrder,
@@ -71,7 +73,7 @@ def test_acceptance_requires_a_delivered_offer() -> None:
             last_seen_day=0,
         ),
     )
-    state.civilizations[proposer].start_center = destination
+    move_home(state.civilizations[proposer], destination)
     envelope = CommandEnvelope(
         schema_version=1,
         civilization_id=acceptor,
