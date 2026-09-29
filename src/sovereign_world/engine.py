@@ -34,7 +34,12 @@ from sovereign_world.diplomacy import (
     advance_diplomacy_day,
 )
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
-from sovereign_world.exploration import Expedition, ExpeditionStatus, advance_expeditions
+from sovereign_world.exploration import (
+    Expedition,
+    ExpeditionStatus,
+    Observation,
+    advance_expeditions,
+)
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.logistics import (
@@ -44,12 +49,14 @@ from sovereign_world.logistics import (
     JourneyKind,
     LogisticsNotice,
     NoticeKind,
+    RoadBuilt,
     advance_journeys_day,
     notice,
 )
 from sovereign_world.people import advance_population_day, go_hungry, recover
 from sovereign_world.resources import InventoryDelta, Resource
 from sovereign_world.rng import StableRng
+from sovereign_world.roads import Road, grades_of
 from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.territory import (
@@ -130,9 +137,12 @@ FAILED_EVENT = {
 
 
 def _arrival_allowed(state: WorldState, journey: Journey) -> bool:
-    """Whether an internal party may found, garrison, or join at its destination today."""
+    """Whether an internal party may found, garrison, join, or build where it stands today."""
     destination = journey.route[-1]
     civilization_id = journey.sender_civilization_id
+    if journey.kind is JourneyKind.ROADWORK:
+        here = journey.route[journey.route_index]
+        return state.territory.owner_of().get(here) in {None, civilization_id}
     owner = state.territory.owner_of().get(destination)
     settlements = [
         settlement.tile
@@ -250,7 +260,9 @@ DISPATCH_EVENT = {
     JourneyKind.SETTLEMENT: "settlers_dispatched",
     JourneyKind.GARRISON: "garrison_dispatched",
     JourneyKind.RELOCATION: "relocation_dispatched",
+    JourneyKind.ROADWORK: "road_crew_dispatched",
 }
+RETURNED_EVENT = {JourneyKind.ROADWORK: "road_crew_returned"}
 
 
 def _leave_garrisons(
@@ -291,7 +303,7 @@ def _dispatch_journey(
     assert recipient_id is not None
     civilization = state.civilizations[civilization_id]
     cargo = dict(sorted(command.cargo.items()))
-    provisions, taken = journey_supplies(command, state)
+    provisions, taken = journey_supplies(command, state, civilization_id)
     if any(
         civilization.inventory.quantities.get(resource, 0) < quantity
         for resource, quantity in taken.items()
@@ -338,6 +350,16 @@ def _dispatch_journey(
         provisions_packed=provisions,
         provisions=provisions,
         departed_day=state.day,
+        road_grade=command.road_grade if kind is JourneyKind.ROADWORK else None,
+        materials=(
+            {
+                resource: quantity
+                for resource, quantity in sorted(taken.items())
+                if resource is not Resource.FOOD and quantity
+            }
+            if kind is JourneyKind.ROADWORK
+            else {}
+        ),
     )
     state.journeys = tuple(sorted((*state.journeys, journey), key=lambda item: item.journey_id))
     disbanded = (
@@ -373,6 +395,7 @@ def _dispatch_journey(
             cargo_units=sum(cargo.values()),
             provisions=provisions,
             route_tiles=len(journey.route),
+            **({"grade": journey.road_grade.value} if journey.road_grade else {}),
         ),
         *disbanded,
     ]
@@ -480,6 +503,7 @@ def _advance_journeys(
         ),
         world_map=state.world_map,
         arrival_allowed=lambda journey: _arrival_allowed(state, journey),
+        roads=grades_of(state.roads),
     )
     state.journeys = result.journeys
     for civilization_id, people in result.people_by_civilization.items():
@@ -538,6 +562,21 @@ def _advance_journeys(
                 f"{kinds[journey_id].value}_party_perished",
                 None,
                 str(journey_id),
+            )
+        )
+    for built in result.roads_built:
+        events.append(_record_road(state, built))
+    for halt in result.roadwork_stopped:
+        events.append(
+            _event(
+                state,
+                EventPhase.PROJECT,
+                "road_work_stopped",
+                str(halt.civilization_id),
+                str(halt.journey_id),
+                reason=halt.reason.value,
+                q=halt.tile.q,
+                r=halt.tile.r,
             )
         )
     for journey in result.arrived:
@@ -676,12 +715,13 @@ def _advance_journeys(
     for journey in result.returned:
         sender_id = journey.sender_civilization_id
         restored: dict[Resource, int] = {}
-        if journey.journey_id in cargo_home:
+        brought_home = journey.cargo if journey.journey_id in cargo_home else journey.materials
+        if brought_home:
             sender = state.civilizations[sender_id]
-            sender.inventory, waste = sender.inventory.store_with_waste(journey.cargo)
+            sender.inventory, waste = sender.inventory.store_with_waste(brought_home)
             restored = {
                 resource: quantity - waste.get(resource, 0)
-                for resource, quantity in journey.cargo.items()
+                for resource, quantity in brought_home.items()
                 if quantity - waste.get(resource, 0) > 0
             }
         provisions = _store_provisions(
@@ -718,7 +758,7 @@ def _advance_journeys(
             _event(
                 state,
                 EventPhase.MOVEMENT,
-                f"{journey.kind.value}_returned",
+                RETURNED_EVENT.get(journey.kind, f"{journey.kind.value}_returned"),
                 str(sender_id),
                 str(journey.journey_id),
                 outcome=journey.outcome.value,
@@ -749,6 +789,51 @@ def _advance_journeys(
             )
         )
     return events, frozenset(result.fed_ids)
+
+
+def _record_road(state: WorldState, built: RoadBuilt) -> DomainEvent:
+    """Raise a tile's road by one grade; the crew that built it sees what it made."""
+    existing = next((road for road in state.roads if road.tile == built.tile), None)
+    road = Road(
+        tile=built.tile,
+        grade=built.grade,
+        civilization_id=built.civilization_id,
+        built_day=existing.built_day if existing is not None else state.day,
+        graded_day=state.day,
+    )
+    state.roads = tuple(
+        sorted(
+            (*(item for item in state.roads if item.tile != built.tile), road),
+            key=lambda item: item.tile,
+        )
+    )
+    civilization = state.civilizations[built.civilization_id]
+    journey = next(item for item in state.journeys if item.journey_id == built.journey_id)
+    people = civilization.population.people
+    observer = min(
+        person_id for person_id in journey.traveller_ids if people[person_id].alive
+    )
+    observations = {item.tile: item for item in civilization.observations}
+    observations[built.tile] = Observation(
+        tile=built.tile,
+        observed_day=state.day,
+        observer_id=observer,
+        observed_owner=state.territory.owner_of().get(built.tile),
+        observed_road=built.grade,
+    )
+    civilization.observations = tuple(observations[tile] for tile in sorted(observations))
+    civilization.known_tiles = tuple(sorted(observations))
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "road_built",
+        str(built.civilization_id),
+        _tile_id(built.tile),
+        grade=built.grade.value,
+        journey=str(built.journey_id),
+        q=built.tile.q,
+        r=built.tile.r,
+    )
 
 
 def _residents(state: WorldState) -> dict[EntityId, int]:
@@ -822,6 +907,7 @@ def _advance_territory(state: WorldState) -> list[DomainEvent]:
         state.day,
         garrisons,
         garrisoned,
+        grades_of(state.roads),
     )
     state.territory = result.territory
     owner_of_source = {
@@ -1163,6 +1249,7 @@ def advance_day(
             candidate.day,
             observations=civilization.observations,
             owners=candidate.territory.owner_of(),
+            roads=grades_of(candidate.roads),
         )
         civilization.expeditions = expedition_result.expeditions
         civilization.observations = expedition_result.observations
@@ -1268,6 +1355,7 @@ def advance_day(
         day=candidate.day,
         rng=rng,
         world_map=candidate.world_map,
+        roads=grades_of(candidate.roads),
     )
     candidate.diplomatic_missions = diplomacy_result.missions
     for civilization_id, people in diplomacy_result.people_by_civilization.items():

@@ -15,6 +15,7 @@ from sovereign_world.engine import advance_day
 from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
 from sovereign_world.rng import StableRng
+from sovereign_world.roads import RoadGrade, rank
 from sovereign_world.scripted import BaselineSovereign, plan_baseline_commands
 from sovereign_world.state import WorldState, build_initial_state, state_hash
 from sovereign_world.territory import LOSE_THRESHOLD, TAKE_THRESHOLD
@@ -23,13 +24,17 @@ DAYS = 90
 
 
 class ExpandingSovereign:
-    """Baseline orders, plus settlers sent to the nearest open known site at each council."""
+    """Baseline orders, settlers sent to the nearest open known site at each council, and a
+    road crew sent to raise a track to the first colony once it stands."""
 
     def decide(self, report: CouncilReport) -> CommandEnvelope:
         orders = list(plan_baseline_commands(report))
         founding = self._found(report) if report.day else None
         if founding is not None:
             orders.append(founding)
+        road = self._road(report)
+        if road is not None:
+            orders.append(road)
         return CommandEnvelope(
             schema_version=1,
             civilization_id=report.civilization_id,
@@ -38,26 +43,53 @@ class ExpandingSovereign:
             commands=tuple(orders[:8]),
         )
 
-    def _found(self, report: CouncilReport) -> DirectOrder | None:
-        land = {tile for tile, terrain in report.known_terrain if terrain is not Terrain.WATER}
-        home = report.start_center
-        taken = {settlement.tile for settlement in report.settlements} | {
-            contact.settlement for contact in report.contacts
-        }
-        foreign = {
+    @staticmethod
+    def _foreign(report: CouncilReport) -> set[HexCoord]:
+        return {
             view.tile
             for view in report.observed_control
             if view.owner not in {None, report.civilization_id}
         }
-        # Shortest routes over known land from home, in a fixed order.
+
+    @staticmethod
+    def _routes(
+        report: CouncilReport, avoid: set[HexCoord]
+    ) -> dict[HexCoord, tuple[HexCoord, ...]]:
+        """Shortest routes over known land from home, in a fixed order."""
+        land = {tile for tile, terrain in report.known_terrain if terrain is not Terrain.WATER}
+        home = report.start_center
         routes = {home: (home,)}
         frontier = [home]
         while frontier:
             tile = frontier.pop(0)
             for neighbor in sorted(tile.neighbors()):
-                if neighbor in land and neighbor not in routes:
+                if neighbor in land and neighbor not in avoid and neighbor not in routes:
                     routes[neighbor] = (*routes[tile], neighbor)
                     frontier.append(neighbor)
+        return routes
+
+    def _road(self, report: CouncilReport) -> DirectOrder | None:
+        colonies = [settlement for settlement in report.settlements if not settlement.capital]
+        if not colonies:
+            return None
+        route = self._routes(report, self._foreign(report)).get(colonies[0].tile)
+        if route is None:
+            return None
+        return DirectOrder(
+            command_id=f"road:{report.day}",
+            kind=DirectOrderKind.BUILD_ROAD,
+            journey_id=EntityId(f"journey:{report.civilization_id}:road:{report.day}"),
+            traveller_ids=report.person_ids[6:14],
+            route=route,
+            road_grade=RoadGrade.TRACK,
+        )
+
+    def _found(self, report: CouncilReport) -> DirectOrder | None:
+        taken = {settlement.tile for settlement in report.settlements} | {
+            contact.settlement for contact in report.contacts
+        }
+        foreign = self._foreign(report)
+        routes = self._routes(report, set())
         sites = sorted(
             (len(route), tile)
             for tile, route in routes.items()
@@ -84,9 +116,15 @@ def _simulate(initial: WorldState) -> tuple[WorldState, list[str]]:
     }
     changes: Counter[HexCoord] = Counter()
     kinds: list[str] = []
+    grades: dict[HexCoord, int] = {}
     for _ in range(DAYS):
         transition = advance_day(state, rng, sovereigns=sovereigns)
         state = transition.state
+        for road in state.roads:
+            assert state.world_map.tile(road.tile).terrain is not Terrain.WATER
+            assert rank(road.grade) >= grades.get(road.tile, 0), "a road never loses grade"
+            grades[road.tile] = rank(road.grade)
+        assert set(grades) == {road.tile for road in state.roads}, "roads never vanish"
         owners = state.territory.owner_of()
         held = state.territory.held_by_tile()
         settlement_tiles = {
@@ -128,6 +166,7 @@ def test_derived_territory_is_stable_and_deterministic(seed: int) -> None:
 
     assert "control_gained" in kinds
     assert "settlers_dispatched" in kinds, "the expanding sovereigns sent settlers"
+    assert "road_built" in kinds, "the colonists' kin built a road to them"
     assert all(
         any(owner.civilization_id == civilization_id for owner in final.territory.owners)
         for civilization_id in final.civilizations

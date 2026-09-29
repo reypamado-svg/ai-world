@@ -11,7 +11,7 @@ from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person
 from sovereign_world.rng import StableRng
-from sovereign_world.travel import MAX_PROGRESS, entry_cost, step
+from sovereign_world.travel import DAY, MAX_PROGRESS, Roads, entry_cost
 
 
 class MissionStatus(StrEnum):
@@ -177,10 +177,11 @@ def advance_diplomacy_day(
     day: int,
     rng: StableRng,
     world_map: WorldMap,
+    roads: Roads | None = None,
 ) -> DiplomacyDayResult:
     """Advance each ambassador along its known route without revealing foreign state.
 
-    Rough terrain takes more than a day to enter.
+    Rough terrain takes more than a day to enter, and roads make it quicker.
     """
     people = {
         civilization_id: {
@@ -216,19 +217,15 @@ def advance_diplomacy_day(
         route_index = mission.next_route_index
         if route_index < len(mission.route) and mission.route[route_index] == ambassador.location:
             route_index += 1
-        progress = mission.travel_progress
-        if route_index < len(mission.route):
-            cost = entry_cost(world_map, mission.route[route_index])
+        progress = mission.travel_progress + DAY
+        # A day's walking may cover several cheap road tiles.
+        while route_index < len(mission.route):
+            cost = entry_cost(world_map, mission.route[route_index], roads)
             if cost is None:
                 raise ValueError("an ambassador route cannot enter impassable terrain")
-            entered, progress = step(progress, cost)
-            if not entered:
-                updated.append(
-                    mission.model_copy(
-                        update={"next_route_index": route_index, "travel_progress": progress}
-                    )
-                )
-                continue
+            if progress < cost:
+                break
+            progress -= cost
             ambassador.location = mission.route[route_index]
             route_index += 1
         if route_index < len(mission.route):

@@ -29,6 +29,7 @@ from sovereign_world.logistics import (
 from sovereign_world.people import Population, create_founders
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
+from sovereign_world.roads import Road
 from sovereign_world.territory import Claim, Garrison, Settlement, Territory
 from sovereign_world.work import ConstructionProject, WorkOrder
 from sovereign_world.worldgen import generate_world
@@ -69,6 +70,7 @@ class WorldState(BaseModel):
     active_treaties: tuple[ActiveTreaty, ...] = ()
     journeys: tuple[Journey, ...] = ()
     territory: Territory = Field(default_factory=Territory)
+    roads: tuple[Road, ...] = ()
 
 
 def _canonical_payload(state: WorldState) -> str:
@@ -352,3 +354,21 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("territory must belong to an existing civilization")
         if state.world_map.tile(owner.tile).terrain.value == "water":
             raise ValueError("water cannot be controlled")
+    roads = state.roads
+    if roads != tuple(sorted(roads, key=lambda road: road.tile)):
+        raise ValueError("roads must be sorted by tile")
+    if len({road.tile for road in roads}) != len(roads):
+        raise ValueError("a tile has at most one road")
+    for road in roads:
+        if road.civilization_id not in state.civilizations:
+            raise ValueError("a road is built by an existing civilization")
+        if not state.world_map.contains(road.tile):
+            raise ValueError("a road lies on the map")
+        if state.world_map.tile(road.tile).terrain.value == "water":
+            raise ValueError("no road can be built on water")
+    for journey in journeys:
+        if journey.kind is JourneyKind.ROADWORK and journey.route[0] not in {
+            settlement.tile
+            for settlement in state.civilizations[journey.sender_civilization_id].settlements
+        }:
+            raise ValueError("a road crew sets out from one of its own settlements")

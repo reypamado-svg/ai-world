@@ -11,7 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person
-from sovereign_world.travel import MAX_PROGRESS, entry_cost, step
+from sovereign_world.roads import RoadGrade
+from sovereign_world.travel import DAY, MAX_PROGRESS, Roads, entry_cost
 
 
 class ExpeditionStatus(StrEnum):
@@ -30,6 +31,7 @@ class Observation(BaseModel):
     observer_id: EntityId
     source: Literal["direct", "initial"] = "direct"
     observed_owner: EntityId | None = None
+    observed_road: RoadGrade | None = None
 
 
 class Expedition(BaseModel):
@@ -74,16 +76,19 @@ def advance_expeditions(
     *,
     observations: tuple[Observation, ...] = (),
     owners: dict[HexCoord, EntityId] | None = None,
+    roads: Roads | None = None,
 ) -> ExpeditionDayResult:
     """Advance each active expedition toward its next tile and refresh its private map.
 
-    Rough terrain takes more than a day to enter; water stops the expedition, which
-    observes the water it cannot cross.
+    Rough terrain takes more than a day to enter, and roads make it quicker; water stops
+    the expedition, which observes the water it cannot cross. Explorers note who owns
+    each tile they enter, and the grade of any road on it.
     """
     updated_people = {
         person_id: person.model_copy(deep=True) for person_id, person in people.items()
     }
     owners = owners or {}
+    roads = roads or {}
     observation_by_tile = {observation.tile: observation for observation in observations}
     updated_expeditions: list[Expedition] = []
     observed_tiles: list[HexCoord] = []
@@ -124,57 +129,60 @@ def advance_expeditions(
             )
             returned_ids.append(expedition.expedition_id)
             continue
-        destination = expedition.route[route_index]
-        if not world_map.contains(destination) or location.distance(destination) != 1:
-            updated_expeditions.append(
-                expedition.model_copy(update={"status": ExpeditionStatus.FAILED})
-            )
-            failed_ids.append(expedition.expedition_id)
-            continue
         observer_id = min(expedition.explorer_ids)
-        cost = entry_cost(world_map, destination)
-        if cost is None:
+        progress = expedition.travel_progress + DAY
+        status = ExpeditionStatus.ACTIVE
+        # A day's walking may cover several cheap road tiles; each one entered is observed.
+        while route_index < len(expedition.route):
+            destination = expedition.route[route_index]
+            if not world_map.contains(destination) or location.distance(destination) != 1:
+                status = ExpeditionStatus.FAILED
+                break
+            cost = entry_cost(world_map, destination, roads)
+            if cost is None:
+                observation_by_tile[destination] = Observation(
+                    tile=destination,
+                    observed_day=day,
+                    observer_id=observer_id,
+                    observed_owner=owners.get(destination),
+                )
+                observed_tiles.append(destination)
+                status = ExpeditionStatus.BLOCKED
+                break
+            if progress < cost:
+                break
+            progress -= cost
+            for explorer in living_explorers:
+                explorer.location = destination
+            location = destination
             observation_by_tile[destination] = Observation(
                 tile=destination,
                 observed_day=day,
                 observer_id=observer_id,
                 observed_owner=owners.get(destination),
+                observed_road=roads.get(destination),
             )
             observed_tiles.append(destination)
+            route_index += 1
+        if status is ExpeditionStatus.FAILED:
+            updated_expeditions.append(expedition.model_copy(update={"status": status}))
+            failed_ids.append(expedition.expedition_id)
+            continue
+        if status is ExpeditionStatus.BLOCKED:
             updated_expeditions.append(
                 expedition.model_copy(
                     update={
                         "next_route_index": route_index,
-                        "status": ExpeditionStatus.BLOCKED,
+                        "status": status,
                         "travel_progress": 0,
                     }
                 )
             )
             blocked_ids.append(expedition.expedition_id)
             continue
-        entered, progress = step(expedition.travel_progress, cost)
-        if not entered:
-            updated_expeditions.append(
-                expedition.model_copy(
-                    update={"next_route_index": route_index, "travel_progress": progress}
-                )
-            )
-            continue
-        for explorer in living_explorers:
-            explorer.location = destination
-        observation_by_tile[destination] = Observation(
-            tile=destination,
-            observed_day=day,
-            observer_id=observer_id,
-            observed_owner=owners.get(destination),
-        )
-        observed_tiles.append(destination)
-        route_index += 1
-        status = (
-            ExpeditionStatus.RETURNED
-            if route_index >= len(expedition.route)
-            else ExpeditionStatus.ACTIVE
-        )
+        if route_index >= len(expedition.route):
+            status = ExpeditionStatus.RETURNED
+            progress = min(progress, DAY - 1)
         updated_expeditions.append(
             expedition.model_copy(
                 update={

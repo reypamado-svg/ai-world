@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
-from sovereign_world.travel import entry_cost
+from sovereign_world.travel import Roads, entry_cost
 
 SETTLEMENT_BASE_STRENGTH = 40
 SETTLEMENT_STRENGTH_PER_ROOT = 8
@@ -152,9 +152,14 @@ def settlement_strength(residents: int) -> int:
 
 
 def influence_field(
-    world_map: WorldMap, sources: Iterable[tuple[HexCoord, int]]
+    world_map: WorldMap,
+    sources: Iterable[tuple[HexCoord, int]],
+    roads: Roads | None = None,
 ) -> dict[HexCoord, int]:
-    """Best (strength - travel cost) from any source, over passable land, above zero."""
+    """Best (strength - travel cost) from any source, over passable land, above zero.
+
+    Roads cut the travel cost, so influence reaches further along them.
+    """
     best: dict[HexCoord, int] = {}
     frontier: list[tuple[int, int, int]] = []
     for tile, strength in sources:
@@ -168,7 +173,7 @@ def influence_field(
         if value != best.get(tile):
             continue
         for neighbor in world_map.neighbors(tile):
-            cost = entry_cost(world_map, neighbor)
+            cost = entry_cost(world_map, neighbor, roads)
             if cost is None:
                 continue
             reached = value - cost
@@ -249,6 +254,7 @@ def advance_territory(
     day: int,
     garrisons: Iterable[Garrison] = (),
     garrisoned: Mapping[EntityId, int] | None = None,
+    roads: Roads | None = None,
 ) -> TerritoryDayResult:
     """Drift each civilization's hold toward its influence, then settle ownership.
 
@@ -294,7 +300,7 @@ def advance_territory(
 
     previous = territory.held_by_tile()
     fields = {
-        civilization_id: influence_field(world_map, civilization_sources)
+        civilization_id: influence_field(world_map, civilization_sources, roads)
         for civilization_id, civilization_sources in sorted(sources.items())
     }
     held: dict[HexCoord, dict[EntityId, int]] = {}

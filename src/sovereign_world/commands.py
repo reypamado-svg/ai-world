@@ -25,8 +25,16 @@ from sovereign_world.logistics import (
     LogisticsNotice,
     journey_days,
     provisions_needed,
+    roadwork_days,
 )
 from sovereign_world.resources import Resource
+from sovereign_world.roads import (
+    STONE_LAYING,
+    STONEWORKING,
+    RoadGrade,
+    RoadView,
+    materials_for,
+)
 from sovereign_world.state import WorldState
 from sovereign_world.territory import SETTLEMENT_SPACING, Garrison, Settlement, visible_tiles
 from sovereign_world.travel import passable
@@ -55,6 +63,7 @@ class DirectOrderKind(StrEnum):
     CLAIM_BORDER = "claim_border"
     FOUND_SETTLEMENT = "found_settlement"
     STATION_GARRISON = "station_garrison"
+    BUILD_ROAD = "build_road"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -72,6 +81,7 @@ JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.FOUND_SETTLEMENT: JourneyKind.SETTLEMENT,
     DirectOrderKind.STATION_GARRISON: JourneyKind.GARRISON,
     DirectOrderKind.RELOCATE_GROUP: JourneyKind.RELOCATION,
+    DirectOrderKind.BUILD_ROAD: JourneyKind.ROADWORK,
 }
 REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
     JourneyKind.SHIPMENT: TreatyKind.TRADE,
@@ -132,6 +142,7 @@ class DirectOrder(BaseModel):
     traveller_ids: tuple[EntityId, ...] = ()
     cargo: dict[Resource, int] = Field(default_factory=dict)
     claimed_tiles: tuple[HexCoord, ...] = Field(default=(), max_length=MAX_CLAIMED_TILES)
+    road_grade: RoadGrade | None = None
     extra_provisions: int = Field(default=0, ge=0, le=CARGO_UNITS_PER_CARRIER * MAX_TRAVELLERS)
     priority: int = Field(default=50, ge=0, le=100)
 
@@ -185,6 +196,7 @@ class CouncilReport(BaseModel):
     observed_control: tuple[ControlView, ...] = ()
     settlements: tuple[Settlement, ...] = ()
     garrisons: tuple[Garrison, ...] = ()
+    known_roads: tuple[RoadView, ...] = ()
     recent_events: tuple[DomainEvent, ...] = ()
 
 
@@ -249,15 +261,15 @@ def build_council_report(
         observed_control=_observed_control(state, civilization_id),
         settlements=civilization.settlements,
         garrisons=civilization.garrisons,
+        known_roads=known_roads(state, civilization_id),
         recent_events=visible_events,
     )
 
 
-def _observed_control(state: WorldState, civilization_id: EntityId) -> tuple[ControlView, ...]:
-    """Ownership seen from settlements today, or recorded by explorers when they passed."""
+def _in_sight(state: WorldState, civilization_id: EntityId) -> frozenset[HexCoord]:
+    """Tiles seen today from this civilization's inhabited settlements."""
     civilization = state.civilizations[civilization_id]
-    owners = state.territory.owner_of()
-    in_sight = visible_tiles(
+    return visible_tiles(
         state.world_map,
         (
             settlement.tile
@@ -268,6 +280,33 @@ def _observed_control(state: WorldState, civilization_id: EntityId) -> tuple[Con
             )
         ),
     )
+
+
+def known_roads(state: WorldState, civilization_id: EntityId) -> tuple[RoadView, ...]:
+    """Roads seen from settlements today, or at the grade its people last saw them."""
+    civilization = state.civilizations[civilization_id]
+    views = {
+        observation.tile: RoadView(
+            tile=observation.tile,
+            grade=observation.observed_road,
+            as_of_day=observation.observed_day,
+        )
+        for observation in civilization.observations
+        if observation.observed_road is not None
+    }
+    roads = {road.tile: road.grade for road in state.roads}
+    for tile in _in_sight(state, civilization_id):
+        views.pop(tile, None)
+        if tile in roads:
+            views[tile] = RoadView(tile=tile, grade=roads[tile], as_of_day=state.day)
+    return tuple(views[tile] for tile in sorted(views))
+
+
+def _observed_control(state: WorldState, civilization_id: EntityId) -> tuple[ControlView, ...]:
+    """Ownership seen from settlements today, or recorded by explorers when they passed."""
+    civilization = state.civilizations[civilization_id]
+    owners = state.territory.owner_of()
+    in_sight = _in_sight(state, civilization_id)
     views = {
         observation.tile: ControlView(
             tile=observation.tile,
@@ -320,19 +359,30 @@ def _garrisoned_people(state: WorldState, civilization_id: EntityId) -> set[Enti
 
 
 def journey_supplies(
-    command: DirectOrder, state: WorldState
+    command: DirectOrder, state: WorldState, civilization_id: EntityId
 ) -> tuple[int, dict[Resource, int]]:
-    """Provisions to pack, and everything the order takes from the sender's storehouse."""
-    provisions = provisions_needed(
-        journey_days(
-            JOURNEY_ORDERS[command.kind],
-            state.world_map,
-            command.route,
-        ),
-        len(command.traveller_ids),
-        command.extra_provisions,
-    )
+    """Provisions to pack, and everything the order takes from the sender's storehouse.
+
+    Both are planned from the roads this civilization knows of, never from unseen ones.
+    """
+    kind = JOURNEY_ORDERS[command.kind]
+    roads = {view.tile: view.grade for view in known_roads(state, civilization_id)}
+    crew = len(command.traveller_ids)
     taken = dict(command.cargo)
+    if kind is JourneyKind.ROADWORK and command.road_grade is not None:
+        days = roadwork_days(state.world_map, command.route, command.road_grade, roads, crew)
+        # A crew packs what it can bear and turns home when only the walk back is left.
+        provisions = min(
+            provisions_needed(days, crew, command.extra_provisions),
+            CARGO_UNITS_PER_CARRIER * crew,
+        )
+        taken = materials_for(command.route, command.road_grade, roads)
+    else:
+        provisions = provisions_needed(
+            journey_days(kind, state.world_map, command.route, roads),
+            crew,
+            command.extra_provisions,
+        )
     taken[Resource.FOOD] = taken.get(Resource.FOOD, 0) + provisions
     return provisions, taken
 
@@ -394,12 +444,25 @@ def _internal_journey_error(
         return error(
             "invalid_destination", "a garrison holds land that is not a settlement or foreign"
         )
-    provisions, taken = journey_supplies(command, state)
+    if kind is JourneyKind.ROADWORK:
+        if command.road_grade is None:
+            return error("invalid_road", "a road crew needs a target grade")
+        if any(believed_owner.get(tile) not in {None, civilization_id} for tile in route):
+            return error("foreign_land", "a road cannot be built on land seen as foreign")
+        if command.road_grade in STONE_LAYING and not any(
+            people[person_id].skills.get(STONEWORKING, 0) > 0
+            for person_id in command.traveller_ids
+        ):
+            return error("no_stoneworker", "laying stone needs a stoneworker in the crew")
+    provisions, taken = journey_supplies(command, state, civilization_id)
     if provisions > CARGO_UNITS_PER_CARRIER * len(command.traveller_ids):
         return error("cargo_over_capacity", "each traveller can bear 50 units of provisions")
-    food = civilization.inventory.quantities.get(Resource.FOOD, 0)
-    if reserved_cargo.get(Resource.FOOD, 0) + taken[Resource.FOOD] > food:
-        return error("insufficient_provisions", "not enough food to provision the party")
+    for resource, quantity in taken.items():
+        available = civilization.inventory.quantities.get(resource, 0)
+        if reserved_cargo.get(resource, 0) + quantity > available:
+            if resource is Resource.FOOD:
+                return error("insufficient_provisions", "not enough food to provision the party")
+            return error("insufficient_materials", f"not enough {resource} for the road")
     return None
 
 
@@ -467,7 +530,7 @@ def _journey_error(
         not command.cargo or any(quantity <= 0 for quantity in command.cargo.values())
     ):
         return error("invalid_cargo", "a shipment requires positive cargo")
-    provisions, taken = journey_supplies(command, state)
+    provisions, taken = journey_supplies(command, state, civilization_id)
     if sum(command.cargo.values()) + provisions > CARGO_UNITS_PER_CARRIER * len(
         command.traveller_ids
     ):
@@ -946,7 +1009,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             committed_travellers.update(travellers)
             committed_at_home.update(home_duty)
             if command.kind in JOURNEY_ORDERS:
-                for resource, quantity in journey_supplies(command, state)[1].items():
+                _, taken = journey_supplies(command, state, envelope.civilization_id)
+                for resource, quantity in taken.items():
                     reserved_cargo[resource] = reserved_cargo.get(resource, 0) + quantity
         accepted.append(command)
     return CommandValidation(accepted=tuple(accepted), errors=tuple(errors))
