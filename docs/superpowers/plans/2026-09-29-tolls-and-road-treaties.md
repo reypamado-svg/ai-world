@@ -3,9 +3,9 @@
 **Goal:** Two follow-ups to roads (slice 4 of `2026-09-29-territory.md`):
 
 - a civilization can charge a **toll** to foreign parties travelling its roads;
-- two civilizations bound by a **road treaty** can build their roads into each other's land, so their networks join, and can waive tolls for each other.
+- two civilizations bound by a **trade treaty** can build their roads into each other's land, so their networks join, and pass each other's tolls free.
 
-This is research and design only; nothing here is built yet.
+The user's decisions on the three open questions are recorded in section 4 and applied throughout. Nothing here is built yet.
 
 ## Where roads can be built today
 
@@ -21,7 +21,7 @@ So roads already run beyond a civilization's borders, into the frontier. A road 
 - its builder's influence reaches further along it, so territory tends to follow the road outward;
 - the same road also carries any neighbour's influence, so a road built toward a rival can end up inside the rival's land.
 
-What is not possible today is building *inside* someone else's territory. That is what a road treaty would change.
+What is not possible today is building *inside* someone else's territory. That is what the trade treaty's new road terms would change.
 
 ## Research summary
 
@@ -71,7 +71,7 @@ What is not possible today is building *inside* someone else's territory. That i
   - a food charge per person, from 0 to 2.
 
   A rate of 0 removes the toll.
-- **The toll lapses** when its tile stops having living collectors (the garrison is disbanded or the settlement empties), or when the tile is no longer owned. A `toll_lapsed` event records it.
+- **The toll lapses** when its tile stops having living collectors (the garrison is disbanded or the settlement empties), or when the tile is no longer owned. A `toll_lapsed` event records it. A lapsed post's chest stays on the tile, and can still be fetched by a relocation that recalls the collectors. Seizing an abandoned chest is left for war.
 - **Who pays:** foreign parties that enter the tile on the way out, once per journey:
   - **shipments** pay the rate on each cargo resource, rounded down, with at least 1 unit whenever the rate is above 0 and the cargo is at least 1;
   - **migrants and road crews** pay the food charge per living traveller, from their packs.
@@ -79,18 +79,29 @@ What is not possible today is building *inside* someone else's territory. That i
   - envoys, by custom;
   - explorers, who carry nothing to take;
   - the owner's own parties;
-  - parties of a road-treaty partner (see section 2).
-- **A party that cannot pay in full is turned back** with its goods intact. It walks home under the new outcome `turned_back`. A toll is a gate, not a robbery. Seizing goods is left for war.
+  - parties of a trade-treaty partner (see section 2).
+- **A party that cannot pay in full looks for another way round.** It stops on the tile before the post and looks for a detour: the shortest way, over land its civilization knows, from where it stands to any later tile of its route. The detour must avoid the post and every other known toll the party cannot pay. The party takes the detour only if its pack still covers the rest of the journey. That means the rest of the way out, plus the way back for a shipment.
+  - If it takes the detour, its route is rewritten, and a `toll_avoided` event records the change.
+  - Otherwise it is **turned back** with its goods intact and walks home under the new outcome `turned_back`.
+  - A toll is a gate, not a robbery. Seizing goods is left for war.
+- **The chest at the post.** Takings do not reach the owner's store at once. They go into a **chest** kept at the post:
+  - At the capital's own gate the chest is the storehouse itself, so takings are stored at once.
+  - Everywhere else, the chest is emptied at a regular interval. `set_toll` also names a **deposit interval** of 10–90 days, 30 by default, and a **deposit route** from the post to one of the owner's settlements.
+  - When a deposit is due, the engine sends a courier party. The couriers are the post's collectors, drawn in id order, as many as the chest needs at 50 units each, always leaving at least one collector behind. They carry the chest home as an internal `deposit` journey, and the goods reach the store only on arrival.
+  - Couriers face the usual delays and hazards. Goods carried by a party that perishes are lost.
+  - Anything the couriers cannot carry stays in the chest for the next deposit.
+  - A deposit that finds no spare collector, or no route it still knows, is skipped, and the owner receives a notice.
+  - Collectors away on a deposit do not count as collectors. A post whose collectors are all away collects nothing until they return.
 - **Knowledge.**
   - Explorers and travellers who see a toll post record its rates as observations. Reports gain `known_tolls`.
   - Validation and provisioning count only *known* tolls, so an unknown toll can surprise a party and turn it back. A sovereign can learn to route around posts.
 - **Events and notices.**
-  - `toll_paid`, `toll_collected` and `toll_refused`.
+  - `toll_paid`, `toll_collected`, `toll_avoided` and `toll_refused`, and for deposits `toll_deposit_dispatched`, `toll_deposited` and `toll_deposit_skipped`.
   - Each side gets a private notice: the payer learns what it paid and where, and the owner learns what it collected.
 
-### 2. Road treaty (`roads`)
+### 2. Road terms of the trade treaty
 
-A new `TreatyKind.ROADS`. It is offered, accepted, cancelled and repudiated through the same diplomatic machinery as trade and migration treaties. While it is in force:
+The existing `trade` treaty gains road terms, and no new treaty kind is added. It is still offered, accepted, cancelled and repudiated as before. While it is in force:
 
 1. **Building rights.** Each party's road crews may work on the other's land. Validation and the on-arrival check treat the partner's tiles as allowed. When the treaty ends, a crew on partner land stops with the reason `treaty_ended` and walks home.
 2. **Free passage.** Neither party's parties pay the other's tolls. This is the Zollverein term, and the engine applies it, so it cannot be breached by accident.
@@ -99,20 +110,16 @@ A new `TreatyKind.ROADS`. It is offered, accepted, cancelled and repudiated thro
 
 ### 3. What stays the same
 
-- **Roads still serve everyone.** Tolls charge travellers; they do not block roads. A civilization at war can still march on your road, and destroying it belongs to the war slice.
+- **Roads still serve everyone.** Tolls charge travellers, and parties may go round them; they do not close roads. A civilization at war can still march on your road, and destroying it belongs to the war slice.
 - **Treaties never create territory.** A partner's road deep in your land carries its influence into your land, and could win tiles if you are weak there. The treaty gives the right to build; the consequences are left to emerge.
 
-## Open questions for the user
+## 4. Decisions
 
-1. **Where toll takings go.** Options:
-   - **Recommended:** straight into the owner's common store. This matches how garrisons already eat from the common store.
-   - A chest at the post, which must be carried home by a later journey. This is more physical, but it adds another hauling chore.
-2. **Treaty shape.** Options:
-   - **Recommended:** a separate `roads` treaty.
-   - Folding the road terms into the existing `trade` treaty. Separate kinds keep each right distinct and easy to end on its own.
-3. **Parties that cannot pay.** Options:
-   - **Recommended:** turned back with goods intact.
-   - Pay everything they have and go on.
+1. **Where toll takings go.** They are held in a chest at the post. A courier party carries them home at a regular deposit interval, and they reach the owner's store only on arrival.
+2. **Treaty shape.** The road terms are folded into the existing `trade` treaty.
+   - Every trade treaty now also grants building rights, free passage and shared road maps.
+   - Ending a trade treaty ends all of these together.
+3. **A party that cannot pay.** It takes a detour around the post if it knows one and can afford it, and otherwise it is turned back with its goods intact.
 
 ## Validation (when built)
 
@@ -120,14 +127,17 @@ A new `TreatyKind.ROADS`. It is offered, accepted, cancelled and repudiated thro
   - a toll is charged only at a staffed, owned road tile;
   - shipments pay a share of cargo, and migrants pay food per head;
   - envoys, explorers, own parties and treaty partners pass free;
-  - a party that cannot pay is turned back intact;
+  - a party that cannot pay takes a known, affordable detour, and otherwise is turned back intact;
+  - takings wait in the chest until couriers carry them home at the deposit interval;
+  - a deposit leaves at least one collector behind;
+  - goods are lost with a perished courier party, and what the couriers cannot carry waits for the next deposit;
   - a toll lapses when its garrison leaves;
   - unknown tolls are not counted in planning;
-  - treaty crews build on partner land, and stop when the treaty ends;
+  - under a trade treaty, crews build on partner land, and stop when the treaty ends;
   - shared road maps are dated;
   - `roads_joined` fires when two partners' settlements become linked.
-- **Acceptance test:** two partners build toward each other, their roads join, and a shipment between them pays no toll. After one side repudiates the treaty, the next shipment pays.
+- **Acceptance test:** two trade partners build toward each other, their roads join, and a shipment between them pays no toll. After one side repudiates the treaty, the next shipment pays, and the takings reach the owner's store only when the next deposit arrives.
 - **Stress tests:** stress runs with toll posts and a road treaty check every day that:
   - no toll is ever charged to an exempt party;
   - no toll is charged where there is no collector;
-  - collected and paid amounts always balance.
+  - everything paid is accounted for, whether in a chest, on a courier, in a store, or lost with a perished party.
