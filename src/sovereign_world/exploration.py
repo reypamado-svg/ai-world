@@ -29,6 +29,7 @@ class Observation(BaseModel):
     confidence_bp: int = Field(default=10_000, ge=0, le=10_000)
     observer_id: EntityId
     source: Literal["direct", "initial"] = "direct"
+    observed_owner: EntityId | None = None
 
 
 class Expedition(BaseModel):
@@ -72,6 +73,7 @@ def advance_expeditions(
     day: int,
     *,
     observations: tuple[Observation, ...] = (),
+    owners: dict[HexCoord, EntityId] | None = None,
 ) -> ExpeditionDayResult:
     """Advance each active expedition toward its next tile and refresh its private map.
 
@@ -81,6 +83,7 @@ def advance_expeditions(
     updated_people = {
         person_id: person.model_copy(deep=True) for person_id, person in people.items()
     }
+    owners = owners or {}
     observation_by_tile = {observation.tile: observation for observation in observations}
     updated_expeditions: list[Expedition] = []
     observed_tiles: list[HexCoord] = []
@@ -135,6 +138,7 @@ def advance_expeditions(
                 tile=destination,
                 observed_day=day,
                 observer_id=observer_id,
+                observed_owner=owners.get(destination),
             )
             observed_tiles.append(destination)
             updated_expeditions.append(
@@ -162,6 +166,7 @@ def advance_expeditions(
             tile=destination,
             observed_day=day,
             observer_id=observer_id,
+            observed_owner=owners.get(destination),
         )
         observed_tiles.append(destination)
         route_index += 1

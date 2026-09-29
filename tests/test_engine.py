@@ -1,3 +1,5 @@
+from logistics_helpers import move_home
+
 from sovereign_world.capabilities import CapabilityRecord
 from sovereign_world.commands import CommandEnvelope, DirectOrder, DirectOrderKind
 from sovereign_world.config import RunManifest, WorldConfig
@@ -135,7 +137,7 @@ def test_expedition_creates_contact_only_when_it_reaches_foreign_settlement() ->
         for tile in state.world_map.neighbors(origin)
         if state.world_map.tile(tile).terrain is Terrain.GRASSLAND
     )
-    state.civilizations[foreign].start_center = destination
+    move_home(state.civilizations[foreign], destination)
 
     class ExplorerSovereign:
         def decide(self, report):
@@ -173,7 +175,7 @@ def test_validated_message_is_dispatched_and_delivered_to_recipient_only() -> No
     ambassador = sender_state.population.living_ids[0]
     origin = sender_state.population.people[ambassador].location
     destination = state.world_map.neighbors(origin)[0]
-    state.civilizations[recipient].start_center = destination
+    move_home(state.civilizations[recipient], destination)
     sender_state.contacts = (
         Contact(
             civilization_id=recipient,

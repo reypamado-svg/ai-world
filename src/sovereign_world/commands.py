@@ -27,6 +27,7 @@ from sovereign_world.logistics import (
 )
 from sovereign_world.resources import Resource
 from sovereign_world.state import WorldState
+from sovereign_world.territory import visible_tiles
 from sovereign_world.travel import passable
 
 
@@ -52,6 +53,7 @@ class DirectOrderKind(StrEnum):
     REPUDIATE_TREATY = "repudiate_treaty"
     DISPATCH_SHIPMENT = "dispatch_shipment"
     DISPATCH_MIGRATION = "dispatch_migration"
+    CLAIM_BORDER = "claim_border"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -71,6 +73,19 @@ REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
     JourneyKind.SHIPMENT: TreatyKind.TRADE,
     JourneyKind.MIGRATION: TreatyKind.MIGRATION,
 }
+
+
+MAX_CLAIMED_TILES = 256
+
+
+class ControlView(BaseModel):
+    """Who a civilization believes owns a tile, and as of which day."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tile: HexCoord
+    owner: EntityId | None
+    as_of_day: int = Field(ge=0)
 
 
 class ProjectKind(StrEnum):
@@ -112,6 +127,7 @@ class DirectOrder(BaseModel):
     journey_id: EntityId | None = None
     traveller_ids: tuple[EntityId, ...] = ()
     cargo: dict[Resource, int] = Field(default_factory=dict)
+    claimed_tiles: tuple[HexCoord, ...] = Field(default=(), max_length=MAX_CLAIMED_TILES)
     extra_provisions: int = Field(default=0, ge=0, le=CARGO_UNITS_PER_CARRIER * MAX_TRAVELLERS)
     priority: int = Field(default=50, ge=0, le=100)
 
@@ -160,6 +176,8 @@ class CouncilReport(BaseModel):
     contacts: tuple[Contact, ...] = ()
     received_messages: tuple[DiplomaticMessage, ...] = ()
     logistics_notices: tuple[LogisticsNotice, ...] = ()
+    controlled_tiles: tuple[HexCoord, ...] = ()
+    observed_control: tuple[ControlView, ...] = ()
     recent_events: tuple[DomainEvent, ...] = ()
 
 
@@ -211,8 +229,44 @@ def build_council_report(
         contacts=civilization.contacts,
         received_messages=civilization.received_messages,
         logistics_notices=civilization.logistics_notices,
+        controlled_tiles=tuple(
+            sorted(
+                owner.tile
+                for owner in state.territory.owners
+                if owner.civilization_id == civilization_id
+            )
+        ),
+        observed_control=_observed_control(state, civilization_id),
         recent_events=visible_events,
     )
+
+
+def _observed_control(state: WorldState, civilization_id: EntityId) -> tuple[ControlView, ...]:
+    """Ownership seen from settlements today, or recorded by explorers when they passed."""
+    civilization = state.civilizations[civilization_id]
+    owners = state.territory.owner_of()
+    in_sight = visible_tiles(
+        state.world_map,
+        (
+            settlement.tile
+            for settlement in civilization.settlements
+            if any(
+                person.alive and person.location == settlement.tile
+                for person in civilization.population.people.values()
+            )
+        ),
+    )
+    views = {
+        observation.tile: ControlView(
+            tile=observation.tile,
+            owner=observation.observed_owner,
+            as_of_day=observation.observed_day,
+        )
+        for observation in civilization.observations
+    }
+    for tile in in_sight:
+        views[tile] = ControlView(tile=tile, owner=owners.get(tile), as_of_day=state.day)
+    return tuple(views[tile] for tile in sorted(views))
 
 
 def _person_owner(state: WorldState, person_id: EntityId) -> EntityId | None:
@@ -536,6 +590,16 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     command_id=command.command_id,
                     code="invalid_treaty",
                     message="treaty acceptance requires the offered treaty ID",
+                )
+            if command.kind is DirectOrderKind.CLAIM_BORDER and (
+                not command.claimed_tiles
+                or len(set(command.claimed_tiles)) != len(command.claimed_tiles)
+                or any(not state.world_map.contains(tile) for tile in command.claimed_tiles)
+            ):
+                command_error = CommandError(
+                    command_id=command.command_id,
+                    code="invalid_claim",
+                    message="a claim names one or more distinct tiles on the map",
                 )
             if command.kind in TREATY_END_ORDERS and command.treaty_id is None:
                 command_error = CommandError(

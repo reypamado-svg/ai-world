@@ -1,3 +1,5 @@
+from logistics_helpers import move_home
+
 from sovereign_world.capabilities import CapabilityId
 from sovereign_world.commands import (
     CommandEnvelope,
@@ -179,7 +181,7 @@ def test_message_requires_contact_and_a_known_route() -> None:
             last_seen_day=0,
         ),
     )
-    state.civilizations[recipient].start_center = destination
+    move_home(state.civilizations[recipient], destination)
 
     accepted = validate_envelope(envelope, state)
     assert accepted.accepted == (order,)

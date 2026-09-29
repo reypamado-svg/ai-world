@@ -12,7 +12,16 @@ from sovereign_world.exploration import Observation
 from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
 from sovereign_world.rng import StableRng
-from sovereign_world.state import WorldState, build_initial_state
+from sovereign_world.state import CivilizationState, WorldState, build_initial_state
+
+
+def move_home(civilization: CivilizationState, tile: HexCoord) -> None:
+    """Move a civilization's starting tile and its capital settlement together."""
+    civilization.start_center = tile
+    civilization.settlements = tuple(
+        settlement.model_copy(update={"tile": tile}) if settlement.capital else settlement
+        for settlement in civilization.settlements
+    )
 
 
 def linked_world(
@@ -39,7 +48,7 @@ def linked_world(
         state.world_map,
         tiles=tuple(grass.get(tile.coord, tile) for tile in state.world_map.tiles),
     )
-    recipient.start_center = route[-1]
+    move_home(recipient, route[-1])
     for person in recipient.population.people.values():
         person.location = route[-1]
     for civilization in (sender, recipient):

@@ -28,12 +28,14 @@ from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
     DiplomaticMessage,
+    MissionStatus,
     TreatyEndKind,
     TreatyOffer,
     advance_diplomacy_day,
 )
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
-from sovereign_world.exploration import Expedition, advance_expeditions
+from sovereign_world.exploration import Expedition, ExpeditionStatus, advance_expeditions
+from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.logistics import (
     TRAVEL_HAZARD_CAUSE,
@@ -49,6 +51,7 @@ from sovereign_world.resources import InventoryDelta, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, validate_world
+from sovereign_world.territory import Claim, advance_territory
 from sovereign_world.work import ConstructionProject, WorkKind, WorkOrder, execute_work_day
 
 
@@ -575,6 +578,72 @@ def _advance_journeys(
     return events, frozenset(result.fed_ids)
 
 
+def _residents(state: WorldState) -> dict[EntityId, int]:
+    """Living people at each settlement who are not away exploring, on embassy, or travelling."""
+    away = {
+        person_id
+        for journey in state.journeys
+        if journey.active
+        for person_id in journey.traveller_ids
+    }
+    away.update(
+        message.ambassador_id
+        for message in state.diplomatic_missions
+        if message.status is MissionStatus.IN_TRANSIT
+    )
+    counts: dict[EntityId, int] = {}
+    for civilization in state.civilizations.values():
+        away_here = away | {
+            person_id
+            for expedition in civilization.expeditions
+            if expedition.status is ExpeditionStatus.ACTIVE
+            for person_id in expedition.explorer_ids
+        }
+        for settlement in civilization.settlements:
+            counts[settlement.settlement_id] = sum(
+                person.alive and person.location == settlement.tile and person_id not in away_here
+                for person_id, person in civilization.population.people.items()
+            )
+    return counts
+
+
+def _tile_id(tile: HexCoord) -> str:
+    return f"tile:{tile.q},{tile.r}"
+
+
+def _advance_territory(state: WorldState) -> list[DomainEvent]:
+    """Derive today's control from settlements and terrain; claims are never consulted."""
+    result = advance_territory(
+        state.territory,
+        state.world_map,
+        (
+            settlement
+            for civilization in state.civilizations.values()
+            for settlement in civilization.settlements
+        ),
+        _residents(state),
+        state.day,
+    )
+    state.territory = result.territory
+    return [
+        _event(
+            state,
+            EventPhase.PROJECT,
+            "control_gained" if change.gained else "control_lost",
+            str(change.civilization_id),
+            _tile_id(change.tile),
+            q=change.tile.q,
+            r=change.tile.r,
+            **(
+                {"from": str(change.previous_owner)}
+                if change.gained and change.previous_owner is not None
+                else {}
+            ),
+        )
+        for change in result.changes
+    ]
+
+
 def _run_councils(
     state: WorldState,
     sovereigns: Mapping[EntityId, Sovereign],
@@ -693,6 +762,27 @@ def _run_councils(
                         "expedition_started",
                         str(civilization_id),
                         str(command.expedition_id),
+                    )
+                )
+            elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.CLAIM_BORDER:
+                claim = Claim(
+                    claim_id=f"claim:{state.day}:{command.command_id}",
+                    civilization_id=civilization_id,
+                    claimed_day=state.day,
+                    tiles=tuple(sorted(set(command.claimed_tiles))),
+                )
+                civilization = state.civilizations[civilization_id]
+                civilization.claims = tuple(
+                    sorted((*civilization.claims, claim), key=lambda item: item.claim_id)
+                )
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.COMMAND,
+                        "claim_recorded",
+                        str(civilization_id),
+                        claim.claim_id,
+                        tiles=len(claim.tiles),
                     )
                 )
             elif isinstance(command, DirectOrder) and command.kind in JOURNEY_ORDERS:
@@ -854,6 +944,7 @@ def advance_day(
             candidate.world_map,
             candidate.day,
             observations=civilization.observations,
+            owners=candidate.territory.owner_of(),
         )
         civilization.expeditions = expedition_result.expeditions
         civilization.observations = expedition_result.observations
@@ -1298,6 +1389,8 @@ def advance_day(
             person = civilization.population.people.get(person_id)
             if person is not None and person.alive:
                 recover(person)
+
+    events.extend(_advance_territory(candidate))
 
     candidate.day += 1
     validate_world(candidate)

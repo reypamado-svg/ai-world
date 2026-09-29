@@ -29,6 +29,7 @@ from sovereign_world.logistics import (
 from sovereign_world.people import Population, create_founders
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
+from sovereign_world.territory import Claim, Settlement, Territory
 from sovereign_world.work import ConstructionProject, WorkOrder
 from sovereign_world.worldgen import generate_world
 
@@ -48,6 +49,8 @@ class CivilizationState(BaseModel):
     contacts: tuple[Contact, ...] = ()
     received_messages: tuple[DiplomaticMessage, ...] = ()
     logistics_notices: tuple[LogisticsNotice, ...] = ()
+    settlements: tuple[Settlement, ...] = ()
+    claims: tuple[Claim, ...] = ()
 
 
 class WorldState(BaseModel):
@@ -64,6 +67,7 @@ class WorldState(BaseModel):
     treaty_offers: tuple[TreatyOffer, ...] = ()
     active_treaties: tuple[ActiveTreaty, ...] = ()
     journeys: tuple[Journey, ...] = ()
+    territory: Territory = Field(default_factory=Territory)
 
 
 def _canonical_payload(state: WorldState) -> str:
@@ -130,6 +134,17 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
             inventory=inventory,
             known_tiles=known_tiles,
             observations=observations,
+            settlements=(
+                Settlement(
+                    settlement_id=EntityId(
+                        f"settlement:{civilization_id.rsplit(':', 1)[-1]}-0001"
+                    ),
+                    civilization_id=civilization_id,
+                    tile=start.center,
+                    founded_day=0,
+                    capital=True,
+                ),
+            ),
             capabilities=(
                 CapabilityRecord(
                     capability=capability,
@@ -219,6 +234,20 @@ def validate_world(state: WorldState) -> None:
             for message in received
         ):
             raise ValueError("received messages must be delivered to this civilization")
+        settlements = civilization.settlements
+        if settlements != tuple(sorted(settlements, key=lambda item: item.settlement_id)):
+            raise ValueError("settlements must be sorted")
+        if len({item.settlement_id for item in settlements}) != len(settlements):
+            raise ValueError("settlements must be unique")
+        if any(item.civilization_id != civilization_id for item in settlements):
+            raise ValueError("a settlement must belong to its civilization")
+        capitals = [item for item in settlements if item.capital]
+        if len(capitals) != 1 or capitals[0].tile != civilization.start_center:
+            raise ValueError("a civilization has exactly one capital, at its start")
+        if civilization.claims != tuple(
+            sorted(civilization.claims, key=lambda item: item.claim_id)
+        ):
+            raise ValueError("claims must be sorted")
         notices = civilization.logistics_notices
         if notices != tuple(sorted(notices, key=lambda item: item.notice_id)):
             raise ValueError("logistics notices must be sorted")
@@ -303,3 +332,8 @@ def validate_world(state: WorldState) -> None:
             JourneyOutcome.REFUSED,
         }:
             raise ValueError("only undelivered cargo can still be carried")
+    for owner in state.territory.owners:
+        if owner.civilization_id not in state.civilizations:
+            raise ValueError("territory must belong to an existing civilization")
+        if state.world_map.tile(owner.tile).terrain.value == "water":
+            raise ValueError("water cannot be controlled")

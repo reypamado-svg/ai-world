@@ -158,3 +158,18 @@ This design makes control **terrain-aware**, but today **travel is not**. Every 
   - Privacy: reports contain only observed or visible ownership.
 - **Acceptance scenario:** two civilizations' control areas meet, a contested border forms, and the history replays to identical hashes.
 - **Stress tests:** real-day histories check every day that each settlement tile is owned by its civilization, that no tile has two owners, and that ownership changes respect the drift and dwell limits.
+
+## Slice 2 as built
+
+These are the details the design above left open, settled during implementation:
+
+- **Residents.** A settlement's residents are its civilization's living people standing on its tile, not counting anyone away exploring, on an embassy or on a journey. With no one home, a settlement projects nothing and is no longer anchored.
+- **Timing.** Control is updated at the end of each day, after travel, eating, births and deaths.
+- **Formation.** Held control starts at zero, so a new capital's land forms over about two weeks: at +3 a day, tiles reach the 40 threshold on day 13. A 32-person capital holds tiles out to 4 grassland days, where influence is exactly 40.
+- **Own knowledge.** A civilization always knows which tiles it currently holds, and notices when it loses one, because its administrators do. It is not told who took the tile. It sees current ownership within 1 tile of its inhabited settlements; everything else comes from the owner that explorers recorded, with the date they saw it.
+- **Supply.** A settlement cut off from its capital is halved, as designed. It can only happen once there are several settlements, so the `route_severed` event arrives with expansion (slice 3).
+- **Events.** `control_gained` and `control_lost` name the civilization and the tile; a transfer also records who held the tile before. A claim emits `claim_recorded`.
+- **Checked behaviour.**
+  - In a sampled 48×48 world, the four capitals held 16–25 tiles each by day 60, depending on the terrain around them.
+  - The whole simulation took about 0.03 seconds per day.
+  - Natural starts are at least 12 tiles apart, so capitals' land does not meet until expansion.
