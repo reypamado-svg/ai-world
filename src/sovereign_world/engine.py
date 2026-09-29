@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -22,6 +23,9 @@ from sovereign_world.commands import (
     ProjectKind,
     build_council_report,
     journey_supplies,
+    known_roads,
+    known_tolls,
+    trade_partners,
     validate_envelope,
 )
 from sovereign_world.diplomacy import (
@@ -30,6 +34,7 @@ from sovereign_world.diplomacy import (
     DiplomaticMessage,
     MissionStatus,
     TreatyEndKind,
+    TreatyKind,
     TreatyOffer,
     advance_diplomacy_day,
 )
@@ -43,20 +48,25 @@ from sovereign_world.exploration import (
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.logistics import (
+    CARGO_UNITS_PER_CARRIER,
     INTERNAL_KINDS,
+    MAX_TRAVELLERS,
     TRAVEL_HAZARD_CAUSE,
     Journey,
     JourneyKind,
     LogisticsNotice,
     NoticeKind,
     RoadBuilt,
+    TollEncounter,
     advance_journeys_day,
+    journey_days,
     notice,
+    provisions_needed,
 )
 from sovereign_world.people import advance_population_day, go_hungry, recover
 from sovereign_world.resources import InventoryDelta, Resource
 from sovereign_world.rng import StableRng
-from sovereign_world.roads import Road, grades_of
+from sovereign_world.roads import Road, RoadView, grades_of
 from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.territory import (
@@ -66,6 +76,7 @@ from sovereign_world.territory import (
     Settlement,
     advance_territory,
 )
+from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
 from sovereign_world.work import ConstructionProject, WorkKind, WorkOrder, execute_work_day
 
 
@@ -142,7 +153,8 @@ def _arrival_allowed(state: WorldState, journey: Journey) -> bool:
     civilization_id = journey.sender_civilization_id
     if journey.kind is JourneyKind.ROADWORK:
         here = journey.route[journey.route_index]
-        return state.territory.owner_of().get(here) in {None, civilization_id}
+        allowed = {None, civilization_id} | trade_partners(state, civilization_id)
+        return state.territory.owner_of().get(here) in allowed
     owner = state.territory.owner_of().get(destination)
     settlements = [
         settlement.tile
@@ -261,8 +273,12 @@ DISPATCH_EVENT = {
     JourneyKind.GARRISON: "garrison_dispatched",
     JourneyKind.RELOCATION: "relocation_dispatched",
     JourneyKind.ROADWORK: "road_crew_dispatched",
+    JourneyKind.DEPOSIT: "toll_deposit_dispatched",
 }
-RETURNED_EVENT = {JourneyKind.ROADWORK: "road_crew_returned"}
+RETURNED_EVENT = {
+    JourneyKind.ROADWORK: "road_crew_returned",
+    JourneyKind.DEPOSIT: "toll_couriers_returned",
+}
 
 
 def _leave_garrisons(
@@ -504,6 +520,7 @@ def _advance_journeys(
         world_map=state.world_map,
         arrival_allowed=lambda journey: _arrival_allowed(state, journey),
         roads=grades_of(state.roads),
+        tolls=_toll_rules(state),
     )
     state.journeys = result.journeys
     for civilization_id, people in result.people_by_civilization.items():
@@ -579,7 +596,12 @@ def _advance_journeys(
                 r=halt.tile.r,
             )
         )
+    for encounter in result.tolls:
+        events.extend(_settle_toll(state, encounter))
     for journey in result.arrived:
+        if journey.kind is JourneyKind.DEPOSIT:
+            events.extend(_deposit_arrival(state, journey))
+            continue
         if journey.kind in INTERNAL_KINDS:
             events.extend(
                 _settle_arrival(state, journey, result.handed_over.get(journey.journey_id, 0))
@@ -716,6 +738,11 @@ def _advance_journeys(
         sender_id = journey.sender_civilization_id
         restored: dict[Resource, int] = {}
         brought_home = journey.cargo if journey.journey_id in cargo_home else journey.materials
+        if journey.kind is JourneyKind.DEPOSIT and brought_home:
+            # Couriers turned back on the way carry the chest back to their post.
+            _fill_chest(state, sender_id, journey.route[0], brought_home)
+            restored = dict(brought_home)
+            brought_home = {}
         if brought_home:
             sender = state.civilizations[sender_id]
             sender.inventory, waste = sender.inventory.store_with_waste(brought_home)
@@ -789,6 +816,470 @@ def _advance_journeys(
             )
         )
     return events, frozenset(result.fed_ids)
+
+
+def _away(state: WorldState) -> set[EntityId]:
+    """Everyone on a journey, an embassy, or an expedition today."""
+    away = {
+        person_id
+        for journey in state.journeys
+        if journey.active
+        for person_id in journey.traveller_ids
+    }
+    away.update(
+        message.ambassador_id
+        for message in state.diplomatic_missions
+        if message.status is MissionStatus.IN_TRANSIT
+    )
+    for civilization in state.civilizations.values():
+        away.update(
+            person_id
+            for expedition in civilization.expeditions
+            if expedition.status is ExpeditionStatus.ACTIVE
+            for person_id in expedition.explorer_ids
+        )
+    return away
+
+
+def _collectors(state: WorldState, post: TollPost, away: set[EntityId]) -> list[EntityId]:
+    """The owner's living people standing at the post and not away, in id order."""
+    people = state.civilizations[post.civilization_id].population.people
+    return sorted(
+        person_id
+        for person_id, person in people.items()
+        if person.alive and person.location == post.tile and person_id not in away
+    )
+
+
+def _toll_rules(state: WorldState) -> TollRules:
+    """Today's staffed tolls, who passes free, and what each civilization knows."""
+    away = _away(state)
+    gates = {
+        post.tile: TollGate(post.civilization_id, post.cargo_rate_bp, post.food_per_head)
+        for civilization in state.civilizations.values()
+        for post in civilization.toll_posts
+        if post.collecting and _collectors(state, post, away)
+    }
+    return TollRules(
+        gates=gates,
+        free_passage=frozenset(
+            frozenset({treaty.proposer_civilization_id, treaty.recipient_civilization_id})
+            for treaty in state.active_treaties
+            if treaty.in_force and treaty.kind is TreatyKind.TRADE
+        ),
+        known_gates={
+            civilization_id: {
+                view.tile: TollGate(view.owner, view.cargo_rate_bp, view.food_per_head)
+                for view in known_tolls(state, civilization_id)
+            }
+            for civilization_id in state.civilizations
+        },
+        known_tiles={
+            civilization_id: frozenset(civilization.known_tiles)
+            for civilization_id, civilization in state.civilizations.items()
+        },
+    )
+
+
+def _post_at(state: WorldState, owner: EntityId, tile: HexCoord) -> TollPost | None:
+    return next(
+        (post for post in state.civilizations[owner].toll_posts if post.tile == tile), None
+    )
+
+
+def _replace_post(
+    state: WorldState, post: TollPost | None, tile: HexCoord, owner: EntityId
+) -> None:
+    civilization = state.civilizations[owner]
+    posts = [item for item in civilization.toll_posts if item.tile != tile]
+    if post is not None:
+        posts.append(post)
+    civilization.toll_posts = tuple(sorted(posts, key=lambda item: item.tile))
+
+
+def _fill_chest(
+    state: WorldState, owner: EntityId, tile: HexCoord, goods: Mapping[Resource, int]
+) -> None:
+    """Put takings in a post's chest, or straight into the store at the capital's gate."""
+    post = _post_at(state, owner, tile)
+    if post is None or post.at_storehouse:
+        civilization = state.civilizations[owner]
+        civilization.inventory, _ = civilization.inventory.store_with_waste(dict(goods))
+        return
+    chest = dict(post.chest)
+    for resource, quantity in goods.items():
+        chest[resource] = chest.get(resource, 0) + quantity
+    _replace_post(
+        state,
+        post.model_copy(update={"chest": {key: chest[key] for key in sorted(chest)}}),
+        tile,
+        owner,
+    )
+
+
+def _learn_toll(state: WorldState, civilization_id: EntityId, view: TollView) -> None:
+    civilization = state.civilizations[civilization_id]
+    views = {item.tile: item for item in civilization.toll_intel}
+    views[view.tile] = view
+    civilization.toll_intel = tuple(views[tile] for tile in sorted(views))
+
+
+def _settle_toll(state: WorldState, encounter: TollEncounter) -> list[DomainEvent]:
+    """Record a party's meeting with a toll post: payment into the chest, or its way round."""
+    gate = encounter.gate
+    tile = encounter.tile
+    _learn_toll(
+        state,
+        encounter.payer,
+        TollView(
+            tile=tile,
+            owner=gate.owner,
+            cargo_rate_bp=gate.cargo_rate_bp,
+            food_per_head=gate.food_per_head,
+            as_of_day=state.day,
+        ),
+    )
+    journey = next(item for item in state.journeys if item.journey_id == encounter.journey_id)
+    where = f"{tile.q},{tile.r}"
+    location = {"q": tile.q, "r": tile.r}
+    if encounter.avoided or encounter.turned_back:
+        kind = NoticeKind.TOLL_AVOIDED if encounter.avoided else NoticeKind.TOLL_TURNED_BACK
+        _add_notice(
+            state,
+            encounter.payer,
+            LogisticsNotice(
+                notice_id=f"{journey.journey_id}:{kind.value}:{where}",
+                day=state.day,
+                kind=kind,
+                journey_id=journey.journey_id,
+                treaty_id=journey.treaty_id,
+                counterpart_civilization_id=gate.owner,
+            ),
+        )
+        return [
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "toll_avoided" if encounter.avoided else "toll_refused",
+                str(encounter.payer),
+                str(journey.journey_id),
+                owner=str(gate.owner),
+                **location,
+            )
+        ]
+    if not encounter.paid:
+        return []
+    _fill_chest(state, gate.owner, tile, encounter.paid)
+    for civilization_id, kind, counterpart in (
+        (encounter.payer, NoticeKind.TOLL_PAID, gate.owner),
+        (gate.owner, NoticeKind.TOLL_COLLECTED, encounter.payer),
+    ):
+        _add_notice(
+            state,
+            civilization_id,
+            LogisticsNotice(
+                notice_id=f"{journey.journey_id}:{kind.value}:{where}",
+                day=state.day,
+                kind=kind,
+                journey_id=journey.journey_id,
+                treaty_id=journey.treaty_id,
+                counterpart_civilization_id=counterpart,
+                cargo=dict(encounter.paid),
+            ),
+        )
+    post = _post_at(state, gate.owner, tile)
+    units = sum(encounter.paid.values())
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "toll_paid",
+            str(encounter.payer),
+            str(journey.journey_id),
+            owner=str(gate.owner),
+            units=units,
+            **location,
+        ),
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "toll_collected",
+            str(gate.owner),
+            str(post.post_id) if post is not None else _tile_id(tile),
+            payer=str(encounter.payer),
+            units=units,
+            **location,
+        ),
+    ]
+
+
+def _deposit_arrival(state: WorldState, journey: Journey) -> list[DomainEvent]:
+    """Couriers reach the storehouse: the chest's contents are stored only now."""
+    owner = journey.sender_civilization_id
+    civilization = state.civilizations[owner]
+    civilization.inventory, waste = civilization.inventory.store_with_waste(journey.cargo)
+    stored = {
+        resource: quantity - waste.get(resource, 0)
+        for resource, quantity in journey.cargo.items()
+        if quantity - waste.get(resource, 0) > 0
+    }
+    _add_notice(
+        state, owner, notice(state.day, NoticeKind.TOLL_DEPOSITED, journey, owner, cargo=stored)
+    )
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "toll_deposited",
+            str(owner),
+            str(journey.journey_id),
+            units=sum(stored.values()),
+            wasted=sum(waste.values()),
+        )
+    ]
+
+
+def _advance_tolls(state: WorldState) -> list[DomainEvent]:
+    """Lapse or resume each post, and send couriers home with any chest that is due."""
+    events: list[DomainEvent] = []
+    owners = state.territory.owner_of()
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        for post in civilization.toll_posts:
+            away = _away(state)
+            collectors = _collectors(state, post, away)
+            held = owners.get(post.tile) == civilization_id and collectors
+            if post.collecting and not held:
+                post = post.model_copy(update={"collecting": False})
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.MOVEMENT,
+                        "toll_lapsed",
+                        str(civilization_id),
+                        str(post.post_id),
+                    )
+                )
+            elif not post.collecting and not post.lifted and held:
+                post = post.model_copy(update={"collecting": True})
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.MOVEMENT,
+                        "toll_resumed",
+                        str(civilization_id),
+                        str(post.post_id),
+                    )
+                )
+            if post.chest and state.day - post.last_deposit_day >= post.deposit_every_days:
+                post, dispatched = _send_deposit(state, post, collectors)
+                events.extend(dispatched)
+            if post.lifted and not post.chest:
+                _replace_post(state, None, post.tile, civilization_id)
+            else:
+                _replace_post(state, post, post.tile, civilization_id)
+    return events
+
+
+def _send_deposit(
+    state: WorldState, post: TollPost, collectors: list[EntityId]
+) -> tuple[TollPost, list[DomainEvent]]:
+    """Send spare collectors home with as much of the chest as they can carry."""
+    owner = post.civilization_id
+    civilization = state.civilizations[owner]
+    couriers = tuple(collectors[: min(len(collectors) - 1, MAX_TRAVELLERS)])
+    journey_id = EntityId(f"journey:{post.post_id}:deposit:{state.day}")
+    provisions = (
+        provisions_needed(
+            journey_days(
+                JourneyKind.DEPOSIT, state.world_map, post.deposit_route, grades_of(state.roads)
+            ),
+            len(couriers),
+        )
+        if couriers
+        else 0
+    )
+    room = CARGO_UNITS_PER_CARRIER * len(couriers) - provisions
+    food = civilization.inventory.quantities.get(Resource.FOOD, 0)
+    post = post.model_copy(update={"last_deposit_day": state.day})
+    if not couriers or room <= 0 or food < provisions:
+        cause = "no spare collector" if not couriers else "the couriers cannot be provisioned"
+        _add_notice(
+            state,
+            owner,
+            LogisticsNotice(
+                notice_id=f"{journey_id}:{NoticeKind.TOLL_DEPOSIT_SKIPPED.value}",
+                day=state.day,
+                kind=NoticeKind.TOLL_DEPOSIT_SKIPPED,
+                journey_id=journey_id,
+                treaty_id=None,
+                counterpart_civilization_id=owner,
+                cargo=dict(post.chest),
+            ),
+        )
+        return post, [
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "toll_deposit_skipped",
+                str(owner),
+                str(post.post_id),
+                cause=cause,
+            )
+        ]
+    carried: dict[Resource, int] = {}
+    chest = dict(post.chest)
+    for resource in sorted(chest):
+        taken = min(chest[resource], room)
+        if taken:
+            carried[resource] = taken
+            chest[resource] -= taken
+            room -= taken
+    civilization.inventory = civilization.inventory.apply_delta(
+        InventoryDelta(changes={Resource.FOOD: -provisions})
+    )
+    journey = Journey(
+        journey_id=journey_id,
+        kind=JourneyKind.DEPOSIT,
+        sender_civilization_id=owner,
+        recipient_civilization_id=owner,
+        traveller_ids=couriers,
+        route=post.deposit_route,
+        cargo=carried,
+        carrying_cargo=True,
+        provisions_packed=provisions,
+        provisions=provisions,
+        departed_day=state.day,
+    )
+    state.journeys = tuple(sorted((*state.journeys, journey), key=lambda item: item.journey_id))
+    post = post.model_copy(update={"chest": {key: left for key, left in chest.items() if left}})
+    return post, [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "toll_deposit_dispatched",
+            str(owner),
+            str(journey_id),
+            couriers=len(couriers),
+            units=sum(carried.values()),
+            left_behind=sum(post.chest.values()),
+        )
+    ]
+
+
+def _set_toll(state: WorldState, civilization_id: EntityId, command: DirectOrder) -> DomainEvent:
+    """Set, change, or lift the toll at a post; lifting keeps the chest until it is emptied."""
+    assert command.toll_rate_bp is not None and command.toll_food_per_head is not None
+    tile = command.route[0]
+    existing = _post_at(state, civilization_id, tile)
+    location = {"q": tile.q, "r": tile.r}
+    if not command.toll_rate_bp and not command.toll_food_per_head:
+        assert existing is not None
+        _replace_post(
+            state,
+            existing.model_copy(update={"collecting": False, "lifted": True}),
+            tile,
+            civilization_id,
+        )
+        return _event(
+            state, EventPhase.MOVEMENT, "toll_lifted", str(civilization_id), str(existing.post_id)
+        )
+    post = TollPost(
+        post_id=(
+            existing.post_id
+            if existing is not None
+            else EntityId(f"toll:{civilization_id.rsplit(':', 1)[-1]}:{tile.q},{tile.r}")
+        ),
+        civilization_id=civilization_id,
+        tile=tile,
+        cargo_rate_bp=command.toll_rate_bp,
+        food_per_head=command.toll_food_per_head,
+        deposit_every_days=command.deposit_interval_days,
+        deposit_route=command.route,
+        set_day=state.day,
+        last_deposit_day=existing.last_deposit_day if existing is not None else state.day,
+        chest=existing.chest if existing is not None else {},
+    )
+    _replace_post(state, post, tile, civilization_id)
+    return _event(
+        state,
+        EventPhase.MOVEMENT,
+        "toll_set",
+        str(civilization_id),
+        str(post.post_id),
+        cargo_rate_bp=post.cargo_rate_bp,
+        food_per_head=post.food_per_head,
+        **location,
+    )
+
+
+def _share_maps(state: WorldState, treaty: ActiveTreaty) -> None:
+    """Trade partners exchange road maps: each learns the other's roads and tolls, dated today."""
+    first, second = treaty.proposer_civilization_id, treaty.recipient_civilization_id
+    maps = {
+        civilization_id: (known_roads(state, civilization_id), known_tolls(state, civilization_id))
+        for civilization_id in (first, second)
+    }
+    for learner, teacher in ((first, second), (second, first)):
+        civilization = state.civilizations[learner]
+        shown_roads, shown_tolls = maps[teacher]
+        road_views = {item.tile: item for item in civilization.road_intel}
+        for road in shown_roads:
+            road_views[road.tile] = RoadView(tile=road.tile, grade=road.grade, as_of_day=state.day)
+        civilization.road_intel = tuple(road_views[tile] for tile in sorted(road_views))
+        for toll in shown_tolls:
+            _learn_toll(state, learner, toll.model_copy(update={"as_of_day": state.day}))
+
+
+def _joined_roads(state: WorldState) -> list[DomainEvent]:
+    """Note when a continuous road first links a settlement of each trade partner."""
+    road_tiles = {road.tile for road in state.roads}
+    joined: list[EntityId] = []
+    events: list[DomainEvent] = []
+    for treaty in state.active_treaties:
+        if not treaty.in_force or treaty.kind is not TreatyKind.TRADE:
+            continue
+        starts = {
+            settlement.tile
+            for settlement in state.civilizations[treaty.proposer_civilization_id].settlements
+        } & road_tiles
+        goals = {
+            settlement.tile
+            for settlement in state.civilizations[treaty.recipient_civilization_id].settlements
+        } & road_tiles
+        if not starts or not goals:
+            continue
+        seen = set(starts)
+        frontier = deque(sorted(starts))
+        length = {tile: 1 for tile in starts}
+        reached: HexCoord | None = None
+        while frontier and reached is None:
+            tile = frontier.popleft()
+            if tile in goals:
+                reached = tile
+                break
+            for neighbor in sorted(tile.neighbors()):
+                if neighbor in road_tiles and neighbor not in seen:
+                    seen.add(neighbor)
+                    length[neighbor] = length[tile] + 1
+                    frontier.append(neighbor)
+        if reached is None:
+            continue
+        joined.append(treaty.treaty_id)
+        if treaty.treaty_id not in state.joined_roads:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "roads_joined",
+                    str(treaty.proposer_civilization_id),
+                    str(treaty.treaty_id),
+                    partner=str(treaty.recipient_civilization_id),
+                    road_tiles=length[reached],
+                )
+            )
+    state.joined_roads = tuple(sorted(joined))
+    return events
 
 
 def _record_road(state: WorldState, built: RoadBuilt) -> DomainEvent:
@@ -1017,6 +1508,8 @@ def _run_councils(
                                 str(command.project_id),
                             )
                         )
+            elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.SET_TOLL:
+                events.append(_set_toll(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.START_TEACHING
@@ -1453,6 +1946,15 @@ def advance_day(
                         key=lambda treaty: treaty.treaty_id,
                     )
                 )
+                if offer.kind is TreatyKind.TRADE:
+                    _share_maps(
+                        candidate,
+                        next(
+                            item
+                            for item in candidate.active_treaties
+                            if item.treaty_id == offer.offer_id
+                        ),
+                    )
                 events.append(
                     _event(
                         candidate,
@@ -1474,6 +1976,7 @@ def advance_day(
 
     journey_events, fed_on_the_road = _advance_journeys(candidate, rng)
     events.extend(journey_events)
+    events.extend(_advance_tolls(candidate))
 
     for civilization_id in sorted(candidate.civilizations):
         civilization = candidate.civilizations[civilization_id]
@@ -1700,6 +2203,7 @@ def advance_day(
                 recover(person)
 
     events.extend(_advance_territory(candidate))
+    events.extend(_joined_roads(candidate))
 
     candidate.day += 1
     validate_world(candidate)

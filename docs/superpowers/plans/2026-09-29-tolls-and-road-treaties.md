@@ -141,3 +141,28 @@ The existing `trade` treaty gains road terms, and no new treaty kind is added. I
   - no toll is ever charged to an exempt party;
   - no toll is charged where there is no collector;
   - everything paid is accounted for, whether in a chest, on a courier, in a store, or lost with a perished party.
+
+## As built
+
+- **What "cannot pay" means.** A party cannot pay a food toll when paying would leave its pack short for the rest of the trip, counting the way back for round trips. The original test, less food than the toll itself, would almost never have let a party go round: any party whose pack covered a detour could also have paid.
+  - Shipments pay in cargo, so they can always pay.
+  - A detour avoids the post and every other known toll that charges food, and is taken only if the pack covers the new remaining distance.
+  - Road crews never detour, because their route is their work. A crew that cannot pay stops with the reason `toll`.
+- **Passing free, a party still sees the post.** A party exempt under a trade treaty records the post and its rates, so it is known if the treaty later breaks. Parties plan food for known tolls, except their own and their partners'.
+- **Tolls are settled on entering a tile on the way out, once per journey.** A post sitting on a party's destination, such as a capital's gate, charges on arrival.
+- **Deposits.**
+  - A deposit is a round-trip internal journey of the new kind `deposit`. The couriers carry the chest to the settlement at the end of the deposit route, store it there, and walk back to their post.
+  - Their food comes from the common store, like a garrison's.
+  - Couriers turned back on the way return the goods to the chest.
+  - A deposit falls due once the interval has passed and the chest holds something. A deposit that is due, or skipped, resets the interval.
+- **Lapsed and lifted tolls.**
+  - A lapsed toll resumes by itself once the owner again holds the tile with collectors present.
+  - A lifted toll stops collecting at once. It keeps sending deposits until its chest is empty, and the post is then removed.
+  - The note that a relocation can fetch a lapsed chest was not built. A lapsed chest waits until the toll resumes.
+- **Road terms of trade treaties.**
+  - When a treaty takes effect, shared road maps give the partner the other's known roads as `road_intel` and its known tolls as `toll_intel`, both dated that day. Map sharing does not add terrain or known tiles.
+  - A crew on a partner's tile stops with the reason `foreign_land` as soon as the treaty ends. There is no separate `treaty_ended` reason.
+- **`roads_joined`** fires the first time a continuous road links a settlement of each partner under a trade treaty in force. `WorldState.joined_roads` remembers the link. It fires again only if the link or the treaty is lost and later restored.
+- **Stress runs.** In the journey stress matrix, a garrisoned toll post stands beside the second capital: a 10% cargo toll plus 1 food per person, emptied every 10 days. The daily goods-conservation check now also counts toll chests and couriers' loads. In every run:
+  - no toll is ever paid while the trade treaty is in force, and no post charges its own civilization's parties;
+  - where the treaty is broken, tolls are paid and couriers deposit the takings.

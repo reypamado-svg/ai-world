@@ -24,6 +24,7 @@ from sovereign_world.roads import (
     step_labour,
     steps_to,
 )
+from sovereign_world.tolls import TollGate, TollRules, cargo_charge, detour, food_charge
 from sovereign_world.travel import DAY, ENTRY_COST, MAX_PROGRESS, Roads, entry_cost, travel_days
 
 CARGO_UNITS_PER_CARRIER = 50
@@ -49,11 +50,21 @@ class JourneyKind(StrEnum):
     GARRISON = "garrison"
     RELOCATION = "relocation"
     ROADWORK = "roadwork"
+    DEPOSIT = "deposit"
+    """Couriers carrying a toll post's chest to a storehouse, then back to their post."""
 
 
 INTERNAL_KINDS = frozenset(
-    {JourneyKind.SETTLEMENT, JourneyKind.GARRISON, JourneyKind.RELOCATION, JourneyKind.ROADWORK}
+    {
+        JourneyKind.SETTLEMENT,
+        JourneyKind.GARRISON,
+        JourneyKind.RELOCATION,
+        JourneyKind.ROADWORK,
+        JourneyKind.DEPOSIT,
+    }
 )
+ROUND_TRIP_KINDS = frozenset({JourneyKind.SHIPMENT, JourneyKind.DEPOSIT})
+"""Parties that deliver goods, then walk back to where they set out."""
 """Journeys within one civilization: no treaty, and the sender is also the recipient."""
 
 
@@ -72,6 +83,8 @@ class JourneyOutcome(StrEnum):
     PERISHED = "perished"
     STOPPED = "stopped"
     """A road crew turned home before finishing its route."""
+    TURNED_BACK = "turned_back"
+    """A party that could neither pay a toll nor find a way round it."""
 
 
 class StopReason(StrEnum):
@@ -79,6 +92,7 @@ class StopReason(StrEnum):
     PROVISIONS = "provisions"
     NO_STONEWORKER = "no_stoneworker"
     MATERIALS = "materials"
+    TOLL = "toll"
 
 
 class Journey(BaseModel):
@@ -113,6 +127,8 @@ class Journey(BaseModel):
     """Person-days already spent toward `work_grade` on the crew's current tile."""
     work_grade: RoadGrade | None = None
     """The grade the crew's labour so far was for; another crew reaching it first wastes it."""
+    tolls_paid: tuple[HexCoord, ...] = ()
+    """Toll posts this party has already passed, paying or free; each charges a journey once."""
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
@@ -121,8 +137,12 @@ class Journey(BaseModel):
             raise ValueError("only internal journeys stay within their civilization")
         if internal != (self.treaty_id is None):
             raise ValueError("foreign journeys need a treaty and internal ones have none")
-        if internal and (self.cargo or self.carrying_cargo):
+        if internal and self.kind is not JourneyKind.DEPOSIT and (
+            self.cargo or self.carrying_cargo
+        ):
             raise ValueError("internal journeys carry no trade cargo")
+        if self.kind is JourneyKind.DEPOSIT and not self.cargo:
+            raise ValueError("a deposit carries a chest of takings")
         roadwork = self.kind is JourneyKind.ROADWORK
         if roadwork != (self.road_grade is not None):
             raise ValueError("only a road crew, and every road crew, has a target grade")
@@ -166,9 +186,9 @@ def journey_days(
     route: tuple[HexCoord, ...],
     roads: Roads | None = None,
 ) -> int:
-    """Days on the road without delays: out and back for a shipment, one way for migrants."""
+    """Days on the road without delays: out and back for goods, one way for migrants."""
     days = travel_days(world_map, route[1:], roads)
-    if kind is JourneyKind.SHIPMENT:
+    if kind in ROUND_TRIP_KINDS:
         days += travel_days(world_map, tuple(reversed(route))[1:], roads)
     return days
 
@@ -219,6 +239,12 @@ class NoticeKind(StrEnum):
     PARTY_ARRIVED = "party_arrived"
     PARTY_RETURNED = "party_returned"
     PARTY_UNFUNDED = "party_unfunded"
+    TOLL_PAID = "toll_paid"
+    TOLL_COLLECTED = "toll_collected"
+    TOLL_AVOIDED = "toll_avoided"
+    TOLL_TURNED_BACK = "toll_turned_back"
+    TOLL_DEPOSITED = "toll_deposited"
+    TOLL_DEPOSIT_SKIPPED = "toll_deposit_skipped"
 
 
 class LogisticsNotice(BaseModel):
@@ -291,6 +317,20 @@ class RoadworkStopped:
 
 
 @dataclass(frozen=True, slots=True)
+class TollEncounter:
+    """A party at a toll post: what it paid, or whether it went round or turned back."""
+
+    journey_id: EntityId
+    payer: EntityId
+    owner: EntityId
+    tile: HexCoord
+    gate: TollGate
+    paid: dict[Resource, int]
+    avoided: bool = False
+    turned_back: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class JourneyDayResult:
     journeys: tuple[Journey, ...]
     people_by_civilization: dict[EntityId, dict[EntityId, Person]]
@@ -309,6 +349,7 @@ class JourneyDayResult:
     fed_ids: tuple[EntityId, ...]
     roads_built: tuple[RoadBuilt, ...] = ()
     roadwork_stopped: tuple[RoadworkStopped, ...] = ()
+    tolls: tuple[TollEncounter, ...] = ()
 
 
 def _roll(rng: StableRng, day: int, journey: Journey, purpose: str) -> int:
@@ -326,6 +367,7 @@ def advance_journeys_day(
     world_map: WorldMap,
     arrival_allowed: Callable[[Journey], bool] | None = None,
     roads: Roads | None = None,
+    tolls: TollRules | None = None,
 ) -> JourneyDayResult:
     """Move each active party one route tile, resolving deaths, hazards, and delays.
 
@@ -337,6 +379,11 @@ def advance_journeys_day(
     A road crew works instead of walking while its tile is below the target grade, and
     turns home early when the tile ahead is foreign, when its pack holds only enough for
     the walk home, or when stone must be laid and no stoneworker is left alive.
+
+    A foreign party pays each staffed toll post on its way out once. A party whose pack
+    would not then last the rest of its trip cannot pay: it takes the shortest way round
+    over land its civilization knows, if its pack covers the longer road, and otherwise
+    turns back with its goods. A road crew that cannot pay stops.
     """
     people = {
         civilization_id: {
@@ -357,6 +404,8 @@ def advance_journeys_day(
     grades = dict(roads or {})
     roads_built: list[RoadBuilt] = []
     stopped: list[RoadworkStopped] = []
+    encounters: list[TollEncounter] = []
+    toll_rules = tolls or TollRules()
 
     def stop(journey: Journey, reason: StopReason) -> Journey:
         stopped.append(
@@ -460,6 +509,14 @@ def advance_journeys_day(
             delayed_ids.append(journey.journey_id)
             updated.append(journey.model_copy(update={"delayed_days": journey.delayed_days + 1}))
             continue
+        if (
+            journey.kind is JourneyKind.ROADWORK
+            and journey.phase is JourneyPhase.OUTBOUND
+            and arrival_allowed is not None
+            and not arrival_allowed(journey)
+        ):
+            # The land underfoot has turned foreign, or a treaty allowing work here ended.
+            journey = stop(journey, StopReason.FOREIGN_LAND)
         if journey.kind is JourneyKind.ROADWORK and journey.phase is JourneyPhase.OUTBOUND:
             worked = _roadwork_day(journey, living, world_map, grades, stop)
             if isinstance(worked, RoadBuilt | None):
@@ -469,12 +526,26 @@ def advance_journeys_day(
                 updated.append(_worked_journey(journey, living, world_map, grades, worked))
                 continue
             journey = worked
-        moved, reached = _walk(journey, living, world_map, grades, arrival_allowed, stop)
+        moved, reached = _walk(
+            journey, living, world_map, grades, arrival_allowed, stop, toll_rules, encounters
+        )
         if not reached:
             updated.append(moved)
             continue
         route_index = moved.route_index
         if journey.phase is JourneyPhase.OUTBOUND and route_index == len(journey.route) - 1:
+            if journey.kind is JourneyKind.DEPOSIT:
+                moved = moved.model_copy(
+                    update={
+                        "arrived_day": day,
+                        "outcome": JourneyOutcome.DELIVERED,
+                        "carrying_cargo": False,
+                        "phase": JourneyPhase.RETURNING,
+                    }
+                )
+                arrived.append(moved)
+                updated.append(moved)
+                continue
             if journey.kind in INTERNAL_KINDS:
                 if arrival_allowed is None or arrival_allowed(moved):
                     moved = moved.model_copy(
@@ -613,6 +684,7 @@ def advance_journeys_day(
         fed_ids=tuple(sorted(fed_ids)),
         roads_built=tuple(roads_built),
         roadwork_stopped=tuple(stopped),
+        tolls=tuple(encounters),
     )
 
 
@@ -623,6 +695,8 @@ def _walk(
     grades: dict[HexCoord, RoadGrade],
     arrival_allowed: Callable[[Journey], bool] | None,
     stop: Callable[[Journey, StopReason], Journey],
+    tolls: TollRules,
+    encounters: list[TollEncounter],
 ) -> tuple[Journey, bool]:
     """Spend one day walking, entering as many tiles as the day covers.
 
@@ -644,6 +718,21 @@ def _walk(
             raise ValueError("a journey route cannot enter impassable terrain")
         if progress < cost:
             break
+        if outbound:
+            passage = _pass_toll(journey, index, living, world_map, grades, tolls, encounters)
+            if passage is not journey:
+                if passage.phase is JourneyPhase.RETURNING:
+                    if crew:
+                        return stop(passage, StopReason.TOLL), False
+                    return passage.model_copy(
+                        update={"travel_progress": min(progress, DAY - 1)}
+                    ), False
+                if passage.route != journey.route:
+                    # A way round: the party sets out on it tomorrow.
+                    return passage.model_copy(
+                        update={"route_index": index, "travel_progress": min(progress, DAY - 1)}
+                    ), False
+                journey = passage
         progress -= cost
         index = ahead
         for traveller in living:
@@ -662,6 +751,113 @@ def _walk(
         progress = min(progress, DAY - 1)
     moved = journey.model_copy(update={"route_index": index, "travel_progress": progress})
     return moved, reached
+
+
+def _pass_toll(
+    journey: Journey,
+    index: int,
+    living: list[Person],
+    world_map: WorldMap,
+    grades: dict[HexCoord, RoadGrade],
+    tolls: TollRules,
+    encounters: list[TollEncounter],
+) -> Journey:
+    """Settle the toll on the tile ahead: pay it, go round it, or turn back.
+
+    Returns the journey unchanged when nothing is owed, with the toll deducted when
+    paid, with a rewritten route when going round, or returning when turned back.
+    """
+    ahead = journey.route[index + 1]
+    gate = tolls.gates.get(ahead)
+    payer = journey.sender_civilization_id
+    if gate is None or gate.owner == payer or ahead in journey.tolls_paid:
+        return journey
+    if tolls.exempt(payer, gate.owner):
+        # Passing free, the party still sees the post and what it charges others.
+        encounters.append(_encounter(journey, gate, ahead, {}))
+        return journey.model_copy(update={"tolls_paid": (*journey.tolls_paid, ahead)})
+    if journey.carrying_cargo:
+        owed = cargo_charge(journey.cargo, gate.cargo_rate_bp)
+        cargo = {
+            resource: quantity - owed.get(resource, 0)
+            for resource, quantity in journey.cargo.items()
+            if quantity - owed.get(resource, 0) > 0
+        }
+        paid = journey.model_copy(
+            update={"cargo": cargo, "tolls_paid": (*journey.tolls_paid, ahead)}
+        )
+        encounters.append(_encounter(journey, gate, ahead, owed))
+        return paid
+    food = food_charge(gate, len(living))
+    if food + len(living) * _days_left(journey.route, index, journey.kind, world_map, grades) <= (
+        journey.provisions
+    ):
+        encounters.append(
+            _encounter(journey, gate, ahead, {Resource.FOOD: food} if food else {})
+        )
+        return journey.model_copy(
+            update={
+                "provisions": journey.provisions - food,
+                "tolls_paid": (*journey.tolls_paid, ahead),
+            }
+        )
+    if journey.kind is not JourneyKind.ROADWORK:
+        known_gates = tolls.known_gates.get(payer, {})
+        avoid = frozenset(
+            {ahead}
+            | {
+                tile
+                for tile, known in known_gates.items()
+                if not tolls.exempt(payer, known.owner) and known.food_per_head
+            }
+        )
+        rerouted = detour(
+            world_map, tolls.known_tiles.get(payer, frozenset()), journey.route, index, avoid
+        )
+        if rerouted is not None:
+            days = _days_left(rerouted, index, journey.kind, world_map, grades)
+            if len(living) * days <= journey.provisions:
+                encounters.append(_encounter(journey, gate, ahead, {}, avoided=True))
+                return journey.model_copy(update={"route": rerouted})
+    encounters.append(_encounter(journey, gate, ahead, {}, turned_back=True))
+    return journey.model_copy(
+        update={"phase": JourneyPhase.RETURNING, "outcome": JourneyOutcome.TURNED_BACK}
+    )
+
+
+def _days_left(
+    route: tuple[HexCoord, ...],
+    index: int,
+    kind: JourneyKind,
+    world_map: WorldMap,
+    grades: dict[HexCoord, RoadGrade],
+) -> int:
+    """Days of walking still ahead from route[index], and back again for a round trip."""
+    days = travel_days(world_map, route[index + 1 :], grades)
+    if kind in ROUND_TRIP_KINDS or kind is JourneyKind.ROADWORK:
+        days += travel_days(world_map, tuple(reversed(route))[1:], grades)
+    return days
+
+
+def _encounter(
+    journey: Journey,
+    gate: TollGate,
+    tile: HexCoord,
+    paid: dict[Resource, int],
+    *,
+    avoided: bool = False,
+    turned_back: bool = False,
+) -> TollEncounter:
+    return TollEncounter(
+        journey_id=journey.journey_id,
+        payer=journey.sender_civilization_id,
+        owner=gate.owner,
+        tile=tile,
+        gate=gate,
+        paid=paid,
+        avoided=avoided,
+        turned_back=turned_back,
+    )
 
 
 def _roadwork_day(

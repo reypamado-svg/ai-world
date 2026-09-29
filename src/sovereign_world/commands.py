@@ -37,6 +37,15 @@ from sovereign_world.roads import (
 )
 from sovereign_world.state import WorldState
 from sovereign_world.territory import SETTLEMENT_SPACING, Garrison, Settlement, visible_tiles
+from sovereign_world.tolls import (
+    DEFAULT_DEPOSIT_DAYS,
+    MAX_CARGO_RATE_BP,
+    MAX_DEPOSIT_DAYS,
+    MAX_FOOD_PER_HEAD,
+    MIN_DEPOSIT_DAYS,
+    TollPost,
+    TollView,
+)
 from sovereign_world.travel import passable
 
 
@@ -64,6 +73,7 @@ class DirectOrderKind(StrEnum):
     FOUND_SETTLEMENT = "found_settlement"
     STATION_GARRISON = "station_garrison"
     BUILD_ROAD = "build_road"
+    SET_TOLL = "set_toll"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -143,6 +153,11 @@ class DirectOrder(BaseModel):
     cargo: dict[Resource, int] = Field(default_factory=dict)
     claimed_tiles: tuple[HexCoord, ...] = Field(default=(), max_length=MAX_CLAIMED_TILES)
     road_grade: RoadGrade | None = None
+    toll_rate_bp: int | None = Field(default=None, ge=0, le=MAX_CARGO_RATE_BP)
+    toll_food_per_head: int | None = Field(default=None, ge=0, le=MAX_FOOD_PER_HEAD)
+    deposit_interval_days: int = Field(
+        default=DEFAULT_DEPOSIT_DAYS, ge=MIN_DEPOSIT_DAYS, le=MAX_DEPOSIT_DAYS
+    )
     extra_provisions: int = Field(default=0, ge=0, le=CARGO_UNITS_PER_CARRIER * MAX_TRAVELLERS)
     priority: int = Field(default=50, ge=0, le=100)
 
@@ -197,6 +212,8 @@ class CouncilReport(BaseModel):
     settlements: tuple[Settlement, ...] = ()
     garrisons: tuple[Garrison, ...] = ()
     known_roads: tuple[RoadView, ...] = ()
+    toll_posts: tuple[TollPost, ...] = ()
+    known_tolls: tuple[TollView, ...] = ()
     recent_events: tuple[DomainEvent, ...] = ()
 
 
@@ -262,6 +279,8 @@ def build_council_report(
         settlements=civilization.settlements,
         garrisons=civilization.garrisons,
         known_roads=known_roads(state, civilization_id),
+        toll_posts=civilization.toll_posts,
+        known_tolls=known_tolls(state, civilization_id),
         recent_events=visible_events,
     )
 
@@ -282,23 +301,62 @@ def _in_sight(state: WorldState, civilization_id: EntityId) -> frozenset[HexCoor
     )
 
 
+def trade_partners(state: WorldState, civilization_id: EntityId) -> frozenset[EntityId]:
+    """Civilizations bound to this one by a trade treaty in force, with its road terms."""
+    return frozenset(
+        treaty.counterparty(civilization_id)
+        for treaty in state.active_treaties
+        if treaty.in_force
+        and treaty.kind is TreatyKind.TRADE
+        and civilization_id
+        in {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+    )
+
+
 def known_roads(state: WorldState, civilization_id: EntityId) -> tuple[RoadView, ...]:
-    """Roads seen from settlements today, or at the grade its people last saw them."""
+    """Roads seen from settlements today, or at the grade last seen or shown on a map."""
     civilization = state.civilizations[civilization_id]
-    views = {
-        observation.tile: RoadView(
-            tile=observation.tile,
-            grade=observation.observed_road,
-            as_of_day=observation.observed_day,
-        )
-        for observation in civilization.observations
-        if observation.observed_road is not None
-    }
+    views = {view.tile: view for view in civilization.road_intel}
+    for observation in civilization.observations:
+        if observation.observed_road is None:
+            continue
+        seen = views.get(observation.tile)
+        if seen is None or seen.as_of_day <= observation.observed_day:
+            views[observation.tile] = RoadView(
+                tile=observation.tile,
+                grade=observation.observed_road,
+                as_of_day=observation.observed_day,
+            )
     roads = {road.tile: road.grade for road in state.roads}
     for tile in _in_sight(state, civilization_id):
         views.pop(tile, None)
         if tile in roads:
             views[tile] = RoadView(tile=tile, grade=roads[tile], as_of_day=state.day)
+    return tuple(views[tile] for tile in sorted(views))
+
+
+def known_tolls(state: WorldState, civilization_id: EntityId) -> tuple[TollView, ...]:
+    """Its own tolls, tolls in sight of its settlements today, and tolls met or mapped."""
+    civilization = state.civilizations[civilization_id]
+    views = {view.tile: view for view in civilization.toll_intel}
+    in_sight = _in_sight(state, civilization_id)
+    for tile in in_sight:
+        views.pop(tile, None)
+    for other in state.civilizations.values():
+        for post in other.toll_posts:
+            if post.collecting and (
+                post.civilization_id == civilization_id or post.tile in in_sight
+            ):
+                views[post.tile] = TollView(
+                    tile=post.tile,
+                    owner=post.civilization_id,
+                    cargo_rate_bp=post.cargo_rate_bp,
+                    food_per_head=post.food_per_head,
+                    as_of_day=state.day,
+                )
+    for post in civilization.toll_posts:
+        if not post.collecting:
+            views.pop(post.tile, None)
     return tuple(views[tile] for tile in sorted(views))
 
 
@@ -369,11 +427,21 @@ def journey_supplies(
     roads = {view.tile: view.grade for view in known_roads(state, civilization_id)}
     crew = len(command.traveller_ids)
     taken = dict(command.cargo)
+    free = trade_partners(state, civilization_id) | {civilization_id}
+    toll_food = (
+        0
+        if kind is JourneyKind.SHIPMENT
+        else sum(
+            view.food_per_head * crew
+            for view in known_tolls(state, civilization_id)
+            if view.owner not in free and view.tile in set(command.route[1:])
+        )
+    )
     if kind is JourneyKind.ROADWORK and command.road_grade is not None:
         days = roadwork_days(state.world_map, command.route, command.road_grade, roads, crew)
         # A crew packs what it can bear and turns home when only the walk back is left.
         provisions = min(
-            provisions_needed(days, crew, command.extra_provisions),
+            provisions_needed(days, crew, command.extra_provisions + toll_food),
             CARGO_UNITS_PER_CARRIER * crew,
         )
         taken = materials_for(command.route, command.road_grade, roads)
@@ -381,7 +449,7 @@ def journey_supplies(
         provisions = provisions_needed(
             journey_days(kind, state.world_map, command.route, roads),
             crew,
-            command.extra_provisions,
+            command.extra_provisions + toll_food,
         )
     taken[Resource.FOOD] = taken.get(Resource.FOOD, 0) + provisions
     return provisions, taken
@@ -447,8 +515,11 @@ def _internal_journey_error(
     if kind is JourneyKind.ROADWORK:
         if command.road_grade is None:
             return error("invalid_road", "a road crew needs a target grade")
-        if any(believed_owner.get(tile) not in {None, civilization_id} for tile in route):
-            return error("foreign_land", "a road cannot be built on land seen as foreign")
+        allowed = {None, civilization_id} | trade_partners(state, civilization_id)
+        if any(believed_owner.get(tile) not in allowed for tile in route):
+            return error(
+                "foreign_land", "a road cannot be built on foreign land without a trade treaty"
+            )
         if command.road_grade in STONE_LAYING and not any(
             people[person_id].skills.get(STONEWORKING, 0) > 0
             for person_id in command.traveller_ids
@@ -547,6 +618,53 @@ def _journey_error(
     return None
 
 
+def _toll_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    tolled: set[HexCoord],
+) -> CommandError | None:
+    """Validate setting or lifting a toll at a staffed road tile this civilization holds."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    route = command.route
+    if not route or command.toll_rate_bp is None or command.toll_food_per_head is None:
+        return error("invalid_toll", "a toll names its post, its rates, and a deposit route")
+    tile = route[0]
+    if tile in tolled:
+        return error("duplicate_toll", "the same post is tolled twice in one council")
+    existing = next((post for post in civilization.toll_posts if post.tile == tile), None)
+    if not command.toll_rate_bp and not command.toll_food_per_head:
+        if existing is None or existing.lifted:
+            return error("invalid_toll", "there is no toll here to lift")
+        return None
+    if state.territory.owner_of().get(tile) != civilization_id:
+        return error("invalid_toll", "a toll can only be set on land this civilization holds")
+    if tile not in {view.tile for view in known_roads(state, civilization_id)}:
+        return error("invalid_toll", "a toll can only be set on a road")
+    staffed = {settlement.tile for settlement in civilization.settlements} | {
+        garrison.tile for garrison in civilization.garrisons
+    }
+    if tile not in staffed:
+        return error("invalid_toll", "a toll needs a settlement or garrison to collect it")
+    own_settlements = {settlement.tile for settlement in civilization.settlements}
+    if (
+        route[-1] not in own_settlements
+        or (len(route) == 1 and tile != civilization.start_center)
+        or any(step not in civilization.known_tiles for step in route)
+        or any(first.distance(second) != 1 for first, second in pairwise(route))
+        or not passable(state.world_map, route[1:])
+    ):
+        return error(
+            "invalid_route",
+            "a deposit route leads over known land to one of this civilization's settlements",
+        )
+    return None
+
+
 def _treaty_end_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -608,6 +726,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     ending_treaties: set[EntityId] = set()
     committed_travellers: set[EntityId] = set()
     committed_at_home: set[EntityId] = set()
+    tolled: set[HexCoord] = set()
     teaching_people = {
         person_id
         for assignment in state.civilizations[envelope.civilization_id].teaching_assignments
@@ -874,6 +993,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 command_error = _journey_error(
                     command, envelope.civilization_id, state, reserved_cargo
                 )
+            if command.kind is DirectOrderKind.SET_TOLL and command_error is None:
+                command_error = _toll_error(command, envelope.civilization_id, state, tolled)
             if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
                 assert command.capability is not None
@@ -1008,6 +1129,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 ending_treaties.add(command.treaty_id)
             committed_travellers.update(travellers)
             committed_at_home.update(home_duty)
+            if command.kind is DirectOrderKind.SET_TOLL:
+                tolled.add(command.route[0])
             if command.kind in JOURNEY_ORDERS:
                 _, taken = journey_supplies(command, state, envelope.civilization_id)
                 for resource, quantity in taken.items():
