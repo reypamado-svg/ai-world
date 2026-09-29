@@ -21,6 +21,7 @@ from sovereign_world.commands import (
     DirectOrderKind,
     ProjectKind,
     build_council_report,
+    journey_supplies,
     validate_envelope,
 )
 from sovereign_world.diplomacy import (
@@ -101,48 +102,64 @@ def _end_treaty(
     return ended
 
 
+def _store_provisions(state: WorldState, civilization_id: EntityId, units: int) -> int:
+    """Put a party's leftover food into a storehouse; return what fitted."""
+    if not units:
+        return 0
+    civilization = state.civilizations[civilization_id]
+    civilization.inventory, waste = civilization.inventory.store_with_waste(
+        {Resource.FOOD: units}
+    )
+    return units - waste.get(Resource.FOOD, 0)
+
+
 def _dispatch_journey(
     state: WorldState,
     civilization_id: EntityId,
     command: DirectOrder,
 ) -> list[DomainEvent]:
-    """Start a validated journey; shipped goods leave the sender's storehouse now."""
+    """Start a validated journey; goods and packed food leave the sender's storehouse now."""
     assert command.journey_id is not None
     assert command.treaty_id is not None
     assert command.recipient_civilization_id is not None
     kind = JOURNEY_ORDERS[command.kind]
     civilization = state.civilizations[civilization_id]
     cargo = dict(sorted(command.cargo.items()))
-    if kind is JourneyKind.SHIPMENT:
-        if any(
-            civilization.inventory.quantities.get(resource, 0) < quantity
-            for resource, quantity in cargo.items()
-        ):
-            _add_notice(
-                state,
-                civilization_id,
-                LogisticsNotice(
-                    notice_id=f"{command.journey_id}:{NoticeKind.SHIPMENT_UNFUNDED.value}",
-                    day=state.day,
-                    kind=NoticeKind.SHIPMENT_UNFUNDED,
-                    journey_id=command.journey_id,
-                    treaty_id=command.treaty_id,
-                    counterpart_civilization_id=command.recipient_civilization_id,
-                    cargo=cargo,
-                ),
-            )
-            return [
-                _event(
-                    state,
-                    EventPhase.MOVEMENT,
-                    "shipment_unfunded",
-                    str(civilization_id),
-                    str(command.journey_id),
-                )
-            ]
-        civilization.inventory = civilization.inventory.apply_delta(
-            InventoryDelta(changes={resource: -quantity for resource, quantity in cargo.items()})
+    provisions, taken = journey_supplies(command)
+    if any(
+        civilization.inventory.quantities.get(resource, 0) < quantity
+        for resource, quantity in taken.items()
+    ):
+        unfunded = (
+            NoticeKind.SHIPMENT_UNFUNDED
+            if kind is JourneyKind.SHIPMENT
+            else NoticeKind.MIGRATION_UNFUNDED
         )
+        _add_notice(
+            state,
+            civilization_id,
+            LogisticsNotice(
+                notice_id=f"{command.journey_id}:{unfunded.value}",
+                day=state.day,
+                kind=unfunded,
+                journey_id=command.journey_id,
+                treaty_id=command.treaty_id,
+                counterpart_civilization_id=command.recipient_civilization_id,
+                cargo=dict(sorted(taken.items())),
+            ),
+        )
+        return [
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                f"{kind.value}_unfunded",
+                str(civilization_id),
+                str(command.journey_id),
+            )
+        ]
+    civilization.inventory = civilization.inventory.apply_delta(
+        InventoryDelta(changes={resource: -quantity for resource, quantity in taken.items()})
+    )
     journey = Journey(
         journey_id=command.journey_id,
         kind=kind,
@@ -153,6 +170,8 @@ def _dispatch_journey(
         route=command.route,
         cargo=cargo,
         carrying_cargo=kind is JourneyKind.SHIPMENT,
+        provisions_packed=provisions,
+        provisions=provisions,
         departed_day=state.day,
     )
     state.journeys = tuple(sorted((*state.journeys, journey), key=lambda item: item.journey_id))
@@ -183,6 +202,7 @@ def _dispatch_journey(
             treaty=str(journey.treaty_id),
             travellers=len(journey.traveller_ids),
             cargo_units=sum(cargo.values()),
+            provisions=provisions,
             route_tiles=len(journey.route),
         )
     ]
@@ -283,6 +303,7 @@ def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
         treaties_in_force=frozenset(
             treaty.treaty_id for treaty in state.active_treaties if treaty.in_force
         ),
+        world_map=state.world_map,
     )
     state.journeys = result.journeys
     for civilization_id, people in result.people_by_civilization.items():
@@ -387,6 +408,9 @@ def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
             )
             continue
         arrivals = _transfer_migrants(state, journey)
+        provisions = _store_provisions(
+            state, recipient_id, result.handed_over.get(journey.journey_id, 0)
+        )
         _add_notice(
             state,
             recipient_id,
@@ -395,6 +419,7 @@ def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
                 NoticeKind.MIGRANTS_RECEIVED,
                 journey,
                 journey.sender_civilization_id,
+                cargo={Resource.FOOD: provisions} if provisions else None,
                 person_ids=arrivals,
             ),
         )
@@ -406,6 +431,7 @@ def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
                 str(recipient_id),
                 str(journey.journey_id),
                 people=len(arrivals),
+                provisions=provisions,
             )
         )
         for capability in _adopt_migrant_capabilities(state, recipient_id, arrivals):
@@ -476,6 +502,11 @@ def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
                 for resource, quantity in journey.cargo.items()
                 if quantity - waste.get(resource, 0) > 0
             }
+        provisions = _store_provisions(
+            state, sender_id, result.handed_over.get(journey.journey_id, 0)
+        )
+        if provisions:
+            restored[Resource.FOOD] = restored.get(Resource.FOOD, 0) + provisions
         home = journey.route[0]
         survivors = tuple(
             person_id
@@ -510,7 +541,30 @@ def _advance_journeys(state: WorldState, rng: StableRng) -> list[DomainEvent]:
                 str(sender_id),
                 str(journey.journey_id),
                 outcome=journey.outcome.value,
-                restored_units=sum(restored.values()),
+                restored_units=sum(restored.values()) - provisions,
+                provisions=provisions,
+            )
+        )
+    for journey_id in result.exhausted_ids:
+        events.append(
+            _event(
+                state,
+                EventPhase.CONSUMPTION,
+                f"{kinds[journey_id].value}_provisions_exhausted",
+                None,
+                str(journey_id),
+            )
+        )
+    for foraging in result.foraging:
+        events.append(
+            _event(
+                state,
+                EventPhase.CONSUMPTION,
+                f"{kinds[foraging.journey_id].value}_foraged",
+                None,
+                str(foraging.journey_id),
+                fed=foraging.fed,
+                hungry=foraging.hungry,
             )
         )
     return events
@@ -1009,7 +1063,19 @@ def advance_day(
 
     for civilization_id in sorted(candidate.civilizations):
         civilization = candidate.civilizations[civilization_id]
-        living_count = len(civilization.population.living_ids)
+        # Travellers on the road eat from their own packs, not from home stores.
+        away = {
+            person_id
+            for journey in candidate.journeys
+            if journey.active and journey.sender_civilization_id == civilization_id
+            for person_id in journey.traveller_ids
+        }
+        home_living = tuple(
+            person_id
+            for person_id in civilization.population.living_ids
+            if person_id not in away
+        )
+        living_count = len(home_living)
         decrees = candidate.active_decrees.get(civilization_id, {})
         reserve_days = decrees.get("food_reserve_target", 0)
         labor_priority = decrees.get("labor_priority", 0)
@@ -1053,7 +1119,7 @@ def advance_day(
         )
         if consumed < living_count:
             shortage = living_count - consumed
-            for person_id in civilization.population.living_ids[consumed:]:
+            for person_id in home_living[consumed:]:
                 civilization.population.people[person_id].nutrition_debt += 1
             events.append(
                 _event(
@@ -1065,12 +1131,6 @@ def advance_day(
                 )
             )
 
-        away = {
-            person_id
-            for journey in candidate.journeys
-            if journey.active and journey.sender_civilization_id == civilization_id
-            for person_id in journey.traveller_ids
-        }
         work_result = execute_work_day(
             civilization.work_orders,
             {
@@ -1122,7 +1182,12 @@ def advance_day(
                 )
             )
 
-        current_living = max(1, len(civilization.population.living_ids))
+        current_living = max(
+            1,
+            sum(
+                person_id not in away for person_id in civilization.population.living_ids
+            ),
+        )
         food_days = civilization.inventory.quantities.get(Resource.FOOD, 0) // current_living
         growth_policy = candidate.active_decrees.get(civilization_id, {}).get(
             "population_growth_policy",
