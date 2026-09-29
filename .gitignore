@@ -1,5 +1,7 @@
 .superpowers/
 .venv/
+.env.local
+.worktrees/
 __pycache__/
 .pytest_cache/
 .mypy_cache/

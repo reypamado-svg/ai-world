@@ -8,7 +8,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sovereign_world.capabilities import CapabilityRecord, TeachingAssignment, regional_capability
 from sovereign_world.config import RunManifest, WorldConfig
+from sovereign_world.exploration import Expedition, Observation
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
 from sovereign_world.people import Population, create_founders
@@ -26,6 +28,10 @@ class CivilizationState(BaseModel):
     work_orders: tuple[WorkOrder, ...] = ()
     projects: dict[EntityId, ConstructionProject] = Field(default_factory=dict)
     known_tiles: tuple[HexCoord, ...] = ()
+    observations: tuple[Observation, ...] = ()
+    expeditions: tuple[Expedition, ...] = ()
+    capabilities: tuple[CapabilityRecord, ...] = ()
+    teaching_assignments: tuple[TeachingAssignment, ...] = ()
 
 
 class WorldState(BaseModel):
@@ -67,10 +73,25 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
             rng=stable_rng.stream(f"founders:{start.civilization_index}"),
             allocator=person_ids,
         )
+        capability = regional_capability(start.viability.strength)
+        practitioner_ids: list[EntityId] = []
+        for person_id, person in population.people.items():
+            skill = person.skills[start.viability.strength]
+            person.skills[capability.value] = skill
+            practitioner_ids.append(person_id)
         known_tiles = tuple(
             tile.coord
             for tile in generated.world_map.tiles
             if tile.coord.distance(start.center) <= 4
+        )
+        observations = tuple(
+            Observation(
+                tile=tile,
+                observed_day=0,
+                observer_id=practitioner_ids[0],
+                source="initial",
+            )
+            for tile in known_tiles
         )
         inventory = Inventory(
             capacity=100_000,
@@ -88,6 +109,14 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
             population=population,
             inventory=inventory,
             known_tiles=known_tiles,
+            observations=observations,
+            capabilities=(
+                CapabilityRecord(
+                    capability=capability,
+                    practitioner_ids=tuple(sorted(practitioner_ids)),
+                    discovered_day=0,
+                ),
+            ),
         )
     return WorldState(
         run_id=manifest.run_id,
@@ -108,4 +137,42 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("population belongs to another civilization")
         if any(quantity < 0 for quantity in civilization.inventory.quantities.values()):
             raise ValueError("inventory quantity cannot be negative")
+        observation_tiles = tuple(observation.tile for observation in civilization.observations)
+        if observation_tiles != tuple(sorted(set(observation_tiles))):
+            raise ValueError("observations must be unique and sorted")
+        if civilization.known_tiles != observation_tiles:
+            raise ValueError("known tiles must mirror private observations")
+        expeditions = civilization.expeditions
+        sorted_expeditions = tuple(
+            sorted(expeditions, key=lambda expedition: expedition.expedition_id)
+        )
+        if expeditions != sorted_expeditions:
+            raise ValueError("expeditions must be sorted")
+        if len({expedition.expedition_id for expedition in expeditions}) != len(expeditions):
+            raise ValueError("expeditions must be unique")
+        for expedition in expeditions:
+            for person_id in expedition.explorer_ids:
+                if person_id not in civilization.population.people:
+                    raise ValueError("expedition explorer must be local")
+        capabilities = tuple(record.capability for record in civilization.capabilities)
+        sorted_capabilities = tuple(
+            sorted(set(capabilities), key=lambda capability: capability.value)
+        )
+        if capabilities != sorted_capabilities:
+            raise ValueError("civilization capabilities must be unique and sorted")
+        for record in civilization.capabilities:
+            for person_id in record.practitioner_ids:
+                person = civilization.population.people.get(person_id)
+                if person is None or not person.alive:
+                    raise ValueError("capability practitioner must be living and local")
+                if person.skills.get(record.capability.value, 0) <= 0:
+                    raise ValueError("capability practitioner must have matching skill")
+        assignments = civilization.teaching_assignments
+        sorted_assignments = tuple(
+            sorted(assignments, key=lambda assignment: assignment.assignment_id)
+        )
+        if assignments != sorted_assignments:
+            raise ValueError("teaching assignments must be sorted")
+        if len({assignment.assignment_id for assignment in assignments}) != len(assignments):
+            raise ValueError("teaching assignments must be unique")
 

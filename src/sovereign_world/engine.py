@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 
+from sovereign_world.capabilities import KnowledgeState, TeachingAssignment, advance_knowledge_day
 from sovereign_world.commands import (
     Decree,
     DirectOrder,
@@ -15,6 +16,7 @@ from sovereign_world.commands import (
     validate_envelope,
 )
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
+from sovereign_world.exploration import Expedition, advance_expeditions
 from sovereign_world.ids import EntityId
 from sovereign_world.people import advance_population_day
 from sovereign_world.resources import InventoryDelta, Resource
@@ -119,6 +121,57 @@ def _run_councils(
                                 str(command.project_id),
                             )
                         )
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.START_TEACHING
+                and command.assignment_id is not None
+                and command.teacher_id is not None
+                and command.apprentice_id is not None
+                and command.capability is not None
+            ):
+                civilization = state.civilizations[civilization_id]
+                civilization.teaching_assignments = tuple(
+                    sorted(
+                        (*civilization.teaching_assignments, TeachingAssignment(
+                            assignment_id=command.assignment_id,
+                            teacher_id=command.teacher_id,
+                            apprentice_id=command.apprentice_id,
+                            capability=command.capability,
+                            started_day=state.day,
+                        )),
+                        key=lambda assignment: assignment.assignment_id,
+                    )
+                )
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.START_EXPEDITION
+                and command.expedition_id is not None
+                and command.explorer_ids
+                and command.route
+            ):
+                civilization = state.civilizations[civilization_id]
+                civilization.expeditions = tuple(
+                    sorted(
+                        (
+                            *civilization.expeditions,
+                            Expedition(
+                                expedition_id=command.expedition_id,
+                                explorer_ids=command.explorer_ids,
+                                route=command.route,
+                            ),
+                        ),
+                        key=lambda expedition: expedition.expedition_id,
+                    )
+                )
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.MOVEMENT,
+                        "expedition_started",
+                        str(civilization_id),
+                        str(command.expedition_id),
+                    )
+                )
             events.append(
                 _event(
                     state,
@@ -156,6 +209,55 @@ def advance_day(
     events: list[DomainEvent] = []
     if sovereigns is not None:
         events.extend(_run_councils(candidate, sovereigns))
+
+    for civilization_id in sorted(candidate.civilizations):
+        civilization = candidate.civilizations[civilization_id]
+        expedition_result = advance_expeditions(
+            civilization.expeditions,
+            civilization.population.people,
+            candidate.world_map,
+            candidate.day,
+            observations=civilization.observations,
+        )
+        civilization.expeditions = expedition_result.expeditions
+        civilization.observations = expedition_result.observations
+        civilization.known_tiles = tuple(
+            observation.tile for observation in civilization.observations
+        )
+        civilization.population = civilization.population.model_copy(
+            update={"people": expedition_result.people}
+        )
+        for tile in expedition_result.observed_tiles:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.MOVEMENT,
+                    "tile_observed",
+                    str(civilization_id),
+                    tile_q=tile.q,
+                    tile_r=tile.r,
+                )
+            )
+        for expedition_id in expedition_result.returned_ids:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.MOVEMENT,
+                    "expedition_returned",
+                    str(civilization_id),
+                    str(expedition_id),
+                )
+            )
+        for expedition_id in expedition_result.failed_ids:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.MOVEMENT,
+                    "expedition_failed",
+                    str(civilization_id),
+                    str(expedition_id),
+                )
+            )
 
     for civilization_id in sorted(candidate.civilizations):
         civilization = candidate.civilizations[civilization_id]
@@ -228,6 +330,40 @@ def advance_day(
                 _event(candidate, EventPhase.WORK, "work_completed", str(order_id))
             )
 
+        knowledge_result = advance_knowledge_day(
+            KnowledgeState(
+                records=civilization.capabilities,
+                assignments=civilization.teaching_assignments,
+            ),
+            civilization.population.people,
+            candidate.day,
+        )
+        civilization.capabilities = knowledge_result.knowledge.records
+        civilization.teaching_assignments = knowledge_result.knowledge.assignments
+        civilization.population = civilization.population.model_copy(
+            update={"people": knowledge_result.people}
+        )
+        for capability in knowledge_result.learned:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.WORK,
+                    "capability_learned",
+                    str(civilization_id),
+                    capability=capability.value,
+                )
+            )
+        for capability in knowledge_result.forgotten:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.WORK,
+                    "capability_forgotten",
+                    str(civilization_id),
+                    capability=capability.value,
+                )
+            )
+
         current_living = max(1, len(civilization.population.living_ids))
         food_days = civilization.inventory.quantities.get(Resource.FOOD, 0) // current_living
         growth_policy = candidate.active_decrees.get(civilization_id, {}).get(
@@ -242,6 +378,39 @@ def advance_day(
             shelter_slots=current_living + 64 if growth_policy > 0 else 0,
         )
         civilization.population = population_result.population
+        mortality_knowledge_result = advance_knowledge_day(
+            KnowledgeState(
+                records=civilization.capabilities,
+                assignments=civilization.teaching_assignments,
+            ),
+            civilization.population.people,
+            candidate.day,
+        )
+        civilization.capabilities = mortality_knowledge_result.knowledge.records
+        civilization.teaching_assignments = mortality_knowledge_result.knowledge.assignments
+        civilization.population = civilization.population.model_copy(
+            update={"people": mortality_knowledge_result.people}
+        )
+        for capability in mortality_knowledge_result.learned:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.WORK,
+                    "capability_learned",
+                    str(civilization_id),
+                    capability=capability.value,
+                )
+            )
+        for capability in mortality_knowledge_result.forgotten:
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.WORK,
+                    "capability_forgotten",
+                    str(civilization_id),
+                    capability=capability.value,
+                )
+            )
         for birth in population_result.births:
             events.append(
                 _event(

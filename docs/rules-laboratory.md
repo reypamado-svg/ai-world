@@ -4,6 +4,12 @@ The Rules Laboratory is the first playable foundation for the AI civilization wo
 
 Phase 1 uses deterministic scripted sovereigns. It contains no OpenAI, Claude, local-model, HTTP, or multi-computer integration. Those adapters belong in later phases and will use the same validated command boundary.
 
+## Civilization discovery
+
+Each civilization starts with one practical regional capability and a small private starter map. A sovereign can request a teaching assignment or a route for living members of its own civilization. The simulation validates the request, moves an expedition one hex per day, and records the result. A sovereign cannot directly change a person's skills, location, supplies, or map.
+
+Maps remain private. A civilization learns about a tile only through its own starting observations or travel, and its council report never contains a rival's observations. Sightings are saved in the authoritative state, so replays reconstruct the same discoveries and event sequence without querying any AI provider.
+
 ## Set up on Windows
 
 From the project directory, create a Python 3.12 virtual environment and install the project:
