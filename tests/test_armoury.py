@@ -9,10 +9,10 @@ from sovereign_world.armoury import (
     settlement_bonus_after_engines,
 )
 from sovereign_world.commands import DirectOrder, DirectOrderKind, validate_envelope
-from sovereign_world.engine import TransitionResult, advance_day
+from sovereign_world.engine import TransitionResult, _room, advance_day
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
-from sovereign_world.logistics import JourneyKind, JourneyOutcome, journey_days
+from sovereign_world.logistics import Journey, JourneyKind, JourneyOutcome, journey_days
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.state import WorldState, validate_world
@@ -291,3 +291,24 @@ def test_home_defenders_take_up_kits_from_their_store() -> None:
     assert outcome(0) == home, "twelve raiders beat six unarmed villagers"
     assert outcome(6) == rival, "the same villagers with spears hold"
     assert Kit  # the kit type is exported for sovereign code
+
+
+def test_an_engine_takes_up_its_full_weight_of_room_for_plunder() -> None:
+    state, home, rival, route = _world()
+    fighters = tuple(sorted(state.civilizations[home].population.living_ids[:10]))
+    party = Journey(
+        journey_id=EntityId("journey:siege"),
+        kind=JourneyKind.CAMPAIGN,
+        sender_civilization_id=home,
+        recipient_civilization_id=rival,
+        traveller_ids=fighters,
+        route=route,
+        cargo={Resource.CATAPULT: 1},
+        provisions_packed=100,
+        provisions=100,
+        departed_day=0,
+        objective=WarObjective.RAID,
+    )
+    assert _room(state, party) == 10 * 50 - 20 - 100, "a catapult weighs twenty, not one"
+    loaded = party.model_copy(update={"plunder": {Resource.FOOD: _room(state, party)}})
+    Journey.model_validate(loaded.model_dump())

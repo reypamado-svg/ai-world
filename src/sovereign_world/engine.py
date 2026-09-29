@@ -11,6 +11,7 @@ from sovereign_world.armoury import (
     BASIS,
     RECIPES,
     CraftJob,
+    cargo_load,
     craft_materials,
     crew_needed,
     crewed_engines,
@@ -1709,7 +1710,7 @@ def _fight(
 def _room(state: WorldState, party: Journey) -> int:
     people = state.civilizations[party.sender_civilization_id].population.people
     living = sum(people[person_id].alive for person_id in party.traveller_ids)
-    load = sum(party.cargo.values()) + party.provisions + sum(party.plunder.values())
+    load = cargo_load(party.cargo) + party.provisions + sum(party.plunder.values())
     return max(
         min(CARGO_UNITS_PER_CARRIER * living, CARGO_UNITS_PER_CARRIER * len(party.traveller_ids))
         - load,
