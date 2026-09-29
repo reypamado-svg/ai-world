@@ -29,7 +29,9 @@ from sovereign_world.logistics import (
 from sovereign_world.people import Population, create_founders
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
+from sovereign_world.roads import Road, RoadView
 from sovereign_world.territory import Claim, Garrison, Settlement, Territory
+from sovereign_world.tolls import TollPost, TollView
 from sovereign_world.work import ConstructionProject, WorkOrder
 from sovereign_world.worldgen import generate_world
 
@@ -52,6 +54,11 @@ class CivilizationState(BaseModel):
     settlements: tuple[Settlement, ...] = ()
     garrisons: tuple[Garrison, ...] = ()
     claims: tuple[Claim, ...] = ()
+    toll_posts: tuple[TollPost, ...] = ()
+    road_intel: tuple[RoadView, ...] = ()
+    """Roads learned from a trade partner's map, at the grade and day it showed."""
+    toll_intel: tuple[TollView, ...] = ()
+    """Tolls this civilization's people have met, or learned from a partner's map."""
 
 
 class WorldState(BaseModel):
@@ -69,6 +76,9 @@ class WorldState(BaseModel):
     active_treaties: tuple[ActiveTreaty, ...] = ()
     journeys: tuple[Journey, ...] = ()
     territory: Territory = Field(default_factory=Territory)
+    roads: tuple[Road, ...] = ()
+    joined_roads: tuple[EntityId, ...] = ()
+    """Trade treaties whose partners' settlements a continuous road now links."""
 
 
 def _canonical_payload(state: WorldState) -> str:
@@ -259,6 +269,26 @@ def validate_world(state: WorldState) -> None:
             for item in garrisons
         ):
             raise ValueError("a garrison belongs to its civilization and its people")
+        posts = civilization.toll_posts
+        if posts != tuple(sorted(posts, key=lambda item: item.tile)):
+            raise ValueError("toll posts must be sorted by tile")
+        if len({item.tile for item in posts}) != len(posts):
+            raise ValueError("a tile has at most one toll post")
+        own_settlements = {item.tile for item in settlements}
+        for post in posts:
+            if post.civilization_id != civilization_id:
+                raise ValueError("a toll post belongs to its civilization")
+            if post.deposit_route[-1] not in own_settlements:
+                raise ValueError("a toll post deposits at one of its own settlements")
+            if any(
+                first.distance(second) != 1
+                for first, second in zip(post.deposit_route, post.deposit_route[1:], strict=False)
+            ):
+                raise ValueError("a deposit route steps between neighbouring tiles")
+        for intel in (civilization.road_intel, civilization.toll_intel):
+            tiles = [item.tile for item in intel]
+            if tiles != sorted(set(tiles)):
+                raise ValueError("learned roads and tolls must be unique and sorted")
         if civilization.claims != tuple(
             sorted(civilization.claims, key=lambda item: item.claim_id)
         ):
@@ -345,6 +375,7 @@ def validate_world(state: WorldState) -> None:
             JourneyOutcome.PENDING,
             JourneyOutcome.FAILED,
             JourneyOutcome.REFUSED,
+            JourneyOutcome.TURNED_BACK,
         }:
             raise ValueError("only undelivered cargo can still be carried")
     for owner in state.territory.owners:
@@ -352,3 +383,21 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("territory must belong to an existing civilization")
         if state.world_map.tile(owner.tile).terrain.value == "water":
             raise ValueError("water cannot be controlled")
+    roads = state.roads
+    if roads != tuple(sorted(roads, key=lambda road: road.tile)):
+        raise ValueError("roads must be sorted by tile")
+    if len({road.tile for road in roads}) != len(roads):
+        raise ValueError("a tile has at most one road")
+    for road in roads:
+        if road.civilization_id not in state.civilizations:
+            raise ValueError("a road is built by an existing civilization")
+        if not state.world_map.contains(road.tile):
+            raise ValueError("a road lies on the map")
+        if state.world_map.tile(road.tile).terrain.value == "water":
+            raise ValueError("no road can be built on water")
+    for journey in journeys:
+        if journey.kind is JourneyKind.ROADWORK and journey.route[0] not in {
+            settlement.tile
+            for settlement in state.civilizations[journey.sender_civilization_id].settlements
+        }:
+            raise ValueError("a road crew sets out from one of its own settlements")

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from math import ceil
 
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
+from sovereign_world.roads import RoadGrade, road_cost
 
 DAY = 10
 """One day of travel, in tenths of a day."""
@@ -23,20 +24,31 @@ ENTRY_COST: dict[Terrain, int | None] = {
 MAX_PROGRESS = max(cost for cost in ENTRY_COST.values() if cost is not None) + DAY
 
 
-def entry_cost(world_map: WorldMap, coord: HexCoord) -> int | None:
-    """What entering a tile costs, or None if it cannot be entered."""
-    return ENTRY_COST[world_map.tile(coord).terrain]
+Roads = Mapping[HexCoord, RoadGrade]
+"""The road grade of each tile that has a road."""
+
+
+def entry_cost(world_map: WorldMap, coord: HexCoord, roads: Roads | None = None) -> int | None:
+    """What entering a tile costs, or None if it cannot be entered; roads make it cheaper."""
+    terrain = world_map.tile(coord).terrain
+    base = ENTRY_COST[terrain]
+    grade = roads.get(coord) if roads else None
+    if base is None or grade is None:
+        return base
+    return road_cost(terrain, grade)
 
 
 def passable(world_map: WorldMap, tiles: Iterable[HexCoord]) -> bool:
     return all(entry_cost(world_map, tile) is not None for tile in tiles)
 
 
-def travel_days(world_map: WorldMap, entered: Iterable[HexCoord]) -> int:
+def travel_days(
+    world_map: WorldMap, entered: Iterable[HexCoord], roads: Roads | None = None
+) -> int:
     """Whole days needed to enter each tile in turn, ignoring delays."""
     total = 0
     for tile in entered:
-        cost = entry_cost(world_map, tile)
+        cost = entry_cost(world_map, tile, roads)
         if cost is None:
             raise ValueError(f"tile {tile} is impassable")
         total += cost
