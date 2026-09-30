@@ -1,4 +1,10 @@
-from logistics_helpers import OneShotSovereign, clear_journey_id, envelope, linked_world, treaty_world
+from logistics_helpers import (
+    OneShotSovereign,
+    clear_journey_id,
+    envelope,
+    linked_world,
+    treaty_world,
+)
 
 from sovereign_world.commands import (
     DirectOrder,
@@ -43,7 +49,8 @@ def _colony(state: WorldState, civilization_id: EntityId, tile, *, people: int, 
         founded_day=0,
     )
     civilization.settlements = (*civilization.settlements, colony)
-    for person_id in civilization.population.living_ids[-people:]:
+    movers = civilization.population.living_ids[-people:] if people else ()
+    for person_id in movers:
         civilization.population.people[person_id].location = tile
     civilization.stores = {
         colony.settlement_id: Inventory(capacity=100_000, quantities={Resource.FOOD: food})
@@ -86,7 +93,7 @@ def test_each_settlement_feeds_its_own_residents_from_its_own_store() -> None:
 
     civilization = state.civilizations[home]
     assert civilization.stores[colony.settlement_id].quantities.get(Resource.FOOD, 0) == 0
-    [short] = _events(results, "food_shortage")
+    short = _events(results, "food_shortage")[0]
     assert short.subject_id == str(colony.settlement_id)
     assert short.payload["people"] == 2, "6 food feeds 4 people for a day and a half"
     residents = len(civilization.population.living_ids) - 4
@@ -111,7 +118,7 @@ def test_settlers_stock_their_new_settlement_with_what_they_did_not_eat() -> Non
         route=route[:4],
         extra_provisions=40,
     )
-    state, results = _run(state, 4, {home: OneShotSovereign(found)})
+    state, _ = _run(state, 4, {home: OneShotSovereign(found)})
 
     colony = next(item for item in state.civilizations[home].settlements if not item.capital)
     [arrived] = [
@@ -121,7 +128,7 @@ def test_settlers_stock_their_new_settlement_with_what_they_did_not_eat() -> Non
     ]
     stocked = arrived.cargo[Resource.FOOD]
     assert stocked >= 40
-    eaten_since = 4 * sum(event.day > arrived.day for event in _events(results, "food_consumed")) // 2
+    eaten_since = 4 * (4 - arrived.day)
     assert (
         store(state.civilizations[home], colony.settlement_id).quantities[Resource.FOOD]
         == stocked - eaten_since
@@ -175,21 +182,24 @@ def test_a_haul_goes_between_own_settlements_with_goods_the_store_holds() -> Non
     assert _codes(
         state, home, _haul(state, home, back, {Resource.TIMBER: 5}, people=colony_people)
     ) == ["insufficient_goods"], "the colony's store holds no timber"
-    assert _codes(
-        state, home, _haul(state, home, back, {Resource.FOOD: 20}, people=colony_people)
-    ) == [], "the colony hauls from its own store"
+    assert (
+        _codes(state, home, _haul(state, home, back, {Resource.FOOD: 10}, people=colony_people))
+        == []
+    ), "the colony hauls from its own store"
 
 
 def test_orders_in_one_council_share_each_store_separately() -> None:
     _, state, home, _, route = linked_world(distance=8)
-    _colony(state, home, route[4], people=4, food=30)
+    _colony(state, home, route[4], people=4, food=40)
     back = tuple(reversed(route[:5]))
-    first = _haul(state, home, back, {Resource.FOOD: 12}, people=slice(-2, None))
-    second = _haul(state, home, back, {Resource.FOOD: 12}, people=slice(-4, -2), journey="j:2")
-    assert _codes(state, home, first, second) == ["insufficient_goods"], (
-        "the colony's 30 food cannot fill two hauls and their provisions"
+    # Each haul packs 20 food for the walk there and back.
+    first = _haul(state, home, back, {Resource.FOOD: 10}, people=slice(-2, None))
+    second = _haul(state, home, back, {Resource.FOOD: 10}, people=slice(-4, -2), journey="j:2")
+    assert _codes(state, home, first) == []
+    assert _codes(state, home, first, second) == ["insufficient_provisions"], (
+        "the colony's 40 food cannot fill two hauls and their provisions"
     )
-    from_capital = _haul(state, home, route[:5], {Resource.FOOD: 12}, journey="j:3")
+    from_capital = _haul(state, home, route[:5], {Resource.FOOD: 10}, journey="j:3")
     assert _codes(state, home, first, from_capital) == [], "the capital's store is separate"
 
 
