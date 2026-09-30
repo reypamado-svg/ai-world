@@ -134,6 +134,12 @@ class Siege(BaseModel):
         return self.ended_day is None
 
 
+CAPTURE_BP = 4_000
+"""The chance that a pursuit blow takes a fleeing fighter prisoner instead."""
+CAPTIVES_PER_WINNER = 2
+"""Winners cannot hold more captives than twice their standing number."""
+ESCAPE_BP = 1_000
+"""Each captive's chance to escape at every council."""
 RISING_RATIO = 3
 """Residents rise when their able people outnumber the occupiers this many times over."""
 
@@ -214,6 +220,8 @@ class Battle(BaseModel):
     rounds: int = Field(ge=0)
     winner_id: EntityId
     casualties: tuple[Casualty, ...] = ()
+    captured: tuple[EntityId, ...] = ()
+    """Fleeing fighters the winners took prisoner instead of cutting down."""
 
 
 class BattleReport(BaseModel):
@@ -324,6 +332,7 @@ class BattleOutcome:
     rounds: int
     attackers_won: bool
     casualties: tuple[Casualty, ...]
+    captured: tuple[EntityId, ...] = ()
 
 
 def resolve_battle(
@@ -429,7 +438,19 @@ def resolve_battle(
         # A long stalemate: the attackers, far from home, give up the field.
         broken = "attackers"
     pursuit = -(-starting[broken] * PURSUIT_BP // BASIS)
-    strike(broken, pursuit, ROUT_WOUND_MIN, ROUT_WOUND_MAX)
+    winners = "defenders" if broken == "attackers" else "attackers"
+    limit = CAPTIVES_PER_WINNER * len(standing[winners])
+    captured: list[EntityId] = []
+    for _ in range(pursuit):
+        members = standing[broken]
+        if not members:
+            break
+        # A fleeing fighter the winners catch may be taken alive instead of cut down.
+        if len(captured) < limit and int(roll.integers(0, BASIS)) < CAPTURE_BP:
+            taken = members.pop(int(roll.integers(0, len(members))))
+            captured.append(taken.person_id)
+            continue
+        strike(broken, 1, ROUT_WOUND_MIN, ROUT_WOUND_MAX)
     casualties = tuple(
         Casualty(
             person_id=person_id,
@@ -439,7 +460,12 @@ def resolve_battle(
         )
         for person_id, wound in sorted(damage.items())
     )
-    return BattleOutcome(rounds=rounds, attackers_won=broken == "defenders", casualties=casualties)
+    return BattleOutcome(
+        rounds=rounds,
+        attackers_won=broken == "defenders",
+        casualties=casualties,
+        captured=tuple(sorted(captured)),
+    )
 
 
 def defence_bonus_bp(terrain: Terrain, *, settlement: bool) -> int:

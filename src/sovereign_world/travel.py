@@ -62,3 +62,34 @@ def step(progress: int, cost: int) -> tuple[bool, int]:
     if progress >= cost:
         return True, progress - cost
     return False, progress
+
+
+def way_to(
+    world_map: WorldMap, start: HexCoord, goals: frozenset[HexCoord]
+) -> tuple[HexCoord, ...] | None:
+    """The shortest way over passable land from start to the nearest goal, by tiles.
+
+    Ties between equally short ways go to neighbours in a fixed order. Returns None when
+    no goal can be reached.
+    """
+    if start in goals:
+        return (start,)
+    previous: dict[HexCoord, HexCoord | None] = {start: None}
+    frontier = [start]
+    while frontier:
+        following: list[HexCoord] = []
+        for tile in frontier:
+            for neighbor in sorted(tile.neighbors()):
+                if neighbor in previous or not world_map.contains(neighbor):
+                    continue
+                if entry_cost(world_map, neighbor) is None:
+                    continue
+                previous[neighbor] = tile
+                if neighbor in goals:
+                    path = [neighbor]
+                    while (back := previous[path[-1]]) is not None:
+                        path.append(back)
+                    return tuple(reversed(path))
+                following.append(neighbor)
+        frontier = following
+    return None

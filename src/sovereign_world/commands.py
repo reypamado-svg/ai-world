@@ -142,6 +142,7 @@ class DirectOrderKind(StrEnum):
     LIFT_SIEGE = "lift_siege"
     STORM_SETTLEMENT = "storm_settlement"
     BURN_STOREHOUSE = "burn_storehouse"
+    RELEASE_PRISONERS = "release_prisoners"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -242,6 +243,8 @@ class DirectOrder(BaseModel):
     )
     war_objective: WarObjective | None = None
     wreck_roads: bool = False
+    captive_ids: tuple[EntityId, ...] = ()
+    """Prisoners this civilization holds at its settlements, to be let go."""
     """A war party stops on each enemy road tile it passes and pulls it down a grade."""
     drill_days: int = Field(default=30, ge=1, le=180)
     craft_item: Resource | None = None
@@ -326,6 +329,10 @@ class CouncilReport(BaseModel):
     wars: tuple[War, ...] = ()
     sieges: tuple[Siege, ...] = ()
     """Sieges this civilization is laying or suffering."""
+    captives: tuple[EntityId, ...] = ()
+    """Foreign prisoners this civilization holds, at home or marching with its war parties."""
+    held_captive: tuple[EntityId, ...] = ()
+    """This civilization's own people held prisoner by others."""
     occupations: tuple[Occupation, ...] = ()
     """Settlements this civilization holds, or has lost to occupiers."""
     war_reports: tuple[BattleReport, ...] = ()
@@ -370,8 +377,23 @@ def build_council_report(
         person_ids=tuple(
             sorted(
                 person_id
-                for person_id in civilization.population.people
-                if person_id not in emigrants
+                for person_id, person in civilization.population.people.items()
+                if person_id not in emigrants and person.captive_of is None
+            )
+        ),
+        captives=tuple(
+            sorted(
+                person_id
+                for other in state.civilizations.values()
+                for person_id, person in other.population.people.items()
+                if person.alive and person.captive_of == civilization_id
+            )
+        ),
+        held_captive=tuple(
+            sorted(
+                person_id
+                for person_id, person in civilization.population.people.items()
+                if person.alive and person.captive_of is not None
             )
         ),
         start_center=civilization.start_center,
@@ -1540,6 +1562,13 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         message=f"person {person_id} is dead",
                     )
                     break
+                if state.civilizations[owner].population.people[person_id].captive_of is not None:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="held_captive",
+                        message=f"person {person_id} is held captive and cannot be ordered",
+                    )
+                    break
             travellers: tuple[EntityId, ...] = ()
             if command.kind is DirectOrderKind.START_EXPEDITION:
                 travellers = command.explorer_ids
@@ -1613,6 +1642,21 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 )
             if command.kind in JOURNEY_ORDERS and command_error is None:
                 command_error = _blockade_error(command, envelope.civilization_id, state)
+            if command.kind is DirectOrderKind.RELEASE_PRISONERS and command_error is None:
+                held = {
+                    person_id
+                    for other in state.civilizations.values()
+                    for person_id, person in other.population.people.items()
+                    if person.alive
+                    and person.captive_of == envelope.civilization_id
+                    and person.held_at is not None
+                }
+                if not command.captive_ids or not set(command.captive_ids) <= held:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_release",
+                        message="only prisoners held at this civilization's settlements are let go",
+                    )
             if command.kind in CAMP_ORDERS and command_error is None:
                 command_error = _siege_order_error(
                     command, envelope.civilization_id, state, ordered_camps

@@ -160,6 +160,8 @@ class Journey(BaseModel):
     """A war party that stops a day on each enemy road tile to pull it down one grade."""
     wrecked: tuple[HexCoord, ...] = ()
     """Road tiles this party has already wrecked; each is wrecked once."""
+    captive_ids: tuple[EntityId, ...] = ()
+    """Enemy prisoners marching with a war party to be held at its home."""
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
@@ -179,6 +181,10 @@ class Journey(BaseModel):
             raise ValueError("only besiegers and occupiers hold the end of their route")
         if not campaign and (self.wreck_roads or self.wrecked):
             raise ValueError("only a war party wrecks roads")
+        if not campaign and self.captive_ids:
+            raise ValueError("only a war party takes prisoners along")
+        if self.captive_ids != tuple(sorted(set(self.captive_ids))):
+            raise ValueError("captives are unique and sorted")
         if not campaign and (self.plunder or self.battles):
             raise ValueError("only a war party carries plunder or fights battles")
         if campaign and (set(self.cargo) - WAR_GEAR or self.carrying_cargo):

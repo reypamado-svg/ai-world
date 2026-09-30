@@ -6,6 +6,7 @@ from collections import deque
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from itertools import batched
 
 import numpy as np
 
@@ -84,7 +85,7 @@ from sovereign_world.logistics import (
     notice,
     provisions_needed,
 )
-from sovereign_world.people import advance_population_day, go_hungry, recover
+from sovereign_world.people import Person, advance_population_day, go_hungry, recover
 from sovereign_world.research import (
     DISCOVERED_SKILL,
     DOCTRINE_DRILL_CAP,
@@ -127,7 +128,7 @@ from sovereign_world.territory import (
     advance_territory,
 )
 from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
-from sovereign_world.travel import travel_days
+from sovereign_world.travel import travel_days, way_to
 from sovereign_world.walls import (
     WALL_GRADES,
     WALL_HIT,
@@ -147,6 +148,7 @@ from sovereign_world.war import (
     BATTLE_WON_POINTS,
     DRILL_CAP,
     DRILL_DAYS_PER_POINT,
+    ESCAPE_BP,
     MIN_BESIEGERS,
     RISING_RATIO,
     SETTLEMENT_DEFENCE_BP,
@@ -684,6 +686,9 @@ def _advance_journeys(
                 civilization=str(death.civilization_id),
             )
         )
+    for journey in result.journeys:
+        if journey.journey_id in result.perished_ids and journey.captive_ids:
+            events.extend(_free_captives(state, journey.captive_ids, "rescued"))
     for journey_id in result.perished_ids:
         events.append(
             _event(
@@ -858,6 +863,12 @@ def _advance_journeys(
         brought_home = journey.cargo if journey.journey_id in cargo_home else journey.materials
         if journey.kind is JourneyKind.CAMPAIGN:
             brought_home = _war_party_home(state, journey)
+            home_settlement = supplying(state.civilizations[sender_id], journey.route[0])
+            for person_id in journey.captive_ids:
+                captive = _captive(state, person_id)
+                if captive is not None and captive.captive_of is not None and home_settlement:
+                    captive.held_at = home_settlement.settlement_id
+                    captive.location = home_settlement.tile
         if journey.kind is JourneyKind.DEPOSIT and brought_home:
             # Couriers turned back on the way carry the chest back to their post.
             _fill_chest(state, sender_id, journey.route[0], brought_home)
@@ -1509,7 +1520,7 @@ def _enemy_at(state: WorldState, journey: Journey, tile: HexCoord) -> EntityId |
         if not (at_war or targeted):
             continue
         if any(
-            person.alive and person.location == tile
+            person.alive and person.location == tile and person.captive_of is None
             for person in state.civilizations[civilization_id].population.people.values()
         ):
             hostile.append(civilization_id)
@@ -1533,7 +1544,10 @@ def _defenders(
     here = sorted(
         person_id
         for person_id, person in people.items()
-        if person.location == tile and able_to_fight(person) and person_id not in busy
+        if person.location == tile
+        and able_to_fight(person)
+        and person_id not in busy
+        and person.captive_of is None
     )
     return [item for item in here if item not in marching], [
         item for item in here if item in marching
@@ -1732,6 +1746,7 @@ def _fight(
         rounds=outcome.rounds,
         winner_id=sender if outcome.attackers_won else enemy,
         casualties=outcome.casualties,
+        captured=outcome.captured,
     )
     state.battles = tuple(sorted((*state.battles, battle), key=lambda item: item.battle_id))
     events.append(
@@ -1811,6 +1826,18 @@ def _fight(
     else:
         events.append(_event(state, EventPhase.MOVEMENT, "side_broke", str(enemy), str(battle_id)))
     _replace_journey(state, party)
+    # A routed party lets its prisoners go; then the winners take their own captives.
+    routed = [
+        journey
+        for journey in state.journeys
+        if journey.outcome is JourneyOutcome.ROUTED
+        and journey.captive_ids
+        and battle_id in journey.battles
+    ]
+    for journey in routed:
+        events.extend(_free_captives(state, journey.captive_ids, "rescued"))
+    events.extend(_take_captives(state, battle, at_home))
+    party = next(item for item in state.journeys if item.journey_id == party.journey_id)
     return party, events
 
 
@@ -1946,6 +1973,190 @@ def _ambush(state: WorldState, party: Journey) -> list[DomainEvent]:
             )
         )
     return events
+
+
+def _captive(state: WorldState, person_id: EntityId) -> Person | None:
+    for civilization in state.civilizations.values():
+        person = civilization.population.people.get(person_id)
+        if person is not None:
+            return person
+    return None
+
+
+def _take_captives(state: WorldState, battle: Battle, at_home: bool) -> list[DomainEvent]:
+    """The winners hold the fighters they caught: at home, or marching with the party."""
+    if not battle.captured:
+        return []
+    captor = battle.winner_id
+    taken = set(battle.captured)
+    # Captured fighters leave the party they marched with; a party caught whole is ended.
+    journeys: list[Journey] = []
+    for journey in state.journeys:
+        if journey.active and taken & set(journey.traveller_ids):
+            left = tuple(item for item in journey.traveller_ids if item not in taken)
+            journey = (
+                journey.model_copy(update={"traveller_ids": left})
+                if left
+                else journey.model_copy(
+                    update={
+                        "phase": JourneyPhase.COMPLETE,
+                        "outcome": JourneyOutcome.ROUTED,
+                        "completed_day": state.day,
+                        "encamped": False,
+                    }
+                )
+            )
+        journeys.append(journey)
+    state.journeys = tuple(journeys)
+    settlement = settlement_at(state.civilizations[captor], battle.tile)
+    keepers = [
+        journey
+        for journey in state.journeys
+        if journey.active
+        and journey.kind is JourneyKind.CAMPAIGN
+        and journey.sender_civilization_id == captor
+        and journey.route[journey.route_index] == battle.tile
+        and battle.battle_id in journey.battles
+    ]
+    held_at = settlement.settlement_id if settlement is not None and at_home else None
+    if held_at is None and not keepers:
+        # With nowhere to keep them, the captives are let go.
+        return _free_captives(state, battle.captured, "released")
+    for person_id in battle.captured:
+        person = _captive(state, person_id)
+        assert person is not None
+        person.captive_of = captor
+        person.held_at = held_at
+    if held_at is None:
+        keeper = keepers[0]
+        _replace_journey(
+            state,
+            keeper.model_copy(
+                update={"captive_ids": tuple(sorted({*keeper.captive_ids, *battle.captured}))}
+            ),
+        )
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "captured",
+            str(captor),
+            str(person_id),
+            battle=str(battle.battle_id),
+        )
+        for person_id in battle.captured
+    ]
+
+
+def _free_captives(
+    state: WorldState, person_ids: tuple[EntityId, ...], reason: str
+) -> list[DomainEvent]:
+    """Captives go free where they stand and walk home to their nearest settlement."""
+    events: list[DomainEvent] = []
+    walking: dict[tuple[EntityId, HexCoord], list[EntityId]] = {}
+    for person_id in sorted(set(person_ids)):
+        person = _captive(state, person_id)
+        if person is None or person.captive_of is None:
+            continue
+        captor = person.captive_of
+        person.captive_of = None
+        person.held_at = None
+        if not person.alive:
+            continue
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "captive_freed",
+                str(person.civilization_id),
+                str(person_id),
+                captor=str(captor),
+                reason=reason,
+            )
+        )
+        walking.setdefault((person.civilization_id, person.location), []).append(person_id)
+    freed = set(person_ids)
+    state.journeys = tuple(
+        journey.model_copy(
+            update={"captive_ids": tuple(item for item in journey.captive_ids if item not in freed)}
+        )
+        if freed & set(journey.captive_ids)
+        else journey
+        for journey in state.journeys
+    )
+    taken_ids = {journey.journey_id for journey in state.journeys}
+    for (civilization_id, tile), group in sorted(walking.items()):
+        homes = frozenset(item.tile for item in state.civilizations[civilization_id].settlements)
+        route = way_to(state.world_map, tile, homes)
+        if route is None or len(route) < 2:
+            continue
+        for chunk in batched(group, MAX_TRAVELLERS):
+            number = 0
+            while (
+                journey_id := EntityId(
+                    f"journey:{civilization_id}:freed:{state.day:06d}:{tile.q}:{tile.r}:{number}"
+                )
+            ) in taken_ids:
+                number += 1
+            taken_ids.add(journey_id)
+            state.journeys = tuple(
+                sorted(
+                    (
+                        *state.journeys,
+                        Journey(
+                            journey_id=journey_id,
+                            kind=JourneyKind.RELOCATION,
+                            sender_civilization_id=civilization_id,
+                            recipient_civilization_id=civilization_id,
+                            traveller_ids=tuple(sorted(chunk)),
+                            route=route,
+                            departed_day=state.day,
+                        ),
+                    ),
+                    key=lambda item: item.journey_id,
+                )
+            )
+    return events
+
+
+def _march_captives(state: WorldState) -> frozenset[EntityId]:
+    """Captives walk with the war party holding them and eat from its packs, if any is left."""
+    fed: set[EntityId] = set()
+    journeys: list[Journey] = []
+    for journey in state.journeys:
+        if journey.active and journey.captive_ids:
+            tile = journey.route[journey.route_index]
+            provisions = journey.provisions
+            for person_id in journey.captive_ids:
+                person = _captive(state, person_id)
+                if person is None or not person.alive:
+                    continue
+                person.location = tile
+                if provisions:
+                    provisions -= 1
+                    fed.add(person_id)
+                else:
+                    go_hungry(person)
+            journey = journey.model_copy(update={"provisions": provisions})
+        journeys.append(journey)
+    state.journeys = tuple(journeys)
+    return frozenset(fed)
+
+
+def _escapes(state: WorldState, rng: StableRng) -> list[DomainEvent]:
+    """At every council, each captive has a chance to slip away and walk home."""
+    roll = rng.stream(f"day:{state.day}:captives:escape")
+    escaped = tuple(
+        person_id
+        for civilization_id in sorted(state.civilizations)
+        for person_id, person in sorted(
+            state.civilizations[civilization_id].population.people.items()
+        )
+        if person.alive
+        and person.captive_of is not None
+        and int(roll.integers(0, BASIS)) < ESCAPE_BP
+    )
+    return _free_captives(state, escaped, "escaped") if escaped else []
 
 
 def _resolve_war(state: WorldState, rng: StableRng) -> list[DomainEvent]:
@@ -2220,7 +2431,11 @@ def _hold_occupation(state: WorldState, party: Journey, rng: StableRng) -> list[
     owner = state.civilizations[occupation.owner_id]
     # Occupiers take their food from the settlement's store before its people eat.
     food = store_at(owner, occupation.tile).quantities.get(Resource.FOOD, 0)
-    taken = min(len(living), food)
+    captives = sum(
+        (captive := _captive(state, person_id)) is not None and captive.alive
+        for person_id in party.captive_ids
+    )
+    taken = min(len(living) + captives, food)
     if taken:
         take(owner, occupation.tile, {Resource.FOOD: taken})
         party = party.model_copy(update={"provisions": party.provisions + taken})
@@ -3117,7 +3332,10 @@ def _residents(state: WorldState) -> dict[EntityId, int]:
         }
         for settlement in civilization.settlements:
             counts[settlement.settlement_id] = sum(
-                person.alive and person.location == settlement.tile and person_id not in away_here
+                person.alive
+                and person.location == settlement.tile
+                and person_id not in away_here
+                and person.captive_of is None
                 for person_id, person in civilization.population.people.items()
             )
     return counts
@@ -3314,6 +3532,11 @@ def _run_councils(
                 events.append(_start_walls(state, civilization_id, command))
             elif isinstance(command, DirectOrder) and command.kind in CAMP_ORDERS:
                 events.extend(_siege_order(state, civilization_id, command))
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.RELEASE_PRISONERS
+            ):
+                events.extend(_free_captives(state, command.captive_ids, "released"))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.RESEARCH
@@ -3843,6 +4066,9 @@ def advance_day(
     journey_events, fed_on_the_road = _advance_journeys(candidate, rng)
     events.extend(journey_events)
     events.extend(_resolve_war(candidate, rng))
+    fed_on_the_road = fed_on_the_road | _march_captives(candidate)
+    if candidate.day % candidate.config.council_interval_days == 0:
+        events.extend(_escapes(candidate, rng))
     events.extend(_advance_drills(candidate))
     events.extend(_advance_crafting(candidate))
     events.extend(_advance_storehouses(candidate))
@@ -3874,19 +4100,37 @@ def advance_day(
                 for person_id in assignment.scholar_ids
             }
         )
+        # Captives are fed by whoever holds them, not by their own civilization.
         home_living = tuple(
-            person_id for person_id in civilization.population.living_ids if person_id not in away
+            person_id
+            for person_id in civilization.population.living_ids
+            if person_id not in away
+            and civilization.population.people[person_id].captive_of is None
         )
         decrees = candidate.active_decrees.get(civilization_id, {})
         reserve_days = decrees.get("food_reserve_target", 0)
         labor_priority = decrees.get("labor_priority", 0)
-        people = civilization.population.people
-        # Everyone eats and farms at the settlement that supplies where they stand.
+        own_settlements = {item.settlement_id for item in civilization.settlements}
+        held = {
+            person_id: person
+            for other_id, other in sorted(candidate.civilizations.items())
+            if other_id != civilization_id
+            for person_id, person in other.population.people.items()
+            if person.alive
+            and person.captive_of == civilization_id
+            and person.held_at in own_settlements
+        }
+        people = {**civilization.population.people, **held}
+        # Everyone eats and farms at the settlement that supplies where they stand; captives
+        # eat and farm where they are held.
         residents: dict[EntityId, list[EntityId]] = {}
         for person_id in home_living:
             store_id = store_id_at(civilization, people[person_id].location)
             assert store_id is not None
             residents.setdefault(store_id, []).append(person_id)
+        for person_id, person in sorted(held.items()):
+            assert person.held_at is not None
+            residents.setdefault(person.held_at, []).append(person_id)
         fields: dict[EntityId, list[HexCoord]] = {}
         for coord in civilization.known_tiles:
             store_id = store_id_at(civilization, coord)
@@ -4114,9 +4358,9 @@ def advance_day(
                 )
         # Recovery follows the death roll, so the day food returns is still a dangerous one.
         for person_id in sorted(fed_today):
-            person = civilization.population.people.get(person_id)
-            if person is not None and person.alive:
-                recover(person)
+            eater = civilization.population.people.get(person_id) or held.get(person_id)
+            if eater is not None and eater.alive:
+                recover(eater)
 
     events.extend(_advance_territory(candidate))
     events.extend(_joined_roads(candidate))
