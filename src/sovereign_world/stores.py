@@ -13,7 +13,24 @@ if TYPE_CHECKING:
     from sovereign_world.state import CivilizationState
     from sovereign_world.territory import Settlement
 
-SETTLEMENT_CAPACITY = 100_000
+BASE_CAPACITY = 2_000
+"""What a settlement can keep with no storehouse: pits, baskets and corners."""
+STOREHOUSE_CAPACITY = 5_000
+"""What each storehouse adds to its settlement's store."""
+FOUNDING_STOREHOUSES = 5
+"""Storehouses every capital starts with."""
+STOREHOUSE_MATERIALS = {Resource.STONE: 30}
+STOREHOUSE_PERSON_DAYS = 10
+
+
+def founding_capacity(goods: int) -> int:
+    """The capital's first store: its founding storehouses, or as many as its goods need."""
+    needed = max(0, -(-(goods - BASE_CAPACITY) // STOREHOUSE_CAPACITY))
+    return BASE_CAPACITY + STOREHOUSE_CAPACITY * max(FOUNDING_STOREHOUSES, needed)
+
+
+def storehouses(inventory: Inventory) -> int:
+    return (inventory.capacity - BASE_CAPACITY) // STOREHOUSE_CAPACITY
 
 
 def settlement_at(civilization: CivilizationState, tile: HexCoord) -> Settlement | None:
@@ -43,7 +60,7 @@ def store(civilization: CivilizationState, settlement_id: EntityId | None) -> In
     if _is_capital(civilization, settlement_id):
         return civilization.inventory
     assert settlement_id is not None
-    return civilization.stores.get(settlement_id) or Inventory(capacity=SETTLEMENT_CAPACITY)
+    return civilization.stores.get(settlement_id) or Inventory(capacity=BASE_CAPACITY)
 
 
 def set_store(
@@ -85,6 +102,15 @@ def put(
     inventory, waste = store(civilization, settlement_id).store_with_waste(dict(goods))
     set_store(civilization, settlement_id, inventory)
     return waste
+
+
+def enlarge(civilization: CivilizationState, tile: HexCoord, units: int) -> int:
+    """Raise the capacity of the store supplying a tile; return its new capacity."""
+    settlement_id = store_id_at(civilization, tile)
+    inventory = store(civilization, settlement_id)
+    enlarged = inventory.model_copy(update={"capacity": inventory.capacity + units})
+    set_store(civilization, settlement_id, enlarged)
+    return enlarged.capacity
 
 
 def has(civilization: CivilizationState, tile: HexCoord, goods: Mapping[Resource, int]) -> bool:

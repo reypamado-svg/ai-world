@@ -46,6 +46,8 @@ class ConstructionProject(BaseModel):
     required_labor_minutes: int = Field(ge=0)
     completed_labor_minutes: int = Field(default=0, ge=0)
     status: ProjectStatus = ProjectStatus.ACTIVE
+    adds_capacity: int = Field(default=0, ge=0)
+    """Storage a finished storehouse adds to the store of the settlement it stands in."""
 
     def materials_ready(self) -> bool:
         return all(

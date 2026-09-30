@@ -37,6 +37,7 @@ from sovereign_world.research import ResearchAssignment
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView
+from sovereign_world.stores import founding_capacity
 from sovereign_world.territory import Claim, Garrison, Settlement, Territory
 from sovereign_world.tolls import TollPost, TollView
 from sovereign_world.war import Battle, BattleReport, Drill, War
@@ -149,15 +150,16 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
             )
             for tile in known_tiles
         )
+        founding_goods = {
+            Resource.FOOD: manifest.config.founders_per_civilization * 730,
+            Resource.WATER: manifest.config.founders_per_civilization * 30,
+            Resource.TIMBER: 500,
+            Resource.STONE: 300,
+            Resource.AXE: 8,
+        }
         inventory = Inventory(
-            capacity=100_000,
-            quantities={
-                Resource.FOOD: manifest.config.founders_per_civilization * 730,
-                Resource.WATER: manifest.config.founders_per_civilization * 30,
-                Resource.TIMBER: 500,
-                Resource.STONE: 300,
-                Resource.AXE: 8,
-            },
+            capacity=founding_capacity(sum(founding_goods.values())),
+            quantities=founding_goods,
         )
         civilizations[civilization_id] = CivilizationState(
             civilization_id=civilization_id,

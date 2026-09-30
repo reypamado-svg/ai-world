@@ -95,6 +95,10 @@ from sovereign_world.roads import Road, RoadView, grades_of
 from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.stores import (
+    STOREHOUSE_CAPACITY,
+    STOREHOUSE_MATERIALS,
+    STOREHOUSE_PERSON_DAYS,
+    enlarge,
     has,
     holdings,
     put,
@@ -102,6 +106,7 @@ from sovereign_world.stores import (
     store,
     store_at,
     store_id_at,
+    supplying,
     take,
 )
 from sovereign_world.territory import (
@@ -2353,18 +2358,27 @@ def _run_councils(
                 civilization = state.civilizations[civilization_id]
                 if command.project_id not in civilization.projects:
                     is_storage = command.project_kind is ProjectKind.STORAGE
-                    resource = Resource.STONE if is_storage else Resource.TIMBER
-                    quantity = 30 if is_storage else 40
-                    if civilization.inventory.quantities.get(resource, 0) >= quantity:
-                        civilization.inventory = civilization.inventory.apply_delta(
-                            InventoryDelta(changes={resource: -quantity})
+                    materials = dict(STOREHOUSE_MATERIALS) if is_storage else {Resource.TIMBER: 40}
+                    # A storehouse stands in the settlement of the people who build it.
+                    site = (
+                        supplying(
+                            civilization,
+                            civilization.population.people[command.worker_ids[0]].location,
                         )
+                        if is_storage and command.worker_ids
+                        else None
+                    )
+                    location = civilization.start_center if site is None else site.tile
+                    if has(civilization, location, materials):
+                        take(civilization, location, materials)
                         civilization.projects[command.project_id] = ConstructionProject(
                             project_id=command.project_id,
-                            location=civilization.start_center,
-                            required_materials={resource: quantity},
-                            delivered_materials={resource: quantity},
-                            required_labor_minutes=480 * len(command.worker_ids),
+                            location=location,
+                            required_materials=materials,
+                            delivered_materials=materials,
+                            required_labor_minutes=480
+                            * (STOREHOUSE_PERSON_DAYS if is_storage else len(command.worker_ids)),
+                            adds_capacity=STOREHOUSE_CAPACITY if is_storage else 0,
                         )
                         civilization.work_orders += (
                             WorkOrder(
@@ -3164,6 +3178,19 @@ def advance_day(
                     str(project_id),
                 )
             )
+            project = civilization.projects[project_id]
+            if project.adds_capacity:
+                capacity = enlarge(civilization, project.location, project.adds_capacity)
+                events.append(
+                    _event(
+                        candidate,
+                        EventPhase.PROJECT,
+                        "storehouse_built",
+                        str(civilization_id),
+                        str(store_id_at(civilization, project.location)),
+                        capacity=capacity,
+                    )
+                )
         # Recovery follows the death roll, so the day food returns is still a dangerous one.
         for person_id in sorted(fed_today):
             person = civilization.population.people.get(person_id)

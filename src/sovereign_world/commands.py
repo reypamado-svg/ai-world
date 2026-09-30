@@ -248,6 +248,8 @@ class CouncilReport(BaseModel):
     """The capital's store."""
     stores: dict[EntityId, dict[Resource, int]] = Field(default_factory=dict)
     """Every settlement's store, the capital's included."""
+    store_capacity: dict[EntityId, int] = Field(default_factory=dict)
+    """How much each settlement's store can hold; storehouses raise it."""
     holdings: dict[Resource, int] = Field(default_factory=dict)
     """All the goods in all the civilization's stores."""
     project_ids: tuple[EntityId, ...]
@@ -320,6 +322,10 @@ def build_council_report(
             for settlement_id, inventory in all_stores(civilization).items()
         },
         holdings=holdings(civilization),
+        store_capacity={
+            settlement_id: inventory.capacity
+            for settlement_id, inventory in all_stores(civilization).items()
+        },
         project_ids=tuple(sorted(civilization.projects)),
         active_decrees=dict(state.active_decrees.get(civilization_id, {})),
         contacts=civilization.contacts,

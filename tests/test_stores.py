@@ -9,6 +9,7 @@ from logistics_helpers import (
 from sovereign_world.commands import (
     DirectOrder,
     DirectOrderKind,
+    ProjectKind,
     build_council_report,
     validate_envelope,
 )
@@ -18,7 +19,13 @@ from sovereign_world.logistics import JourneyOutcome, NoticeKind
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.state import WorldState, validate_world
-from sovereign_world.stores import holdings, store
+from sovereign_world.stores import (
+    BASE_CAPACITY,
+    STOREHOUSE_CAPACITY,
+    founding_capacity,
+    holdings,
+    store,
+)
 from sovereign_world.territory import Settlement
 from sovereign_world.war import WarObjective
 
@@ -257,3 +264,71 @@ def test_armourers_use_and_fill_their_own_settlement_store() -> None:
     assert colony_store[Resource.SLING] == 2
     assert civilization.inventory.quantities[Resource.TIMBER] == timber
     assert Resource.SLING not in civilization.inventory.quantities
+
+
+def test_a_capital_starts_with_five_storehouses_and_a_new_settlement_with_none() -> None:
+    _, state, home, _, route = linked_world(distance=8)
+    civilization = state.civilizations[home]
+    assert civilization.inventory.capacity == BASE_CAPACITY + 5 * STOREHOUSE_CAPACITY == 27_000
+    assert civilization.inventory.total_units <= civilization.inventory.capacity
+    assert founding_capacity(40_000) == BASE_CAPACITY + 8 * STOREHOUSE_CAPACITY, (
+        "a large founding gets the storehouses its goods need"
+    )
+    colony = _colony(state, home, route[4], people=0, food=0)
+    civilization.stores = {}
+    report = build_council_report(state, home)
+    assert report.store_capacity == {
+        civilization.settlements[0].settlement_id: 27_000,
+        colony.settlement_id: BASE_CAPACITY,
+    }
+
+
+def test_a_storehouse_enlarges_the_store_of_the_settlement_that_builds_it() -> None:
+    _, state, home, _, route = linked_world(distance=8)
+    colony = _colony(state, home, route[4], people=2, food=100)
+    civilization = state.civilizations[home]
+    civilization.stores = {
+        colony.settlement_id: Inventory(
+            capacity=BASE_CAPACITY, quantities={Resource.FOOD: 100, Resource.STONE: 30}
+        )
+    }
+    stone = civilization.inventory.quantities[Resource.STONE]
+    build = DirectOrder(
+        command_id="build",
+        kind=DirectOrderKind.START_PROJECT,
+        worker_ids=civilization.population.living_ids[-2:],
+        project_id=EntityId("project:colony-store"),
+        project_kind=ProjectKind.STORAGE,
+    )
+    state, results = _run(state, 6, {home: OneShotSovereign(build)})
+
+    [built] = _events(results, "storehouse_built")
+    assert built.subject_id == str(colony.settlement_id)
+    assert built.day == 4, "two builders put in the 10 person-days over five days"
+    civilization = state.civilizations[home]
+    colony_store = civilization.stores[colony.settlement_id]
+    assert colony_store.capacity == BASE_CAPACITY + STOREHOUSE_CAPACITY
+    assert colony_store.quantities.get(Resource.STONE, 0) == 0
+    assert civilization.inventory.capacity == 27_000
+    assert civilization.inventory.quantities[Resource.STONE] == stone
+    validate_world(state)
+
+
+def test_goods_beyond_a_small_store_are_wasted() -> None:
+    _, state, home, _, route = linked_world(distance=8)
+    colony = _colony(state, home, route[4], people=2, food=0)
+    civilization = state.civilizations[home]
+    civilization.stores = {
+        colony.settlement_id: Inventory(
+            capacity=BASE_CAPACITY, quantities={Resource.FOOD: BASE_CAPACITY - 10}
+        )
+    }
+    haul = _haul(
+        state, home, route[:5], {Resource.TIMBER: 30}, journey=clear_journey_id("haul", days=12)
+    )
+    state, results = _run(state, 8, {home: OneShotSovereign(haul)})
+
+    [delivered] = _events(results, "goods_hauled")
+    eaten = 2 * delivered.day
+    assert delivered.payload["units"] == 10 + eaten
+    assert delivered.payload["wasted"] == 30 - 10 - eaten
