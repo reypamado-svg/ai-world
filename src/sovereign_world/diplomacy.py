@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
+from sovereign_world.languages import fidelity, render
 from sovereign_world.people import Person
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
@@ -232,11 +233,11 @@ class DiplomacyDayResult:
     lost_ids: tuple[EntityId, ...]
 
 
-def _delivered_words(message: DiplomaticMessage, rng: StableRng, day: int) -> str:
-    roll = int(rng.stream(f"day:{day}:diplomacy:delivery:{message.message_id}").integers(0, 10_000))
-    if roll < 1_500:
-        return f"[distorted by ambassador] {message.source_text}"
-    return message.source_text
+def _delivered_words(message: DiplomaticMessage, envoy: Person, rng: StableRng, day: int) -> str:
+    """The envoy retells the message in the recipient's language; what they cannot say is lost."""
+    percent = fidelity(envoy, message.recipient_civilization_id)
+    roll = rng.stream(f"day:{day}:diplomacy:delivery:{message.message_id}")
+    return render(message.source_text, percent, roll)
 
 
 def advance_diplomacy_day(
@@ -309,7 +310,7 @@ def advance_diplomacy_day(
                 "travel_progress": 0,
                 "status": MissionStatus.DELIVERED,
                 "delivered_day": day,
-                "delivered_text": _delivered_words(mission, rng, day),
+                "delivered_text": _delivered_words(mission, ambassador, rng, day),
             }
         )
         updated.append(completed)

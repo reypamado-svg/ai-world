@@ -66,3 +66,20 @@ This plan covers the four Phase 2 items the earlier plans left out. It also cove
 ## Order of work
 
 S1 languages, then S2 espionage, which needs S1 for its capture chances and estimate errors, then S3 institutions. S4 assimilation needs S1's languages. S5 comes last and ends Phase 2. Each slice goes in its own pull request, stacked like the war slices.
+
+## S1 as built
+
+- `languages.py`: each civilization has one language, named by its id. A person speaks
+  their `native_language` (their birth civilization) at 100 and others at a learned level
+  in `Person.languages`; 50 counts as fluent.
+- Every 5 days, people standing on the same tile learn a point in each language spoken
+  there (natively or fluently), up to 100.
+- An envoy's fidelity is their fluency in the recipient's language, plus 30 if they can
+  write, never below 20 (gestures and names). Each word of a message survives with that
+  chance; lost words arrive as "…". This replaces the flat 15% distortion tag, and the
+  chronicle's `distorted` flag still marks any change.
+- People who change allegiance keep their mother tongue; council reports list
+  `speakers` for each language among the civilization's free people, so a sovereign can
+  choose an envoy who will be understood.
+- Not yet: children learn the language of the civilization they are born into (S4 adds
+  assimilation), and writing is a skill no one has until S3's school teaches it.
