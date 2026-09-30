@@ -101,6 +101,7 @@ class SiegeEnd(StrEnum):
     RECALLED = "recalled"
     BROKEN = "broken"
     STORMED = "stormed"
+    PEACE = "peace"
 
 
 class Siege(BaseModel):
@@ -150,6 +151,7 @@ class OccupationEnd(StrEnum):
     TOO_FEW = "too_few"
     BEATEN = "beaten"
     ROSE = "rose"
+    PEACE = "peace"
 
 
 class Occupation(BaseModel):

@@ -21,7 +21,14 @@ from sovereign_world.armoury import (
     slows,
 )
 from sovereign_world.capabilities import CapabilityId
-from sovereign_world.diplomacy import Contact, DiplomaticMessage, MissionStatus, TreatyKind
+from sovereign_world.diplomacy import (
+    ActiveTreaty,
+    Contact,
+    DiplomaticMessage,
+    MissionStatus,
+    PeaceTerms,
+    TreatyKind,
+)
 from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
 from sovereign_world.hexmap import HexCoord, Terrain
@@ -231,6 +238,8 @@ class DirectOrder(BaseModel):
     message_text: str = Field(default="", max_length=1_000)
     treaty_id: EntityId | None = None
     treaty_kind: TreatyKind | None = None
+    peace_terms: PeaceTerms | None = None
+    """The truce, prisoners and tribute a peace offer proposes."""
     journey_id: EntityId | None = None
     traveller_ids: tuple[EntityId, ...] = ()
     cargo: dict[Resource, int] = Field(default_factory=dict)
@@ -318,6 +327,8 @@ class CouncilReport(BaseModel):
     active_decrees: dict[str, int]
     contacts: tuple[Contact, ...] = ()
     received_messages: tuple[DiplomaticMessage, ...] = ()
+    treaties: tuple[ActiveTreaty, ...] = ()
+    """Treaties this civilization is party to, in force or ended."""
     logistics_notices: tuple[LogisticsNotice, ...] = ()
     controlled_tiles: tuple[HexCoord, ...] = ()
     observed_control: tuple[ControlView, ...] = ()
@@ -419,6 +430,12 @@ def build_council_report(
         active_decrees=dict(state.active_decrees.get(civilization_id, {})),
         contacts=civilization.contacts,
         received_messages=civilization.received_messages,
+        treaties=tuple(
+            treaty
+            for treaty in state.active_treaties
+            if civilization_id
+            in {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+        ),
         logistics_notices=civilization.logistics_notices,
         controlled_tiles=tuple(
             sorted(
@@ -580,6 +597,31 @@ def _travelling_people(state: WorldState, civilization_id: EntityId) -> set[Enti
     return busy
 
 
+def pays_tribute(treaty: ActiveTreaty, civilization_id: EntityId) -> bool:
+    """Tribute is shipped under the peace treaty that owes it, by its payer."""
+    return (
+        treaty.kind is TreatyKind.PEACE
+        and treaty.terms is not None
+        and treaty.terms.tribute_payer == civilization_id
+    )
+
+
+def in_truce(state: WorldState, first: EntityId, second: EntityId) -> ActiveTreaty | None:
+    """A peace treaty in force whose truce has not yet run out."""
+    return next(
+        (
+            treaty
+            for treaty in state.active_treaties
+            if treaty.in_force
+            and treaty.truce_until is not None
+            and state.day < treaty.truce_until
+            and {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+            == {first, second}
+        ),
+        None,
+    )
+
+
 def at_war(state: WorldState, first: EntityId, second: EntityId) -> War | None:
     return next((war for war in state.wars if war.active and war.involves(first, second)), None)
 
@@ -715,6 +757,11 @@ def _campaign_error(
         return error("invalid_war_party", "a war party needs a foreign target and an objective")
     if not any(contact.civilization_id == target for contact in civilization.contacts):
         return error("unknown_contact", "a war party marches only on a known civilization")
+    if (
+        in_truce(state, civilization_id, target) is not None
+        and at_war(state, civilization_id, target) is None
+    ):
+        return error("truce", "a truce forbids war parties against the other side")
     route = command.route
     if (
         len(route) < 2
@@ -886,7 +933,10 @@ def _journey_error(
     if (
         treaty is None
         or not treaty.in_force
-        or treaty.kind is not REQUIRED_TREATY[kind]
+        or not (
+            treaty.kind is REQUIRED_TREATY[kind]
+            or (kind is JourneyKind.SHIPMENT and pays_tribute(treaty, civilization_id))
+        )
         or {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
         != {civilization_id, command.recipient_civilization_id}
     ):
@@ -1461,6 +1511,16 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         command_id=command.command_id,
                         code="invalid_treaty",
                         message="treaty offer requires an ID and kind",
+                    )
+                elif command.peace_terms is not None and (
+                    command.treaty_kind is not TreatyKind.PEACE
+                    or command.peace_terms.tribute_payer
+                    not in {None, envelope.civilization_id, command.recipient_civilization_id}
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_treaty",
+                        message="peace terms go with a peace offer, and a party pays tribute",
                     )
                 elif command.treaty_id in seen_treaties or any(
                     offer.offer_id == command.treaty_id for offer in state.treaty_offers

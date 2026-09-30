@@ -749,6 +749,7 @@ def _advance_journeys(
                 for resource, quantity in journey.cargo.items()
                 if quantity - waste.get(resource, 0) > 0
             }
+            events.extend(_count_tribute(state, journey))
             _add_notice(
                 state,
                 recipient_id,
@@ -2157,6 +2158,120 @@ def _escapes(state: WorldState, rng: StableRng) -> list[DomainEvent]:
         and int(roll.integers(0, BASIS)) < ESCAPE_BP
     )
     return _free_captives(state, escaped, "escaped") if escaped else []
+
+
+def _make_peace(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
+    """Peace ends the war: camps and occupiers go home, war parties turn back, and
+    prisoners are freed as the terms say."""
+    sides = {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+    events: list[DomainEvent] = []
+    state.wars = tuple(
+        war.model_copy(update={"ended_day": state.day})
+        if war.active and war.involves(*sides)
+        else war
+        for war in state.wars
+    )
+    journeys = {journey.journey_id: journey for journey in state.journeys}
+    for siege in state.sieges:
+        if siege.active and {siege.besieger_id, siege.defender_id} == sides:
+            events.extend(_break_camp(state, journeys[siege.journey_id], SiegeEnd.PEACE))
+    for occupation in state.occupations:
+        if occupation.active and {occupation.occupier_id, occupation.owner_id} == sides:
+            events.extend(_withdraw(state, journeys[occupation.journey_id], OccupationEnd.PEACE))
+    state.journeys = tuple(
+        journey.model_copy(
+            update={"phase": JourneyPhase.RETURNING, "outcome": JourneyOutcome.DELIVERED}
+        )
+        if journey.active
+        and journey.kind is JourneyKind.CAMPAIGN
+        and journey.phase is JourneyPhase.OUTBOUND
+        and {journey.sender_civilization_id, journey.recipient_civilization_id} == sides
+        else journey
+        for journey in state.journeys
+    )
+    terms = treaty.terms
+    if terms is not None:
+        freeing = {
+            captor
+            for captor, frees in (
+                (treaty.proposer_civilization_id, terms.proposer_frees),
+                (treaty.recipient_civilization_id, terms.recipient_frees),
+            )
+            if frees
+        }
+        freed = tuple(
+            person_id
+            for civilization_id in sorted(sides)
+            for person_id, person in sorted(
+                state.civilizations[civilization_id].population.people.items()
+            )
+            if person.alive
+            and person.captive_of in freeing
+            and person.captive_of != civilization_id
+        )
+        events.extend(_free_captives(state, freed, "peace"))
+    events.append(
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "peace_made",
+            str(treaty.proposer_civilization_id),
+            str(treaty.treaty_id),
+            recipient=str(treaty.recipient_civilization_id),
+            truce_until=treaty.truce_until or state.day,
+        )
+    )
+    return events
+
+
+def _count_tribute(state: WorldState, journey: Journey) -> list[DomainEvent]:
+    """A shipment under a peace treaty is tribute; what arrived counts toward the debt."""
+    treaty = next(
+        (item for item in state.active_treaties if item.treaty_id == journey.treaty_id), None
+    )
+    if treaty is None or treaty.kind is not TreatyKind.PEACE or treaty.terms is None:
+        return []
+    received = dict(treaty.tribute_received)
+    for resource, quantity in journey.cargo.items():
+        received[resource] = received.get(resource, 0) + quantity
+    updated = treaty.model_copy(update={"tribute_received": dict(sorted(received.items()))})
+    state.active_treaties = tuple(
+        updated if item.treaty_id == treaty.treaty_id else item for item in state.active_treaties
+    )
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "tribute_received",
+            str(journey.recipient_civilization_id),
+            str(treaty.treaty_id),
+            units=sum(journey.cargo.values()),
+        )
+    ]
+
+
+def _check_tribute(state: WorldState) -> list[DomainEvent]:
+    """A payer whose tribute is overdue past its grace has broken the peace."""
+    events: list[DomainEvent] = []
+    for treaty in state.active_treaties:
+        if not treaty.in_force or treaty.terms is None or treaty.terms.tribute_payer is None:
+            continue
+        if not treaty.tribute_overdue(state.day):
+            continue
+        payer = treaty.terms.tribute_payer
+        ended = _end_treaty(state, treaty.treaty_id, TreatyEndKind.BREACHED, payer)
+        if ended is not None:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "tribute_defaulted",
+                    str(payer),
+                    str(treaty.treaty_id),
+                    payee=str(treaty.counterparty(payer)),
+                )
+            )
+    return events
 
 
 def _resolve_war(state: WorldState, rng: StableRng) -> list[DomainEvent]:
@@ -3717,6 +3832,7 @@ def _run_councils(
                                         ),
                                         kind=command.treaty_kind,
                                         proposed_day=state.day,
+                                        terms=command.peace_terms,
                                     )
                                     if command.kind is DirectOrderKind.OFFER_TREATY
                                     and command.treaty_id is not None
@@ -3754,6 +3870,7 @@ def _run_councils(
                                     recipient_civilization_id=(command.recipient_civilization_id),
                                     kind=command.treaty_kind,
                                     proposed_day=state.day,
+                                    terms=command.peace_terms,
                                 ),
                             ),
                             key=lambda offer: offer.offer_id,
@@ -4032,6 +4149,7 @@ def advance_day(
                                 kind=offer.kind,
                                 offered_day=offer.proposed_day,
                                 activated_day=candidate.day,
+                                terms=offer.terms,
                             ),
                         ),
                         key=lambda treaty: treaty.treaty_id,
@@ -4056,6 +4174,17 @@ def advance_day(
                         recipient=str(offer.recipient_civilization_id),
                     )
                 )
+                if offer.kind is TreatyKind.PEACE:
+                    events.extend(
+                        _make_peace(
+                            candidate,
+                            next(
+                                item
+                                for item in candidate.active_treaties
+                                if item.treaty_id == offer.offer_id
+                            ),
+                        )
+                    )
     for message_id in diplomacy_result.delayed_ids:
         events.append(
             _event(candidate, EventPhase.MOVEMENT, "message_delayed", None, str(message_id))
@@ -4067,6 +4196,7 @@ def advance_day(
     events.extend(journey_events)
     events.extend(_resolve_war(candidate, rng))
     fed_on_the_road = fed_on_the_road | _march_captives(candidate)
+    events.extend(_check_tribute(candidate))
     if candidate.day % candidate.config.council_interval_days == 0:
         events.extend(_escapes(candidate, rng))
     events.extend(_advance_drills(candidate))

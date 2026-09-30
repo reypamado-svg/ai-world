@@ -420,9 +420,15 @@ def validate_world(state: WorldState) -> None:
         if sender is None or journey.recipient_civilization_id not in state.civilizations:
             raise ValueError("journey must name existing civilizations")
         treaty = treaties_by_id.get(journey.treaty_id) if journey.treaty_id else None
+        tribute = (
+            treaty is not None
+            and journey.kind.value == "shipment"
+            and treaty.terms is not None
+            and treaty.terms.tribute_payer == journey.sender_civilization_id
+        )
         if journey.kind in required_kind and (
             treaty is None
-            or treaty.kind.value != required_kind[journey.kind]
+            or (treaty.kind.value != required_kind[journey.kind] and not tribute)
             or {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
             != {journey.sender_civilization_id, journey.recipient_civilization_id}
         ):

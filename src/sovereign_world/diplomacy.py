@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person
+from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.travel import DAY, MAX_PROGRESS, Roads, entry_cost
 
@@ -48,6 +49,38 @@ class Contact(BaseModel):
         return self
 
 
+TRIBUTE_INTERVAL = 30
+"""Days between tribute payments; the first falls due this long after the peace."""
+TRIBUTE_GRACE = 30
+"""Days a payment may be late before the payer is in breach."""
+
+
+class PeaceTerms(BaseModel):
+    """What a peace treaty settles: the truce, the prisoners, and any tribute."""
+
+    model_config = ConfigDict(frozen=True)
+
+    truce_days: int = Field(ge=30, le=365)
+    proposer_frees: bool = True
+    """Whether the proposer lets the other side's captives go."""
+    recipient_frees: bool = True
+    """Whether the recipient lets the other side's captives go."""
+    tribute_payer: EntityId | None = None
+    tribute: dict[Resource, int] = Field(default_factory=dict)
+    """Goods owed at each payment."""
+    tribute_payments: int = Field(default=0, ge=0, le=24)
+    """One payment, or one every thirty days for this many months."""
+
+    @model_validator(mode="after")
+    def whole_tribute(self) -> PeaceTerms:
+        parts = (self.tribute_payer is not None, bool(self.tribute), self.tribute_payments > 0)
+        if any(parts) and not all(parts):
+            raise ValueError("tribute names its payer, its goods and its number of payments")
+        if any(quantity <= 0 for quantity in self.tribute.values()):
+            raise ValueError("tribute quantities must be positive")
+        return self
+
+
 class TreatyOffer(BaseModel):
     """A proposal that cannot take effect without a returned acceptance."""
 
@@ -58,6 +91,20 @@ class TreatyOffer(BaseModel):
     recipient_civilization_id: EntityId
     kind: TreatyKind
     proposed_day: int = Field(ge=0)
+    terms: PeaceTerms | None = None
+    """A peace treaty's terms; other kinds carry none."""
+
+    @model_validator(mode="after")
+    def terms_for_peace(self) -> TreatyOffer:
+        if self.terms is not None and self.kind is not TreatyKind.PEACE:
+            raise ValueError("only a peace treaty carries peace terms")
+        if self.terms is not None and self.terms.tribute_payer not in {
+            None,
+            self.proposer_civilization_id,
+            self.recipient_civilization_id,
+        }:
+            raise ValueError("tribute is paid by one of the parties")
+        return self
 
 
 class ActiveTreaty(BaseModel):
@@ -74,6 +121,28 @@ class ActiveTreaty(BaseModel):
     ended_day: int | None = Field(default=None, ge=0)
     end_kind: TreatyEndKind | None = None
     ended_by: EntityId | None = None
+    terms: PeaceTerms | None = None
+    tribute_received: dict[Resource, int] = Field(default_factory=dict)
+    """Tribute goods that have reached the payee so far."""
+
+    @property
+    def truce_until(self) -> int | None:
+        """The first day after the truce, for a peace treaty with terms."""
+        return None if self.terms is None else self.activated_day + self.terms.truce_days
+
+    def tribute_overdue(self, day: int) -> dict[Resource, int]:
+        """Tribute that should have arrived by this day, grace included, but has not."""
+        if self.terms is None or not self.terms.tribute_payments:
+            return {}
+        late = sum(
+            self.activated_day + (payment + 1) * TRIBUTE_INTERVAL + TRIBUTE_GRACE < day
+            for payment in range(self.terms.tribute_payments)
+        )
+        owed = {
+            resource: quantity * late - self.tribute_received.get(resource, 0)
+            for resource, quantity in self.terms.tribute.items()
+        }
+        return {resource: quantity for resource, quantity in owed.items() if quantity > 0}
 
     @model_validator(mode="after")
     def valid_dates(self) -> ActiveTreaty:
