@@ -23,6 +23,7 @@ from sovereign_world.diplomacy import (
     MissionStatus,
     TreatyOffer,
 )
+from sovereign_world.endings import Ending, Ruin
 from sovereign_world.exploration import Expedition, ExpeditionStatus, Observation
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
@@ -64,6 +65,10 @@ class CivilizationState(BaseModel):
     storehouse_jobs: tuple[StorehouseJob, ...] = ()
     walls: tuple[Walls, ...] = ()
     """Each settlement's walls, by settlement id."""
+    homeless_since: int | None = None
+    """The day this civilization was left without a working settlement."""
+    eliminated_day: int | None = None
+    """The day its last member died or left; it then keeps only its history."""
     wall_jobs: tuple[WallJob, ...] = ()
     work_orders: tuple[WorkOrder, ...] = ()
     projects: dict[EntityId, ConstructionProject] = Field(default_factory=dict)
@@ -115,6 +120,10 @@ class WorldState(BaseModel):
     """Every siege, standing or ended; each side sees the ones it is part of."""
     occupations: tuple[Occupation, ...] = ()
     """Every occupation, standing or ended; each side sees the ones it is part of."""
+    ruins: tuple[Ruin, ...] = ()
+    """Settlements left by eliminated civilizations, by tile."""
+    endings: tuple[Ending, ...] = ()
+    """The last-civilization and no-civilization endings, each recorded once."""
     joined_roads: tuple[EntityId, ...] = ()
     """Trade treaties whose partners' settlements a continuous road now links."""
 
@@ -320,7 +329,10 @@ def validate_world(state: WorldState) -> None:
         if len(building) != len(set(building)):
             raise ValueError("one job at a time works on a storehouse")
         capitals = [item for item in settlements if item.capital]
-        if len(capitals) != 1 or capitals[0].tile != civilization.start_center:
+        if civilization.eliminated_day is not None:
+            if settlements or civilization.population.living_ids:
+                raise ValueError("an eliminated civilization has no settlements and no one living")
+        elif len(capitals) != 1 or capitals[0].tile != civilization.start_center:
             raise ValueError("a civilization has exactly one capital, at its start")
         garrisons = civilization.garrisons
         if garrisons != tuple(sorted(garrisons, key=lambda item: item.garrison_id)):
@@ -444,12 +456,18 @@ def validate_world(state: WorldState) -> None:
             person = sender.population.people[person_id]
             if person.alive and person.location != journey.route[journey.route_index]:
                 raise ValueError("living travellers must stand on their route position")
-        if journey.carrying_cargo and journey.outcome not in {
-            JourneyOutcome.PENDING,
-            JourneyOutcome.FAILED,
-            JourneyOutcome.REFUSED,
-            JourneyOutcome.TURNED_BACK,
-        }:
+        # Salvagers have done their errand at the ruin and carry its goods home.
+        if (
+            journey.carrying_cargo
+            and journey.kind.value != "salvage"
+            and journey.outcome
+            not in {
+                JourneyOutcome.PENDING,
+                JourneyOutcome.FAILED,
+                JourneyOutcome.REFUSED,
+                JourneyOutcome.TURNED_BACK,
+            }
+        ):
             raise ValueError("only undelivered cargo can still be carried")
     for owner in state.territory.owners:
         if owner.civilization_id not in state.civilizations:
@@ -502,6 +520,18 @@ def validate_world(state: WorldState) -> None:
                     raise ValueError("a captive is held at one of the captor's settlements")
             elif marching.get(person_id) != person.captive_of:
                 raise ValueError("a captive not held at a settlement marches with the captor")
+    ruins = state.ruins
+    if ruins != tuple(sorted(ruins, key=lambda item: item.tile)):
+        raise ValueError("ruins must be sorted by tile")
+    if len({ruin.tile for ruin in ruins}) != len(ruins):
+        raise ValueError("a tile holds at most one ruin")
+    settled = {
+        settlement.tile
+        for civilization in state.civilizations.values()
+        for settlement in civilization.settlements
+    }
+    if any(ruin.tile in settled for ruin in ruins):
+        raise ValueError("a ruin is not a living settlement")
     occupations = state.occupations
     if occupations != tuple(sorted(occupations, key=lambda item: item.occupation_id)):
         raise ValueError("occupations must be sorted")
