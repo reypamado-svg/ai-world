@@ -54,9 +54,15 @@ This plan covers the four Phase 2 items the earlier plans left out. It also cove
    - **Acceptance tests:** full scenarios with scripted sovereigns, each replayed exactly: isolated development, first contact, treaty, trade, war, surrender, assimilation, extinction and final survivor.
    - **No hidden knowledge:** a leak test proves that no council report contains anything its civilization has not observed or been told.
 
-## Open questions for the user
+## Decisions
 
-1. **Institutions:** which of the five above go into the first set?
-2. **Spy reports:** do they come home only with the spy, or can a spy also send a courier?
-3. **Languages:** one per civilization, or families of related languages that are easier to learn from one another?
-4. **Assimilation:** purely a record, or with effects? For example, an unassimilated person might work less gladly, or leave for their old civilization if it still exists.
+1. **Institutions:** all five, the archive, school, healers' house, workshop and diplomatic service, as in the S3 table.
+2. **Spy reports** come home with the spy, or earlier by courier.
+   - **A courier:** a spy on watch may send a companion home with the findings so far. The report arrives sooner, but each day a courier is on the road also carries its own chance of discovery.
+   - **If the spy is caught,** findings not yet sent are lost.
+3. **Languages:** one per civilization. People learn others by living among their speakers.
+4. **Assimilation** is a record, with its effects on language and on children's culture. There are no penalties for being unassimilated.
+
+## Order of work
+
+S1 languages, then S2 espionage, which needs S1 for its capture chances and estimate errors, then S3 institutions. S4 assimilation needs S1's languages. S5 comes last and ends Phase 2. Each slice goes in its own pull request, stacked like the war slices.
