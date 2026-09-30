@@ -10,6 +10,7 @@ from math import ceil
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.armoury import WAR_GEAR, cargo_load, slowed, slows
+from sovereign_world.espionage import MAX_WATCH_DAYS, Estimate
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person, go_hungry
@@ -62,6 +63,10 @@ class JourneyKind(StrEnum):
     """Released people asking to join another civilization; they wait for its answer."""
     SALVAGE = "salvage"
     """Carriers going to a ruin to bring back what they can bear from its store."""
+    SPY = "spy"
+    """Spies watching a foreign settlement for a while, then bringing home what they saw."""
+    COURIER = "courier"
+    """A spy's companion carrying the findings so far home ahead of the others."""
 
 
 INTERNAL_KINDS = frozenset(
@@ -83,8 +88,10 @@ ROUND_TRIP_KINDS = frozenset(
         JourneyKind.HAUL,
         JourneyKind.PETITION,
         JourneyKind.SALVAGE,
+        JourneyKind.SPY,
     }
 )
+SPYING_KINDS = frozenset({JourneyKind.SPY, JourneyKind.COURIER})
 CARRYING_KINDS = frozenset({JourneyKind.DEPOSIT, JourneyKind.HAUL})
 """Internal journeys that carry goods to one of their own stores."""
 TREATY_KINDS = frozenset({JourneyKind.SHIPMENT, JourneyKind.MIGRATION})
@@ -114,6 +121,8 @@ class JourneyOutcome(StrEnum):
     """A war party that broke in battle and fled for home."""
     AMBUSHED = "ambushed"
     """A party robbed or driven back by enemy fighters on the road."""
+    CAUGHT = "caught"
+    """Spies or a courier found out and taken prisoner."""
 
 
 class StopReason(StrEnum):
@@ -176,6 +185,14 @@ class Journey(BaseModel):
     """Enemy prisoners marching with a war party to be held at its home."""
     waiting: bool = False
     """Petitioners at the other civilization's settlement, waiting for its answer."""
+    watch_days: int = Field(default=0, ge=0, le=MAX_WATCH_DAYS)
+    """How many days spies mean to watch the settlement at the end of their route."""
+    watched: int = Field(default=0, ge=0)
+    """Days the spies have watched so far."""
+    watching: bool = False
+    """Spies at the end of their route, watching, until their days are done."""
+    findings: Estimate | None = None
+    """What the spies, or their courier, carry home."""
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
@@ -203,6 +220,23 @@ class Journey(BaseModel):
             or self.route_index != len(self.route) - 1
         ):
             raise ValueError("only petitioners wait, at the end of their route")
+        spy = self.kind is JourneyKind.SPY
+        if spy != (self.watch_days > 0):
+            raise ValueError("only spies, and all spies, set out to watch for some days")
+        if self.watching and (
+            not spy
+            or self.phase is not JourneyPhase.OUTBOUND
+            or self.route_index != len(self.route) - 1
+        ):
+            raise ValueError("only spies watch, at the end of their route")
+        if self.watched > self.watch_days:
+            raise ValueError("spies watch no longer than they meant to")
+        if self.kind not in SPYING_KINDS and self.findings is not None:
+            raise ValueError("only spies and their couriers carry findings")
+        if self.kind is JourneyKind.COURIER and self.findings is None:
+            raise ValueError("a courier carries findings")
+        if self.kind in SPYING_KINDS and (self.cargo or self.carrying_cargo):
+            raise ValueError("spies carry nothing but their provisions")
         if self.kind is JourneyKind.PETITION and (self.cargo or self.carrying_cargo):
             raise ValueError("petitioners carry nothing but their provisions")
         if self.captive_ids != tuple(sorted(set(self.captive_ids))):
@@ -541,7 +575,7 @@ def advance_journeys_day(
                 )
             )
             continue
-        if journey.encamped or journey.waiting:
+        if journey.encamped or journey.waiting or journey.watching:
             # A camp, or petitioners at a gate, stay where they are; they only eat and forage.
             updated.append(journey)
             continue
@@ -637,6 +671,24 @@ def advance_journeys_day(
             if journey.kind is JourneyKind.PETITION:
                 # Petitioners wait at the gate for the other civilization's council.
                 moved = moved.model_copy(update={"arrived_day": day, "waiting": True})
+                arrived.append(moved)
+                updated.append(moved)
+                continue
+            if journey.kind is JourneyKind.SPY:
+                # Spies settle in to watch; the engine keeps their count of days.
+                moved = moved.model_copy(update={"arrived_day": day, "watching": True})
+                arrived.append(moved)
+                updated.append(moved)
+                continue
+            if journey.kind is JourneyKind.COURIER:
+                moved = moved.model_copy(
+                    update={
+                        "arrived_day": day,
+                        "outcome": JourneyOutcome.DELIVERED,
+                        "phase": JourneyPhase.COMPLETE,
+                        "completed_day": day,
+                    }
+                )
                 arrived.append(moved)
                 updated.append(moved)
                 continue

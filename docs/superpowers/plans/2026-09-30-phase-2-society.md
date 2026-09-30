@@ -83,3 +83,25 @@ S1 languages, then S2 espionage, which needs S1 for its capture chances and esti
   choose an envoy who will be understood.
 - Not yet: children learn the language of the civilization they are born into (S4 adds
   assimilation), and writing is a skill no one has until S3's school teaches it.
+
+## S2 as built
+
+- `send_spy` sends one to four people from a settlement to a known foreign settlement,
+  to watch it for 1 to 90 days. They pack food for the walk and the watch, up to what
+  they can carry, and forage the rest.
+- Each day on watch, the party is found out with a 1% chance, less 0.5% if its least
+  careful member speaks the language and 0.05% per point of their spycraft (at most
+  0.5%), never below 0.1%. Otherwise the spies update their estimate of the settlement:
+  residents, fighters and store (rounded to 50), each off by up to 10% for a spy who
+  speaks the language and 30% for one who does not; walls, towers and works going up are
+  seen exactly.
+- `send_courier` at a council sends one of a watching party home with the findings so
+  far and a share of the food. Each day a courier spends on the watched civilization's
+  land, it is stopped with a 0.5% chance (with the same reductions).
+- Caught spies and couriers become prisoners at the nearest settlement of the civilization
+  that caught them, which records who sent them (`caught_spies`). Findings not yet sent
+  home are lost.
+- Findings reach the council only when the spies or a courier are home (`spy_reports`);
+  `spy_missions` lists the parties still out. Spies who come home gain a point of
+  spycraft.
+- A war party does not ambush spies on watch; they pass for locals or keep out of sight.

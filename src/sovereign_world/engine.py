@@ -65,6 +65,15 @@ from sovereign_world.endings import (
     EndingKind,
     Ruin,
 )
+from sovereign_world.espionage import (
+    COURIER_CAUGHT_BP,
+    SPYCRAFT,
+    WATCH_CAUGHT_BP,
+    CaughtSpy,
+    SpyReport,
+    caught_chance_bp,
+    observe,
+)
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
 from sovereign_world.exploration import (
     Expedition,
@@ -79,6 +88,7 @@ from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
     INTERNAL_KINDS,
     MAX_TRAVELLERS,
+    SPYING_KINDS,
     TRAVEL_HAZARD_CAUSE,
     Journey,
     JourneyKind,
@@ -387,6 +397,7 @@ DISPATCH_EVENT = {
     JourneyKind.HAUL: "haul_dispatched",
     JourneyKind.PETITION: "people_released",
     JourneyKind.SALVAGE: "salvagers_dispatched",
+    JourneyKind.SPY: "spies_dispatched",
 }
 RETURNED_EVENT = {
     JourneyKind.ROADWORK: "road_crew_returned",
@@ -395,6 +406,7 @@ RETURNED_EVENT = {
     JourneyKind.HAUL: "haulers_returned",
     JourneyKind.PETITION: "petitioners_returned",
     JourneyKind.SALVAGE: "salvagers_returned",
+    JourneyKind.SPY: "spies_returned",
 }
 PLUNDER_ORDER = (
     Resource.FOOD,
@@ -490,6 +502,7 @@ def _dispatch_journey(
         provisions=provisions,
         departed_day=state.day,
         objective=command.war_objective if kind is JourneyKind.CAMPAIGN else None,
+        watch_days=command.watch_days if kind is JourneyKind.SPY else 0,
         wreck_roads=command.wreck_roads and kind is JourneyKind.CAMPAIGN,
         carry_per_person=(
             war_party_carry(civilization)
@@ -988,6 +1001,26 @@ def _advance_journeys(
         if journey.kind is JourneyKind.SALVAGE:
             events.extend(_salvage(state, journey))
             continue
+        if journey.kind is JourneyKind.SPY:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "spies_on_watch",
+                    str(journey.sender_civilization_id),
+                    str(journey.journey_id),
+                )
+            )
+            continue
+        if journey.kind is JourneyKind.COURIER:
+            _store_provisions(
+                state,
+                journey.sender_civilization_id,
+                journey.route[-1],
+                result.handed_over.get(journey.journey_id, 0),
+            )
+            events.append(_file_spy_report(state, journey, by_courier=True))
+            continue
         if journey.kind in INTERNAL_KINDS:
             events.extend(
                 _settle_arrival(state, journey, result.handed_over.get(journey.journey_id, 0))
@@ -1187,6 +1220,15 @@ def _advance_journeys(
                 provisions=provisions,
             )
         )
+        if journey.kind is JourneyKind.SPY and survivors:
+            people = state.civilizations[sender_id].population.people
+            for person_id in survivors:
+                people[person_id].skills = {
+                    **people[person_id].skills,
+                    SPYCRAFT: people[person_id].skills.get(SPYCRAFT, 0) + 1,
+                }
+            if journey.findings is not None:
+                events.append(_file_spy_report(state, journey, by_courier=False))
     for journey_id in result.exhausted_ids:
         events.append(
             _event(
@@ -2180,6 +2222,7 @@ def _ambush(state: WorldState, party: Journey) -> list[DomainEvent]:
             or journey.kind is JourneyKind.CAMPAIGN
             or journey.phase is not JourneyPhase.OUTBOUND
             or journey.sender_civilization_id == sender
+            or journey.watching
         ):
             continue
         owner = journey.sender_civilization_id
@@ -2310,6 +2353,268 @@ def _take_captives(state: WorldState, battle: Battle, at_home: bool) -> list[Dom
         )
         for person_id in battle.captured
     ]
+
+
+def _truth(state: WorldState, target_id: EntityId, settlement: Settlement) -> dict[str, int]:
+    """What there is to see at a settlement today."""
+    target = state.civilizations[target_id]
+    residents = [
+        person
+        for person in target.population.people.values()
+        if person.alive and person.captive_of is None and person.location == settlement.tile
+    ]
+    return {
+        "residents": len(residents),
+        "fighters": sum(1 for person in residents if able_to_fight(person)),
+        "store_units": store(target, settlement.settlement_id).total_units,
+        "works": sum(
+            1 for project in target.projects.values() if project.location == settlement.tile
+        )
+        + sum(1 for job in target.storehouse_jobs if job.settlement_id == settlement.settlement_id)
+        + sum(1 for job in target.wall_jobs if job.settlement_id == settlement.settlement_id),
+    }
+
+
+def _catch(
+    state: WorldState, journey: Journey, target_id: EntityId, settlement: Settlement
+) -> list[DomainEvent]:
+    """Spies or a courier found out: held prisoner, their findings lost, their sender known."""
+    target = state.civilizations[target_id]
+    people = state.civilizations[journey.sender_civilization_id].population.people
+    caught = tuple(
+        person_id
+        for person_id in journey.traveller_ids
+        if person_id in people and people[person_id].alive
+    )
+    events: list[DomainEvent] = []
+    for person_id in caught:
+        person = people[person_id]
+        person.captive_of = target_id
+        person.held_at = settlement.settlement_id
+        person.location = settlement.tile
+        target.caught_spies = (
+            *target.caught_spies,
+            CaughtSpy(
+                day=state.day,
+                person_id=person_id,
+                sender_civilization_id=journey.sender_civilization_id,
+                settlement_id=settlement.settlement_id,
+            ),
+        )
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "spy_caught",
+                str(target_id),
+                str(person_id),
+                sender=str(journey.sender_civilization_id),
+                journey=str(journey.journey_id),
+                courier=journey.kind is JourneyKind.COURIER,
+            )
+        )
+    _replace_journey(
+        state,
+        journey.model_copy(
+            update={
+                "phase": JourneyPhase.COMPLETE,
+                "outcome": JourneyOutcome.CAUGHT,
+                "completed_day": state.day,
+                "watching": False,
+                "findings": journey.findings if journey.kind is JourneyKind.COURIER else None,
+                "provisions": 0,
+            }
+        ),
+    )
+    return events
+
+
+def _advance_espionage(state: WorldState, rng: StableRng) -> list[DomainEvent]:
+    """Spies on watch look around, or are found out; couriers on foreign land may be stopped."""
+    events: list[DomainEvent] = []
+    owners = state.territory.owner_of()
+    for journey in sorted(state.journeys, key=lambda item: item.journey_id):
+        if not journey.active or journey.kind not in SPYING_KINDS:
+            continue
+        target_id = journey.recipient_civilization_id
+        target = state.civilizations[target_id]
+        people = state.civilizations[journey.sender_civilization_id].population.people
+        living = [
+            people[person_id]
+            for person_id in journey.traveller_ids
+            if person_id in people and people[person_id].alive
+        ]
+        if not living or target.eliminated_day is not None:
+            if journey.watching:
+                _replace_journey(
+                    state,
+                    journey.model_copy(
+                        update={
+                            "watching": False,
+                            "phase": JourneyPhase.RETURNING,
+                            "outcome": JourneyOutcome.FAILED,
+                        }
+                    ),
+                )
+            continue
+        roll = rng.stream(f"day:{state.day}:espionage:{journey.journey_id}")
+        if journey.kind is JourneyKind.COURIER:
+            tile = journey.route[journey.route_index]
+            nearest = supplying(target, tile)
+            if (
+                journey.phase is JourneyPhase.OUTBOUND
+                and owners.get(tile) == target_id
+                and nearest is not None
+                and int(roll.integers(0, 10_000))
+                < caught_chance_bp(living, target_id, COURIER_CAUGHT_BP)
+            ):
+                events.extend(_catch(state, journey, target_id, nearest))
+            continue
+        if not journey.watching:
+            continue
+        settlement = settlement_at(target, journey.route[-1])
+        if settlement is None:
+            # The settlement changed hands or fell; there is nothing left to watch.
+            _replace_journey(
+                state,
+                journey.model_copy(
+                    update={
+                        "watching": False,
+                        "phase": JourneyPhase.RETURNING,
+                        "outcome": JourneyOutcome.FAILED,
+                    }
+                ),
+            )
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "spies_left_watch",
+                    str(journey.sender_civilization_id),
+                    str(journey.journey_id),
+                    reason="gone",
+                )
+            )
+            continue
+        if int(roll.integers(0, 10_000)) < caught_chance_bp(living, target_id, WATCH_CAUGHT_BP):
+            events.extend(_catch(state, journey, target_id, settlement))
+            continue
+        walls = next(
+            (item for item in target.walls if item.settlement_id == settlement.settlement_id),
+            None,
+        )
+        truth = _truth(state, target_id, settlement)
+        seen = observe(
+            settlement_id=settlement.settlement_id,
+            civilization_id=target_id,
+            tile=settlement.tile,
+            day=state.day,
+            residents=truth["residents"],
+            fighters=truth["fighters"],
+            store_units=truth["store_units"],
+            wall_grade=None if walls is None else walls.grade,
+            towers=0 if walls is None else walls.towers,
+            works=truth["works"],
+            spies=living,
+            roll=roll,
+        )
+        watched = journey.watched + 1
+        done = watched >= journey.watch_days
+        _replace_journey(
+            state,
+            journey.model_copy(
+                update={
+                    "watched": watched,
+                    "findings": seen,
+                    **(
+                        {
+                            "watching": False,
+                            "phase": JourneyPhase.RETURNING,
+                            "outcome": JourneyOutcome.DELIVERED,
+                        }
+                        if done
+                        else {}
+                    ),
+                }
+            ),
+        )
+        if done:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "spies_left_watch",
+                    str(journey.sender_civilization_id),
+                    str(journey.journey_id),
+                    reason="done",
+                )
+            )
+    return events
+
+
+def _send_courier(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> DomainEvent:
+    """One spy walks home ahead with the findings so far and a share of the food."""
+    party = next(item for item in state.journeys if item.journey_id == command.journey_id)
+    [courier_id] = command.traveller_ids
+    share = party.provisions // len(party.traveller_ids)
+    left = party.provisions - share
+    courier = Journey(
+        journey_id=EntityId(f"{party.journey_id}:courier:{state.day}"),
+        kind=JourneyKind.COURIER,
+        sender_civilization_id=civilization_id,
+        recipient_civilization_id=party.recipient_civilization_id,
+        traveller_ids=(courier_id,),
+        route=command.route,
+        provisions_packed=share,
+        provisions=share,
+        departed_day=state.day,
+        findings=party.findings,
+    )
+    _replace_journey(
+        state,
+        party.model_copy(
+            update={
+                "traveller_ids": tuple(item for item in party.traveller_ids if item != courier_id),
+                "provisions": left,
+                "provisions_packed": left,
+            }
+        ),
+    )
+    state.journeys = tuple(sorted((*state.journeys, courier), key=lambda item: item.journey_id))
+    return _event(
+        state,
+        EventPhase.MOVEMENT,
+        "courier_sent",
+        str(civilization_id),
+        str(courier.journey_id),
+        spies=str(party.journey_id),
+    )
+
+
+def _file_spy_report(state: WorldState, journey: Journey, *, by_courier: bool) -> DomainEvent:
+    """Findings reach home: the council will read them at its next sitting."""
+    assert journey.findings is not None
+    sender = state.civilizations[journey.sender_civilization_id]
+    parent = journey.journey_id.split(":courier:")[0] if by_courier else journey.journey_id
+    report = SpyReport(
+        report_id=f"spy-report:{journey.journey_id}",
+        journey_id=EntityId(parent),
+        delivered_day=state.day,
+        by_courier=by_courier,
+        estimate=journey.findings,
+    )
+    sender.spy_reports = (*sender.spy_reports, report)
+    return _event(
+        state,
+        EventPhase.MOVEMENT,
+        "spy_report_delivered",
+        str(journey.sender_civilization_id),
+        str(journey.journey_id),
+        target=str(journey.findings.civilization_id),
+        by_courier=by_courier,
+    )
 
 
 def _free_captives(
@@ -4315,6 +4620,8 @@ def _run_councils(
                 events.append(_start_walls(state, civilization_id, command))
             elif isinstance(command, DirectOrder) and command.kind in CAMP_ORDERS:
                 events.extend(_siege_order(state, civilization_id, command))
+            elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.SEND_COURIER:
+                events.append(_send_courier(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder) and command.kind is DirectOrderKind.ANSWER_PETITION
             ):
@@ -4870,6 +5177,7 @@ def advance_day(
     journey_events, fed_on_the_road = _advance_journeys(candidate, rng)
     events.extend(journey_events)
     events.extend(_resolve_war(candidate, rng))
+    events.extend(_advance_espionage(candidate, rng))
     fed_on_the_road = fed_on_the_road | _march_captives(candidate)
     events.extend(_check_tribute(candidate))
     _settle_newcomers(candidate)
