@@ -85,7 +85,14 @@ from sovereign_world.logistics import (
     notice,
     provisions_needed,
 )
-from sovereign_world.people import Person, advance_population_day, go_hungry, recover
+from sovereign_world.people import (
+    SETTLING_DAYS,
+    AllegianceChange,
+    Person,
+    advance_population_day,
+    go_hungry,
+    recover,
+)
 from sovereign_world.research import (
     DISCOVERED_SKILL,
     DOCTRINE_DRILL_CAP,
@@ -275,10 +282,7 @@ def _settle_arrival(state: WorldState, journey: Journey, provisions: int) -> lis
     )
     if journey.kind is JourneyKind.SETTLEMENT:
         settlement = Settlement(
-            settlement_id=EntityId(
-                f"settlement:{civilization_id.rsplit(':', 1)[-1]}-"
-                f"{len(civilization.settlements) + 1:04d}"
-            ),
+            settlement_id=_next_settlement_id(state, civilization_id),
             civilization_id=civilization_id,
             tile=destination,
             founded_day=state.day,
@@ -528,24 +532,79 @@ def _dispatch_journey(
     ]
 
 
+def _next_settlement_id(state: WorldState, civilization_id: EntityId) -> EntityId:
+    """A new settlement's id: one past the highest this civilization ever founded, wherever
+    those settlements now belong."""
+    prefix = f"settlement:{civilization_id.rsplit(':', 1)[-1]}-"
+    numbers = [
+        int(item.settlement_id.removeprefix(prefix))
+        for civilization in state.civilizations.values()
+        for item in civilization.settlements
+        if item.settlement_id.startswith(prefix)
+    ]
+    return EntityId(f"{prefix}{max(numbers, default=0) + 1:04d}")
+
+
 def _transfer_migrants(state: WorldState, journey: Journey) -> tuple[EntityId, ...]:
     """Move living arrivals, with their history and any pregnancy, to the new civilization."""
     origin = state.civilizations[journey.sender_civilization_id]
-    destination = state.civilizations[journey.recipient_civilization_id]
-    origin_people = dict(origin.population.people)
-    destination_people = dict(destination.population.people)
     arrivals = tuple(
         person_id
         for person_id in journey.traveller_ids
-        if person_id in origin_people and origin_people[person_id].alive
+        if person_id in origin.population.people and origin.population.people[person_id].alive
     )
-    for person_id in arrivals:
+    _change_allegiance(
+        state,
+        arrivals,
+        journey.sender_civilization_id,
+        journey.recipient_civilization_id,
+        "migration",
+    )
+    return arrivals
+
+
+def _change_allegiance(
+    state: WorldState,
+    person_ids: tuple[EntityId, ...],
+    origin_id: EntityId,
+    destination_id: EntityId,
+    reason: str,
+) -> None:
+    """Move people to another civilization with their whole life: id, family, health and
+    any pregnancy. A quarter of each skill is held back for a year while they settle."""
+    origin = state.civilizations[origin_id]
+    destination = state.civilizations[destination_id]
+    _release_duties(state, origin_id, frozenset(person_ids))
+    origin_people = dict(origin.population.people)
+    destination_people = dict(destination.population.people)
+    for person_id in person_ids:
         person = origin_people.pop(person_id)
+        held = {skill: value // 4 for skill, value in person.skills.items() if value // 4}
         destination_people[person_id] = person.model_copy(
-            update={"civilization_id": destination.civilization_id}
+            update={
+                "civilization_id": destination_id,
+                "skills": {
+                    skill: value - held.get(skill, 0) for skill, value in person.skills.items()
+                },
+                "held_skills": {
+                    skill: person.held_skills.get(skill, 0) + held.get(skill, 0)
+                    for skill in sorted({*person.held_skills, *held})
+                },
+                "settled_day": state.day + SETTLING_DAYS,
+                "allegiances": (
+                    *person.allegiances,
+                    AllegianceChange(
+                        day=state.day,
+                        from_civilization_id=origin_id,
+                        to_civilization_id=destination_id,
+                        reason=reason,
+                    ),
+                ),
+            }
         )
+    moving = set(person_ids)
     following_mother = tuple(
-        birth for birth in origin.population.scheduled_births if birth.parent_ids[0] in arrivals
+        birth for birth in origin.population.scheduled_births if birth.parent_ids[0] in moving
     )
     origin.population = origin.population.model_copy(
         update={
@@ -568,7 +627,179 @@ def _transfer_migrants(state: WorldState, journey: Journey) -> tuple[EntityId, .
             ),
         }
     )
-    return arrivals
+
+
+def _release_duties(
+    state: WorldState, civilization_id: EntityId, leaving: frozenset[EntityId]
+) -> None:
+    """People leaving a civilization drop out of its drills, workshops, studies and garrisons."""
+    if not leaving:
+        return
+    civilization = state.civilizations[civilization_id]
+    civilization.drills = tuple(
+        drill.model_copy(update={"person_ids": kept})
+        for drill in civilization.drills
+        if (kept := tuple(item for item in drill.person_ids if item not in leaving))
+    )
+    civilization.craft_jobs = tuple(
+        job.model_copy(update={"worker_ids": kept})
+        for job in civilization.craft_jobs
+        if (kept := tuple(item for item in job.worker_ids if item not in leaving))
+    )
+    civilization.research = tuple(
+        assignment.model_copy(update={"scholar_ids": kept})
+        for assignment in civilization.research
+        if (kept := tuple(item for item in assignment.scholar_ids if item not in leaving))
+    )
+    civilization.storehouse_jobs = tuple(
+        job.model_copy(update={"worker_ids": kept})
+        for job in civilization.storehouse_jobs
+        if (kept := tuple(item for item in job.worker_ids if item not in leaving))
+    )
+    civilization.wall_jobs = tuple(
+        job.model_copy(update={"worker_ids": kept})
+        for job in civilization.wall_jobs
+        if (kept := tuple(item for item in job.worker_ids if item not in leaving))
+    )
+    civilization.teaching_assignments = tuple(
+        assignment
+        for assignment in civilization.teaching_assignments
+        if assignment.teacher_id not in leaving and assignment.apprentice_id not in leaving
+    )
+    _leave_garrisons(state, civilization_id, leaving)
+
+
+def _settle_newcomers(state: WorldState) -> None:
+    """A year after changing civilization, a person has their held-back skill again."""
+    for civilization in state.civilizations.values():
+        for person in civilization.population.people.values():
+            if person.settled_day is not None and state.day >= person.settled_day:
+                person.skills = {
+                    skill: person.skills.get(skill, 0) + person.held_skills.get(skill, 0)
+                    for skill in sorted({*person.skills, *person.held_skills})
+                }
+                person.held_skills = {}
+                person.settled_day = None
+
+
+def _cede(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
+    """A ceded settlement changes hands with its store, buildings, walls, gate and people."""
+    terms = treaty.terms
+    if terms is None or terms.ceded_settlement is None:
+        return []
+    sides = (treaty.proposer_civilization_id, treaty.recipient_civilization_id)
+    giver_id = next(
+        (
+            side
+            for side in sides
+            if any(
+                item.settlement_id == terms.ceded_settlement
+                for item in state.civilizations[side].settlements
+            )
+        ),
+        None,
+    )
+    if giver_id is None:
+        return []
+    taker_id = treaty.counterparty(giver_id)
+    giver, taker = state.civilizations[giver_id], state.civilizations[taker_id]
+    settlement = next(
+        item for item in giver.settlements if item.settlement_id == terms.ceded_settlement
+    )
+    if settlement.capital:
+        return []
+    sid, tile = settlement.settlement_id, settlement.tile
+    away = _away(state)
+    residents = tuple(
+        sorted(
+            person_id
+            for person_id, person in giver.population.people.items()
+            if person.alive
+            and person.location == tile
+            and person_id not in away
+            and person.captive_of is None
+        )
+    )
+    held_there = tuple(
+        person_id
+        for other in state.civilizations.values()
+        for person_id, person in other.population.people.items()
+        if person.alive and person.captive_of == giver_id and person.held_at == sid
+    )
+    events = _free_captives(state, held_there, "released")
+    inventory = store(giver, sid)
+    giver.settlements = tuple(item for item in giver.settlements if item.settlement_id != sid)
+    giver.stores = {key: value for key, value in giver.stores.items() if key != sid}
+    taker.settlements = tuple(
+        sorted(
+            (*taker.settlements, settlement.model_copy(update={"civilization_id": taker_id})),
+            key=lambda item: item.settlement_id,
+        )
+    )
+    taker.stores = {**taker.stores, sid: inventory}
+    taker.storehouses = tuple(
+        sorted(
+            (
+                *taker.storehouses,
+                *(item for item in giver.storehouses if item.settlement_id == sid),
+            ),
+            key=lambda item: item.storehouse_id,
+        )
+    )
+    giver.storehouses = tuple(item for item in giver.storehouses if item.settlement_id != sid)
+    taker.walls = tuple(
+        sorted(
+            (*taker.walls, *(item for item in giver.walls if item.settlement_id == sid)),
+            key=lambda item: item.settlement_id,
+        )
+    )
+    giver.walls = tuple(item for item in giver.walls if item.settlement_id != sid)
+    giver.storehouse_jobs = tuple(
+        item for item in giver.storehouse_jobs if item.settlement_id != sid
+    )
+    giver.wall_jobs = tuple(item for item in giver.wall_jobs if item.settlement_id != sid)
+    giver.craft_jobs = tuple(item for item in giver.craft_jobs if item.workshop != tile)
+    # The gate at the settlement passes over; posts that emptied their chests here lapse,
+    # and what their chests held goes into the settlement's store.
+    posts: list[TollPost] = []
+    for post in giver.toll_posts:
+        if post.tile == tile:
+            taker.toll_posts = tuple(
+                sorted(
+                    (*taker.toll_posts, post.model_copy(update={"civilization_id": taker_id})),
+                    key=lambda item: item.tile,
+                )
+            )
+        elif post.deposit_route[-1] == tile:
+            if post.chest:
+                put(taker, tile, post.chest)
+        else:
+            posts.append(post)
+    giver.toll_posts = tuple(posts)
+    _change_allegiance(state, residents, giver_id, taker_id, "cession")
+    events.append(
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "settlement_ceded",
+            str(giver_id),
+            str(sid),
+            to=str(taker_id),
+            people=len(residents),
+        )
+    )
+    for capability in _adopt_migrant_capabilities(state, taker_id, residents):
+        events.append(
+            _event(
+                state,
+                EventPhase.WORK,
+                "capability_learned",
+                str(taker_id),
+                capability=capability.value,
+                source="cession",
+            )
+        )
+    return events
 
 
 def _adopt_migrant_capabilities(
@@ -2210,6 +2441,7 @@ def _make_peace(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
             and person.captive_of != civilization_id
         )
         events.extend(_free_captives(state, freed, "peace"))
+    events.extend(_cede(state, treaty))
     events.append(
         _event(
             state,
@@ -4197,6 +4429,7 @@ def advance_day(
     events.extend(_resolve_war(candidate, rng))
     fed_on_the_road = fed_on_the_road | _march_captives(candidate)
     events.extend(_check_tribute(candidate))
+    _settle_newcomers(candidate)
     if candidate.day % candidate.config.council_interval_days == 0:
         events.extend(_escapes(candidate, rng))
     events.extend(_advance_drills(candidate))

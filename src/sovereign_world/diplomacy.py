@@ -70,6 +70,8 @@ class PeaceTerms(BaseModel):
     """Goods owed at each payment."""
     tribute_payments: int = Field(default=0, ge=0, le=24)
     """One payment, or one every thirty days for this many months."""
+    ceded_settlement: EntityId | None = None
+    """A settlement one side hands to the other, with its store and its people."""
 
     @model_validator(mode="after")
     def whole_tribute(self) -> PeaceTerms:
