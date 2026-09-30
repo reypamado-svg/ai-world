@@ -150,6 +150,8 @@ class DirectOrderKind(StrEnum):
     STORM_SETTLEMENT = "storm_settlement"
     BURN_STOREHOUSE = "burn_storehouse"
     RELEASE_PRISONERS = "release_prisoners"
+    RELEASE_PEOPLE = "release_people"
+    ANSWER_PETITION = "answer_petition"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -171,6 +173,7 @@ JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.BUILD_ROAD: JourneyKind.ROADWORK,
     DirectOrderKind.SEND_WAR_PARTY: JourneyKind.CAMPAIGN,
     DirectOrderKind.HAUL_GOODS: JourneyKind.HAUL,
+    DirectOrderKind.RELEASE_PEOPLE: JourneyKind.PETITION,
 }
 CAMP_ORDERS = frozenset(
     {
@@ -254,6 +257,8 @@ class DirectOrder(BaseModel):
     wreck_roads: bool = False
     captive_ids: tuple[EntityId, ...] = ()
     """Prisoners this civilization holds at its settlements, to be let go."""
+    admit: bool = False
+    """The answer to a petition: take the petitioners in, or send them home."""
     """A war party stops on each enemy road tile it passes and pulls it down a grade."""
     drill_days: int = Field(default=30, ge=1, le=180)
     craft_item: Resource | None = None
@@ -342,6 +347,8 @@ class CouncilReport(BaseModel):
     """Sieges this civilization is laying or suffering."""
     captives: tuple[EntityId, ...] = ()
     """Foreign prisoners this civilization holds, at home or marching with its war parties."""
+    petitions: tuple[Journey, ...] = ()
+    """People of other civilizations waiting at this one's gates to be taken in."""
     held_captive: tuple[EntityId, ...] = ()
     """This civilization's own people held prisoner by others."""
     occupations: tuple[Occupation, ...] = ()
@@ -391,6 +398,11 @@ def build_council_report(
                 for person_id, person in civilization.population.people.items()
                 if person_id not in emigrants and person.captive_of is None
             )
+        ),
+        petitions=tuple(
+            journey
+            for journey in state.journeys
+            if journey.waiting and journey.recipient_civilization_id == civilization_id
         ),
         captives=tuple(
             sorted(
@@ -909,6 +921,53 @@ def _internal_journey_error(
     return None
 
 
+def _petition_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved_cargo: Reserved,
+) -> CommandError | None:
+    """Released people walk from one of their settlements to a known foreign settlement."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    target = command.recipient_civilization_id
+    known = {
+        contact.settlement for contact in civilization.contacts if contact.civilization_id == target
+    }
+    route = command.route
+    if target is None or target == civilization_id or not known:
+        return error("unknown_contact", "people are released to a civilization this one knows")
+    if (
+        len(route) < 2
+        or route[0] not in {settlement.tile for settlement in civilization.settlements}
+        or route[-1] not in known
+        or any(tile not in civilization.known_tiles for tile in route)
+        or any(first.distance(second) != 1 for first, second in pairwise(route))
+        or not passable(state.world_map, route[1:])
+    ):
+        return error(
+            "invalid_route", "the released walk from a settlement of theirs to one of the other's"
+        )
+    if command.cargo:
+        return error("invalid_cargo", "the released carry only their provisions")
+    people = civilization.population.people
+    if any(people[person_id].location != route[0] for person_id in command.traveller_ids):
+        return error("traveller_not_home", "the released set out together from their settlement")
+    expectant = {birth.parent_ids[0] for birth in civilization.population.scheduled_births}
+    if expectant & set(command.traveller_ids):
+        return error("expectant_traveller", "a mother with a birth due cannot leave on a journey")
+    provisions, taken = journey_supplies(command, state, civilization_id)
+    if provisions > CARGO_UNITS_PER_CARRIER * len(command.traveller_ids):
+        return error("cargo_over_capacity", "each traveller can bear 50 units of provisions")
+    for resource, quantity in taken.items():
+        if _short(civilization, route[0], reserved_cargo, resource, quantity):
+            return error("insufficient_provisions", "not enough food for the journey")
+    return None
+
+
 def _journey_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -926,6 +985,8 @@ def _journey_error(
         return _internal_journey_error(command, civilization_id, state, reserved_cargo)
     if kind is JourneyKind.CAMPAIGN:
         return _campaign_error(command, civilization_id, state, reserved_cargo)
+    if kind is JourneyKind.PETITION:
+        return _petition_error(command, civilization_id, state, reserved_cargo)
     treaty = next(
         (item for item in state.active_treaties if item.treaty_id == command.treaty_id),
         None,
@@ -1403,6 +1464,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     upgrading: set[EntityId] = set()
     walling: set[HexCoord] = set()
     ordered_camps: set[EntityId] = set()
+    answered: set[EntityId] = set()
     for command in envelope.commands:
         if command.command_id in seen:
             errors.append(
@@ -1733,6 +1795,25 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="invalid_release",
                         message="only prisoners held at this civilization's settlements are let go",
                     )
+            if command.kind is DirectOrderKind.ANSWER_PETITION and command_error is None:
+                waiting = next(
+                    (
+                        journey
+                        for journey in state.journeys
+                        if journey.journey_id == command.journey_id
+                        and journey.waiting
+                        and journey.recipient_civilization_id == envelope.civilization_id
+                    ),
+                    None,
+                )
+                if waiting is None or waiting.journey_id in answered:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_petition",
+                        message="an answer names petitioners waiting at this civilization, once",
+                    )
+                else:
+                    answered.add(waiting.journey_id)
             if command.kind in CAMP_ORDERS and command_error is None:
                 command_error = _siege_order_error(
                     command, envelope.civilization_id, state, ordered_camps
