@@ -177,9 +177,7 @@ def _simulate(initial: WorldState, first: EntityId, second: EntityId, route, sto
 
 @pytest.mark.soak
 @pytest.mark.parametrize("seed", range(12))
-def test_seeded_wars_kill_only_in_war_conserve_goods_and_replay(
-    seed: int, tmp_path: Path
-) -> None:
+def test_seeded_wars_kill_only_in_war_conserve_goods_and_replay(seed: int, tmp_path: Path) -> None:
     initial, first, second, route = treaty_world(seed=seed, distance=2 + seed % 4)
     manifest = RunManifest.model_validate(
         {"run_id": initial.run_id, "config": initial.config, "engine_version": "0.1.0"}

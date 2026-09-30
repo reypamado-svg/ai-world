@@ -89,9 +89,7 @@ def _send_away(state: WorldState, civilization_id: EntityId, keep: int, tile: He
 
 def test_fighting_strength_follows_health_age_hunger_skill_and_arms() -> None:
     state, home, _, _ = _world()
-    person = next(iter(state.civilizations[home].population.people.values())).model_copy(
-        deep=True
-    )
+    person = next(iter(state.civilizations[home].population.people.values())).model_copy(deep=True)
     person.health_bp = 10_000
     person.age_days = 30 * 365
     assert fighting_strength(person) == 100
@@ -242,9 +240,7 @@ def test_a_raid_on_a_full_settlement_is_routed_and_news_comes_home_late() -> Non
     rival_report = state.civilizations[rival].war_reports[0]
     assert rival_report.won and rival_report.enemy_fighters_estimate == estimate(4)
     for casualty in battle.casualties:
-        person = state.civilizations[casualty.civilization_id].population.people[
-            casualty.person_id
-        ]
+        person = state.civilizations[casualty.civilization_id].population.people[casualty.person_id]
         assert not person.alive or person.health_bp < 10_000
 
     state, _ = _run(state, 10)

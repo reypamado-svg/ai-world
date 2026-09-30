@@ -121,7 +121,6 @@ def test_dead_people_remain_historical_records() -> None:
     assert not second.people[person.person_id].alive
 
 
-
 def test_birth_ids_never_collide_with_other_civilizations() -> None:
     from sovereign_world.config import RunManifest, WorldConfig
     from sovereign_world.state import build_initial_state

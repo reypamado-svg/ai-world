@@ -209,4 +209,3 @@ def test_report_shows_only_received_messages() -> None:
     report = build_council_report(state, recipient)
     assert report.received_messages == (message,)
     assert build_council_report(state, sender).received_messages == ()
-

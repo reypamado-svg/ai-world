@@ -19,4 +19,3 @@ class StableRng:
         material = f"{self.root_seed}:{name}".encode()
         seed = int.from_bytes(hashlib.sha256(material).digest()[:16], "big")
         return np.random.Generator(np.random.PCG64(seed))
-

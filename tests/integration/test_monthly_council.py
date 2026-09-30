@@ -80,26 +80,21 @@ def test_invalid_command_does_not_block_valid_decree() -> None:
 def test_baseline_sovereign_builds_starter_structures() -> None:
     config = WorldConfig(seed=21, width=24, height=24)
     state = build_initial_state(RunManifest.new(config=config, engine_version="0.1.0"))
-    sovereigns = {
-        civilization_id: BaselineSovereign() for civilization_id in state.civilizations
-    }
+    sovereigns = {civilization_id: BaselineSovereign() for civilization_id in state.civilizations}
 
     result = advance_day(state, StableRng(config.seed), sovereigns=sovereigns)
 
     for civilization in result.state.civilizations.values():
         assert len(civilization.projects) == 2
         assert all(
-            project.status is ProjectStatus.COMPLETE
-            for project in civilization.projects.values()
+            project.status is ProjectStatus.COMPLETE for project in civilization.projects.values()
         )
 
 
 def test_food_reserve_decree_prevents_baseline_starvation() -> None:
     config = WorldConfig(seed=21, width=24, height=24)
     state = build_initial_state(RunManifest.new(config=config, engine_version="0.1.0"))
-    sovereigns = {
-        civilization_id: BaselineSovereign() for civilization_id in state.civilizations
-    }
+    sovereigns = {civilization_id: BaselineSovereign() for civilization_id in state.civilizations}
     rng = StableRng(config.seed)
 
     for _ in range(1_000):

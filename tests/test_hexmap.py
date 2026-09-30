@@ -50,4 +50,3 @@ def test_world_map_indexes_tiles_and_filters_edge_neighbors() -> None:
 def test_world_map_rejects_wrong_tile_count() -> None:
     with pytest.raises(ValueError, match="tile count"):
         WorldMap(width=2, height=2, tiles=())
-

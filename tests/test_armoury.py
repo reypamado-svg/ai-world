@@ -83,9 +83,7 @@ def _battle(attackers, defenders, *, catapults: int = 0):
 
 def test_each_kit_makes_a_unit_with_its_own_strengths() -> None:
     state, home, _, _ = _world()
-    person = next(iter(state.civilizations[home].population.people.values())).model_copy(
-        deep=True
-    )
+    person = next(iter(state.civilizations[home].population.people.values())).model_copy(deep=True)
     person.health_bp = 10_000
     person.age_days = 30 * 365
 

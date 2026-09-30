@@ -39,4 +39,3 @@ def test_id_allocator_can_resume_from_persisted_sequence() -> None:
 
     assert str(allocator.allocate()) == "person:0000000018"
     assert allocator.next_sequence == 19
-

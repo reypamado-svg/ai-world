@@ -54,4 +54,3 @@ def test_population_invariants_survive_daily_transitions(
         if not current.alive:
             assert current.death_day is not None
         previous_age = current.age_days
-

@@ -30,4 +30,3 @@ def test_corrupt_newest_checkpoint_falls_back_to_previous(tmp_path: Path) -> Non
     recovered = store.load_checkpoint()
 
     assert recovered.day == 1
-

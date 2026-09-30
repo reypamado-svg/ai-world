@@ -45,9 +45,7 @@ def run(
     manifest = store.manifest()
     state = replay_run(store)
     rng = StableRng(manifest.config.seed)
-    sovereigns = {
-        civilization_id: BaselineSovereign() for civilization_id in state.civilizations
-    }
+    sovereigns = {civilization_id: BaselineSovereign() for civilization_id in state.civilizations}
     for _ in range(days):
         transition = advance_day(state, rng, sovereigns=sovereigns)
         state = transition.state

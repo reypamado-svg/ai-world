@@ -49,6 +49,9 @@ class CivilizationState(BaseModel):
     start_center: HexCoord
     population: Population
     inventory: Inventory
+    """The capital's store."""
+    stores: dict[EntityId, Inventory] = Field(default_factory=dict)
+    """Every other settlement's store, by settlement id."""
     work_orders: tuple[WorkOrder, ...] = ()
     projects: dict[EntityId, ConstructionProject] = Field(default_factory=dict)
     known_tiles: tuple[HexCoord, ...] = ()
@@ -165,9 +168,7 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
             observations=observations,
             settlements=(
                 Settlement(
-                    settlement_id=EntityId(
-                        f"settlement:{civilization_id.rsplit(':', 1)[-1]}-0001"
-                    ),
+                    settlement_id=EntityId(f"settlement:{civilization_id.rsplit(':', 1)[-1]}-0001"),
                     civilization_id=civilization_id,
                     tile=start.center,
                     founded_day=0,
@@ -270,6 +271,9 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("settlements must be unique")
         if any(item.civilization_id != civilization_id for item in settlements):
             raise ValueError("a settlement must belong to its civilization")
+        others = {item.settlement_id for item in settlements if not item.capital}
+        if not set(civilization.stores) <= others:
+            raise ValueError("stores belong to the civilization's non-capital settlements")
         capitals = [item for item in settlements if item.capital]
         if len(capitals) != 1 or capitals[0].tile != civilization.start_center:
             raise ValueError("a civilization has exactly one capital, at its start")

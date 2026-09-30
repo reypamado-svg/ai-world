@@ -96,8 +96,7 @@ def execute_work_day(
             continue
         if order.kind is WorkKind.CRAFT and order.recipe is not None:
             tools_available = all(
-                current_inventory.quantities.get(resource, 0)
-                - reserved_tools.get(resource, 0)
+                current_inventory.quantities.get(resource, 0) - reserved_tools.get(resource, 0)
                 >= quantity
                 for resource, quantity in order.recipe.tools.items()
             )
@@ -135,4 +134,3 @@ def execute_work_day(
         blocked_order_ids=tuple(blocked_orders),
         completed_project_ids=tuple(completed_projects),
     )
-

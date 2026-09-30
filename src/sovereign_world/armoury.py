@@ -8,6 +8,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from sovereign_world.capabilities import CapabilityId
+from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.resources import Resource
 
@@ -115,6 +116,8 @@ class CraftJob(BaseModel):
     item: Resource
     quantity: int = Field(ge=1, le=MAX_CRAFT_QUANTITY)
     worker_ids: tuple[EntityId, ...]
+    workshop: HexCoord
+    """The settlement whose store gave the materials and receives the items."""
     started_day: int = Field(ge=0)
     person_days_needed: int = Field(ge=1)
     person_days_done: int = Field(default=0, ge=0)
@@ -126,8 +129,7 @@ class CraftJob(BaseModel):
 
 def craft_materials(item: Resource, quantity: int) -> dict[Resource, int]:
     return {
-        resource: amount * quantity
-        for resource, amount in sorted(RECIPES[item].materials.items())
+        resource: amount * quantity for resource, amount in sorted(RECIPES[item].materials.items())
     }
 
 

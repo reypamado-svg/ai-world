@@ -56,6 +56,8 @@ class JourneyKind(StrEnum):
     """Couriers carrying a toll post's chest to a storehouse, then back to their post."""
     CAMPAIGN = "campaign"
     """A war party: fighters marching on a foreign target, then home."""
+    HAUL = "haul"
+    """Carriers taking goods from one of their settlements' stores to another, then home."""
 
 
 INTERNAL_KINDS = frozenset(
@@ -65,9 +67,14 @@ INTERNAL_KINDS = frozenset(
         JourneyKind.RELOCATION,
         JourneyKind.ROADWORK,
         JourneyKind.DEPOSIT,
+        JourneyKind.HAUL,
     }
 )
-ROUND_TRIP_KINDS = frozenset({JourneyKind.SHIPMENT, JourneyKind.DEPOSIT, JourneyKind.CAMPAIGN})
+ROUND_TRIP_KINDS = frozenset(
+    {JourneyKind.SHIPMENT, JourneyKind.DEPOSIT, JourneyKind.CAMPAIGN, JourneyKind.HAUL}
+)
+CARRYING_KINDS = frozenset({JourneyKind.DEPOSIT, JourneyKind.HAUL})
+"""Internal journeys that carry goods to one of their own stores."""
 TREATY_KINDS = frozenset({JourneyKind.SHIPMENT, JourneyKind.MIGRATION})
 """Journeys that may only travel under a matching treaty."""
 """Parties that deliver goods, then walk back to where they set out."""
@@ -162,12 +169,10 @@ class Journey(BaseModel):
             raise ValueError("only a war party carries plunder or fights battles")
         if campaign and (set(self.cargo) - WAR_GEAR or self.carrying_cargo):
             raise ValueError("a war party carries only its kits and engines")
-        if internal and self.kind is not JourneyKind.DEPOSIT and (
-            self.cargo or self.carrying_cargo
-        ):
+        if internal and self.kind not in CARRYING_KINDS and (self.cargo or self.carrying_cargo):
             raise ValueError("internal journeys carry no trade cargo")
-        if self.kind is JourneyKind.DEPOSIT and not self.cargo:
-            raise ValueError("a deposit carries a chest of takings")
+        if self.kind in CARRYING_KINDS and not self.cargo:
+            raise ValueError("a deposit or a haul carries goods")
         roadwork = self.kind is JourneyKind.ROADWORK
         if roadwork != (self.road_grade is not None):
             raise ValueError("only a road crew, and every road crew, has a target grade")
@@ -177,9 +182,7 @@ class Journey(BaseModel):
             raise ValueError("material quantities must be positive")
         if self.traveller_ids != tuple(sorted(set(self.traveller_ids))):
             raise ValueError("journey travellers must be unique and sorted")
-        if not self.traveller_ids or (
-            not campaign and len(self.traveller_ids) > MAX_TRAVELLERS
-        ):
+        if not self.traveller_ids or (not campaign and len(self.traveller_ids) > MAX_TRAVELLERS):
             raise ValueError("journey requires between one and sixteen travellers")
         if len(self.route) < 2:
             raise ValueError("a journey route requires an origin and a destination")
@@ -280,6 +283,7 @@ class NoticeKind(StrEnum):
     TOLL_TURNED_BACK = "toll_turned_back"
     TOLL_DEPOSITED = "toll_deposited"
     TOLL_DEPOSIT_SKIPPED = "toll_deposit_skipped"
+    GOODS_HAULED = "goods_hauled"
 
 
 class LogisticsNotice(BaseModel):
@@ -584,7 +588,7 @@ def advance_journeys_day(
                 arrived.append(moved)
                 updated.append(moved)
                 continue
-            if journey.kind is JourneyKind.DEPOSIT:
+            if journey.kind in CARRYING_KINDS:
                 moved = moved.model_copy(
                     update={
                         "arrived_day": day,
@@ -790,11 +794,7 @@ def _walk(
         index = ahead
         for traveller in living:
             traveller.location = journey.route[index]
-        if (
-            halts is not None
-            and index != end
-            and halts(journey, journey.route[index])
-        ):
+        if halts is not None and index != end and halts(journey, journey.route[index]):
             # A war party stops where enemies stand; the engine then fights there.
             return journey.model_copy(
                 update={"route_index": index, "travel_progress": min(progress, DAY - 1)}
@@ -859,9 +859,7 @@ def _pass_toll(
     if food + len(living) * _days_left(journey.route, index, journey.kind, world_map, grades) <= (
         journey.provisions
     ):
-        encounters.append(
-            _encounter(journey, gate, ahead, {Resource.FOOD: food} if food else {})
-        )
+        encounters.append(_encounter(journey, gate, ahead, {Resource.FOOD: food} if food else {}))
         return journey.model_copy(
             update={
                 "provisions": journey.provisions - food,

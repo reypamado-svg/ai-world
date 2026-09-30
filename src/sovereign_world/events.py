@@ -68,4 +68,3 @@ class EventBatch(BaseModel):
 
     def canonical_json(self) -> str:
         return "\n".join(event.canonical_json() for event in self.events)
-
