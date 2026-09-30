@@ -46,6 +46,7 @@ from sovereign_world.stores import (
 )
 from sovereign_world.territory import Claim, Garrison, Settlement, Territory
 from sovereign_world.tolls import TollPost, TollView
+from sovereign_world.walls import WallJob, Walls
 from sovereign_world.war import Battle, BattleReport, Drill, War
 from sovereign_world.work import ConstructionProject, WorkOrder
 from sovereign_world.worldgen import generate_world
@@ -61,6 +62,9 @@ class CivilizationState(BaseModel):
     """Every other settlement's store, by settlement id."""
     storehouses: tuple[Storehouse, ...] = ()
     storehouse_jobs: tuple[StorehouseJob, ...] = ()
+    walls: tuple[Walls, ...] = ()
+    """Each settlement's walls, by settlement id."""
+    wall_jobs: tuple[WallJob, ...] = ()
     work_orders: tuple[WorkOrder, ...] = ()
     projects: dict[EntityId, ConstructionProject] = Field(default_factory=dict)
     known_tiles: tuple[HexCoord, ...] = ()
@@ -302,6 +306,12 @@ def validate_world(state: WorldState) -> None:
         settlement_ids = {item.settlement_id for item in settlements}
         if any(item.settlement_id not in settlement_ids for item in houses):
             raise ValueError("a storehouse stands in one of its civilization's settlements")
+        walled = [item.settlement_id for item in civilization.walls]
+        if walled != sorted(set(walled)) or not set(walled) <= settlement_ids:
+            raise ValueError("each settlement has at most one set of walls, sorted")
+        walling = [job.settlement_id for job in civilization.wall_jobs]
+        if len(walling) != len(set(walling)):
+            raise ValueError("one wall job at a time works on a settlement's walls")
         building = [job.storehouse_id for job in civilization.storehouse_jobs]
         if len(building) != len(set(building)):
             raise ValueError("one job at a time works on a storehouse")

@@ -81,6 +81,17 @@ from sovereign_world.tolls import (
     TollView,
 )
 from sovereign_world.travel import passable
+from sovereign_world.walls import (
+    WALL_GRADES,
+    WallGrade,
+    WallJob,
+    Walls,
+    tower_materials,
+    tower_spec,
+)
+from sovereign_world.walls import rank as wall_rank
+from sovereign_world.walls import step_materials as wall_step_materials
+from sovereign_world.walls import steps as wall_steps
 from sovereign_world.war import (
     BattleReport,
     Drill,
@@ -122,6 +133,8 @@ class DirectOrderKind(StrEnum):
     RESEARCH = "research"
     HAUL_GOODS = "haul_goods"
     BUILD_STOREHOUSE = "build_storehouse"
+    BUILD_WALLS = "build_walls"
+    BUILD_TOWERS = "build_towers"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -216,6 +229,10 @@ class DirectOrder(BaseModel):
     """The storehouse to upgrade; none builds a new one."""
     storehouse_grade: StorehouseGrade | None = None
     """The grade the storehouse is raised to, one step at a time."""
+    wall_grade: WallGrade | None = None
+    """The grade a settlement's walls are raised to, one step at a time."""
+    tower_count: int = Field(default=0, ge=0, le=6)
+    """Towers to add to a settlement's walls."""
     craft_quantity: int = Field(default=1, ge=1, le=MAX_CRAFT_QUANTITY)
     research_topic: CapabilityId | None = None
     research_days: int = Field(default=30, ge=1, le=MAX_RESEARCH_DAYS)
@@ -270,6 +287,8 @@ class CouncilReport(BaseModel):
     """How much each settlement's store can hold; storehouses raise it."""
     storehouses: tuple[Storehouse, ...] = ()
     storehouse_jobs: tuple[StorehouseJob, ...] = ()
+    walls: tuple[Walls, ...] = ()
+    wall_jobs: tuple[WallJob, ...] = ()
     holdings: dict[Resource, int] = Field(default_factory=dict)
     """All the goods in all the civilization's stores."""
     project_ids: tuple[EntityId, ...]
@@ -344,6 +363,8 @@ def build_council_report(
         holdings=holdings(civilization),
         storehouses=civilization.storehouses,
         storehouse_jobs=civilization.storehouse_jobs,
+        walls=civilization.walls,
+        wall_jobs=civilization.wall_jobs,
         store_capacity={
             settlement_id: inventory.capacity
             for settlement_id, inventory in all_stores(civilization).items()
@@ -524,6 +545,7 @@ def _drilling_people(state: WorldState, civilization_id: EntityId) -> set[Entity
             for person_id in job.worker_ids
         }
         | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
+        | {person_id for job in civilization.wall_jobs for person_id in job.worker_ids}
         | {
             person_id
             for assignment in civilization.research
@@ -952,6 +974,84 @@ def _storehouse_error(
     return None
 
 
+def _walls_of(civilization: CivilizationState, tile: HexCoord) -> Walls | None:
+    site = settlement_at(civilization, tile)
+    if site is None:
+        return None
+    return next(
+        (item for item in civilization.walls if item.settlement_id == site.settlement_id), None
+    )
+
+
+def _wall_materials(civilization: CivilizationState, command: DirectOrder) -> dict[Resource, int]:
+    """What a validated wall or tower order takes from its settlement's store."""
+    tile = civilization.population.people[command.worker_ids[0]].location
+    walls = _walls_of(civilization, tile)
+    current = walls.grade if walls is not None else None
+    if command.kind is DirectOrderKind.BUILD_TOWERS:
+        assert current is not None
+        return tower_materials(current, command.tower_count)
+    assert command.wall_grade is not None
+    return wall_step_materials(current, command.wall_grade)
+
+
+def _walls_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved: Reserved,
+    walling: set[HexCoord],
+) -> CommandError | None:
+    """Validate raising a settlement's walls, or adding towers, where the builders stand."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    if not command.worker_ids or len(set(command.worker_ids)) != len(command.worker_ids):
+        return error("invalid_walls", "builders are named once each")
+    people = civilization.population.people
+    if any(person_id not in people for person_id in command.worker_ids):
+        return error("invalid_walls", "builders belong to this civilization")
+    places = {people[person_id].location for person_id in command.worker_ids}
+    site = settlement_at(civilization, next(iter(places))) if len(places) == 1 else None
+    if site is None:
+        return error("invalid_walls", "builders work together at one of their settlements")
+    busy = {job.settlement_id for job in civilization.wall_jobs}
+    if site.settlement_id in busy or site.tile in walling:
+        return error("invalid_walls", "that settlement's walls are already being worked on")
+    walls = _walls_of(civilization, site.tile)
+    current = walls.grade if walls is not None else None
+    skills = [people[person_id].skills for person_id in command.worker_ids]
+    if command.kind is DirectOrderKind.BUILD_TOWERS:
+        if current is None or command.tower_count < 1:
+            return error("invalid_walls", "towers are added, one or more, to standing walls")
+        assert walls is not None
+        if walls.towers + command.tower_count > WALL_GRADES[current].towers:
+            return error(
+                "invalid_walls", f"a {current} carries at most {WALL_GRADES[current].towers} towers"
+            )
+        needed: list[CapabilityId] = [tower_spec(current).capability]
+    else:
+        target = command.wall_grade
+        if target is None or command.tower_count:
+            return error("invalid_walls", "a wall order names the grade to raise the walls to")
+        if wall_rank(target) <= wall_rank(current):
+            return error("invalid_walls", "the walls are raised to a higher grade")
+        needed = [
+            capability
+            for grade in wall_steps(current, target)
+            if (capability := WALL_GRADES[grade].capability) is not None
+        ]
+    for capability in needed:
+        if not any(item.get(capability.value, 0) > 0 for item in skills):
+            return error("unqualified_worker", f"this work needs someone who knows {capability}")
+    for resource, quantity in _wall_materials(civilization, command).items():
+        if _short(civilization, site.tile, reserved, resource, quantity):
+            return error("insufficient_materials", f"not enough {resource} for the walls")
+    return None
+
+
 def _toll_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -1072,6 +1172,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     drilling = _drilling_people(state, envelope.civilization_id)
     reserved_cargo: Reserved = {}
     upgrading: set[EntityId] = set()
+    walling: set[HexCoord] = set()
     for command in envelope.commands:
         if command.command_id in seen:
             errors.append(
@@ -1295,6 +1396,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 DirectOrderKind.CRAFT_EQUIPMENT,
                 DirectOrderKind.RESEARCH,
                 DirectOrderKind.BUILD_STOREHOUSE,
+                DirectOrderKind.BUILD_WALLS,
+                DirectOrderKind.BUILD_TOWERS,
             }:
                 home_duty = command.worker_ids
             elif command.kind is DirectOrderKind.START_TEACHING and command_error is None:
@@ -1324,6 +1427,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     DirectOrderKind.CRAFT_EQUIPMENT,
                     DirectOrderKind.RESEARCH,
                     DirectOrderKind.BUILD_STOREHOUSE,
+                    DirectOrderKind.BUILD_WALLS,
+                    DirectOrderKind.BUILD_TOWERS,
                 }:
                     away |= committed_at_home | teaching_people
                 if any(person_id in away for person_id in home_duty):
@@ -1403,6 +1508,13 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             if command.kind is DirectOrderKind.CRAFT_EQUIPMENT and command_error is None:
                 command_error = _craft_error(
                     command, envelope.civilization_id, state, reserved_cargo
+                )
+            if (
+                command.kind in {DirectOrderKind.BUILD_WALLS, DirectOrderKind.BUILD_TOWERS}
+                and command_error is None
+            ):
+                command_error = _walls_error(
+                    command, envelope.civilization_id, state, reserved_cargo, walling
                 )
             if command.kind is DirectOrderKind.BUILD_STOREHOUSE and command_error is None:
                 command_error = _storehouse_error(
@@ -1583,5 +1695,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 )
                 if command.storehouse_id is not None:
                     upgrading.add(command.storehouse_id)
+            if command.kind in {DirectOrderKind.BUILD_WALLS, DirectOrderKind.BUILD_TOWERS}:
+                site_tile = civilization.population.people[command.worker_ids[0]].location
+                _reserve(
+                    civilization, site_tile, reserved_cargo, _wall_materials(civilization, command)
+                )
+                walling.add(site_tile)
         accepted.append(command)
     return CommandValidation(accepted=tuple(accepted), errors=tuple(errors))

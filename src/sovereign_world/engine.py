@@ -120,6 +120,15 @@ from sovereign_world.territory import (
     advance_territory,
 )
 from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
+from sovereign_world.walls import (
+    WALL_GRADES,
+    WallJob,
+    Walls,
+    manned_towers,
+    tower_materials,
+    wall_bonus_after_engines,
+)
+from sovereign_world.walls import step_materials as wall_step_materials
 from sovereign_world.war import (
     ARMS,
     BATTLE_CAP,
@@ -1660,12 +1669,21 @@ def _fight(
                 formations=formations,
             )
         )
+    # Each tower needs two home defenders to man it; they shoot from it and still fight.
+    walls = _walls_at(state, enemy, tile) if at_home else None
+    towers = manned_towers(walls.towers, len(home_side)) if walls is not None else 0
     defenders = [
         fighter(enemy_people[person_id], defender_kits.get(person_id), attacking=False)
         for person_id in [*home_side, *marching]
     ]
     terrain_bp = defence_bonus_bp(state.world_map.tile(tile).terrain, settlement=False)
-    walls_bp = settlement_bonus_after_engines(SETTLEMENT_DEFENCE_BP, working) if at_home else BASIS
+    walls_bp = (
+        settlement_bonus_after_engines(SETTLEMENT_DEFENCE_BP, working)
+        * wall_bonus_after_engines(walls.grade if walls is not None else None, working)
+        // BASIS
+        if at_home
+        else BASIS
+    )
     battle_id = EntityId(f"battle:{state.day:06d}:{party.journey_id}")
     outcome = resolve_battle(
         attackers,
@@ -1680,6 +1698,7 @@ def _fight(
         rng=rng,
         stream=f"day:{state.day}:war:{battle_id}",
         catapults=working.get(Resource.CATAPULT, 0),
+        towers=towers,
     )
     battle = Battle(
         battle_id=battle_id,
@@ -2127,6 +2146,156 @@ def _advance_storehouses(state: WorldState) -> list[DomainEvent]:
     return events
 
 
+def _walls_at(state: WorldState, civilization_id: EntityId, tile: HexCoord) -> Walls | None:
+    civilization = state.civilizations[civilization_id]
+    site = settlement_at(civilization, tile)
+    if site is None:
+        return None
+    return next(
+        (item for item in civilization.walls if item.settlement_id == site.settlement_id), None
+    )
+
+
+def _start_walls(state: WorldState, civilization_id: EntityId, command: DirectOrder) -> DomainEvent:
+    """Take every step's or tower's materials now; the builders then work day by day."""
+    civilization = state.civilizations[civilization_id]
+    tile = civilization.population.people[command.worker_ids[0]].location
+    site = settlement_at(civilization, tile)
+    assert site is not None
+    walls = _walls_at(state, civilization_id, tile)
+    current = walls.grade if walls is not None else None
+    job_id = EntityId(f"wall-job:{civilization_id}:{state.day}:{command.command_id}")
+    if command.kind is DirectOrderKind.BUILD_TOWERS:
+        assert current is not None
+        materials = tower_materials(current, command.tower_count)
+    else:
+        assert command.wall_grade is not None
+        materials = wall_step_materials(current, command.wall_grade)
+    if not has(civilization, tile, materials):
+        return _event(
+            state, EventPhase.PROJECT, "walls_unfunded", str(civilization_id), str(job_id)
+        )
+    take(civilization, tile, materials)
+    job = WallJob(
+        job_id=job_id,
+        settlement_id=site.settlement_id,
+        tile=tile,
+        worker_ids=tuple(sorted(command.worker_ids)),
+        start_grade=current,
+        target=command.wall_grade if command.kind is DirectOrderKind.BUILD_WALLS else None,
+        towers=command.tower_count if command.kind is DirectOrderKind.BUILD_TOWERS else 0,
+        started_day=state.day,
+    )
+    civilization.wall_jobs = (*civilization.wall_jobs, job)
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "wall_work_started",
+        str(civilization_id),
+        str(site.settlement_id),
+        target=job.target.value if job.target is not None else "towers",
+        towers=job.towers,
+    )
+
+
+def _set_walls(
+    state: WorldState, civilization_id: EntityId, settlement_id: EntityId, walls: Walls
+) -> None:
+    civilization = state.civilizations[civilization_id]
+    civilization.walls = tuple(
+        sorted(
+            (*(item for item in civilization.walls if item.settlement_id != settlement_id), walls),
+            key=lambda item: item.settlement_id,
+        )
+    )
+
+
+def _advance_walls(state: WorldState) -> list[DomainEvent]:
+    """Builders at the site put in a day each; each finished grade or tower stands at once."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        people = civilization.population.people
+        kept: list[WallJob] = []
+        for job in civilization.wall_jobs:
+            living = [person_id for person_id in job.worker_ids if people[person_id].alive]
+            present = sum(
+                people[person_id].location == job.tile and person_id not in away
+                for person_id in living
+            )
+            before_grade, before_towers = job.built(), job.towers_built()
+            job = job.model_copy(update={"person_days_done": job.person_days_done + present})
+            after_grade, after_towers = job.built(), job.towers_built()
+            walls = _walls_at(state, civilization_id, job.tile)
+            if after_grade is not None and after_grade != before_grade:
+                # A new grade stands at full strength and keeps the towers it has.
+                _set_walls(
+                    state,
+                    civilization_id,
+                    job.settlement_id,
+                    Walls(
+                        settlement_id=job.settlement_id,
+                        grade=after_grade,
+                        strength=WALL_GRADES[after_grade].strength,
+                        towers=walls.towers if walls is not None else 0,
+                        built_day=state.day,
+                    ),
+                )
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.PROJECT,
+                        "walls_built" if before_grade is None else "walls_raised",
+                        str(civilization_id),
+                        str(job.settlement_id),
+                        grade=after_grade.value,
+                    )
+                )
+            if after_towers > before_towers and walls is not None:
+                _set_walls(
+                    state,
+                    civilization_id,
+                    job.settlement_id,
+                    walls.model_copy(
+                        update={"towers": walls.towers + after_towers - before_towers}
+                    ),
+                )
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.PROJECT,
+                        "towers_built",
+                        str(civilization_id),
+                        str(job.settlement_id),
+                        towers=walls.towers + after_towers - before_towers,
+                    )
+                )
+            if job.done:
+                continue
+            if not living:
+                # With every builder dead, the materials not yet used go back into the store.
+                if job.target is not None:
+                    unused = wall_step_materials(after_grade, job.target)
+                else:
+                    assert job.start_grade is not None
+                    unused = tower_materials(job.start_grade, job.towers - after_towers)
+                put(civilization, job.tile, unused)
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.PROJECT,
+                        "wall_work_stopped",
+                        str(civilization_id),
+                        str(job.settlement_id),
+                    )
+                )
+                continue
+            kept.append(job)
+        civilization.wall_jobs = tuple(kept)
+    return events
+
+
 def _advance_crafting(state: WorldState) -> list[DomainEvent]:
     """Workers at their settlements put in a day each; finished items go into the store."""
     events: list[DomainEvent] = []
@@ -2549,6 +2718,11 @@ def _run_councils(
                 and command.storehouse_grade is not None
             ):
                 events.append(_start_storehouse(state, civilization_id, command))
+            elif isinstance(command, DirectOrder) and command.kind in {
+                DirectOrderKind.BUILD_WALLS,
+                DirectOrderKind.BUILD_TOWERS,
+            }:
+                events.append(_start_walls(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.RESEARCH
@@ -3081,6 +3255,7 @@ def advance_day(
     events.extend(_advance_drills(candidate))
     events.extend(_advance_crafting(candidate))
     events.extend(_advance_storehouses(candidate))
+    events.extend(_advance_walls(candidate))
     events.extend(_advance_research(candidate))
     events.extend(_advance_tolls(candidate))
 
@@ -3101,6 +3276,7 @@ def advance_day(
             {person_id for drill in civilization.drills for person_id in drill.person_ids}
             | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids}
             | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
+            | {person_id for job in civilization.wall_jobs for person_id in job.worker_ids}
             | {
                 person_id
                 for assignment in civilization.research
