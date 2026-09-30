@@ -86,6 +86,7 @@ from sovereign_world.walls import (
     WallGrade,
     WallJob,
     Walls,
+    repair_materials,
     tower_materials,
     tower_spec,
 )
@@ -95,6 +96,7 @@ from sovereign_world.walls import steps as wall_steps
 from sovereign_world.war import (
     BattleReport,
     Drill,
+    Siege,
     War,
     WarObjective,
     able_to_fight,
@@ -135,6 +137,9 @@ class DirectOrderKind(StrEnum):
     BUILD_STOREHOUSE = "build_storehouse"
     BUILD_WALLS = "build_walls"
     BUILD_TOWERS = "build_towers"
+    REPAIR_WALLS = "repair_walls"
+    LIFT_SIEGE = "lift_siege"
+    STORM_SETTLEMENT = "storm_settlement"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -157,6 +162,9 @@ JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.SEND_WAR_PARTY: JourneyKind.CAMPAIGN,
     DirectOrderKind.HAUL_GOODS: JourneyKind.HAUL,
 }
+WALL_ORDERS = frozenset(
+    {DirectOrderKind.BUILD_WALLS, DirectOrderKind.BUILD_TOWERS, DirectOrderKind.REPAIR_WALLS}
+)
 REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
     JourneyKind.SHIPMENT: TreatyKind.TRADE,
     JourneyKind.MIGRATION: TreatyKind.MIGRATION,
@@ -304,6 +312,8 @@ class CouncilReport(BaseModel):
     toll_posts: tuple[TollPost, ...] = ()
     known_tolls: tuple[TollView, ...] = ()
     wars: tuple[War, ...] = ()
+    sieges: tuple[Siege, ...] = ()
+    """Sieges this civilization is laying or suffering."""
     war_reports: tuple[BattleReport, ...] = ()
     drills: tuple[Drill, ...] = ()
     craft_jobs: tuple[CraftJob, ...] = ()
@@ -387,6 +397,11 @@ def build_council_report(
         known_roads=known_roads(state, civilization_id),
         toll_posts=civilization.toll_posts,
         known_tolls=known_tolls(state, civilization_id),
+        sieges=tuple(
+            siege
+            for siege in state.sieges
+            if civilization_id in {siege.besieger_id, siege.defender_id}
+        ),
         wars=tuple(
             war
             for war in state.wars
@@ -671,6 +686,16 @@ def _campaign_error(
         return error(
             "invalid_route", "a war party leaves one of its own settlements over known land"
         )
+    if command.war_objective is WarObjective.BESIEGE:
+        known = {
+            contact.settlement
+            for contact in civilization.contacts
+            if contact.civilization_id == target
+        }
+        if route[-1] in known or not any(route[-1].distance(tile) == 1 for tile in known):
+            return error(
+                "invalid_route", "a siege camp stands next to a settlement of the target, not in it"
+            )
     people = civilization.population.people
     if any(people[person_id].location != route[0] for person_id in command.traveller_ids):
         return error("traveller_not_home", "the war party must set out together")
@@ -991,6 +1016,9 @@ def _wall_materials(civilization: CivilizationState, command: DirectOrder) -> di
     if command.kind is DirectOrderKind.BUILD_TOWERS:
         assert current is not None
         return tower_materials(current, command.tower_count)
+    if command.kind is DirectOrderKind.REPAIR_WALLS:
+        assert current is not None
+        return repair_materials(current)
     assert command.wall_grade is not None
     return wall_step_materials(current, command.wall_grade)
 
@@ -1023,7 +1051,13 @@ def _walls_error(
     walls = _walls_of(civilization, site.tile)
     current = walls.grade if walls is not None else None
     skills = [people[person_id].skills for person_id in command.worker_ids]
-    if command.kind is DirectOrderKind.BUILD_TOWERS:
+    needed: list[CapabilityId]
+    if command.kind is DirectOrderKind.REPAIR_WALLS:
+        if walls is None or walls.strength >= WALL_GRADES[walls.grade].strength:
+            return error("invalid_walls", "only damaged walls are repaired")
+        grade_craft = WALL_GRADES[walls.grade].capability
+        needed = [grade_craft] if grade_craft is not None else []
+    elif command.kind is DirectOrderKind.BUILD_TOWERS:
         if current is None or command.tower_count < 1:
             return error("invalid_walls", "towers are added, one or more, to standing walls")
         assert walls is not None
@@ -1031,7 +1065,7 @@ def _walls_error(
             return error(
                 "invalid_walls", f"a {current} carries at most {WALL_GRADES[current].towers} towers"
             )
-        needed: list[CapabilityId] = [tower_spec(current).capability]
+        needed = [tower_spec(current).capability]
     else:
         target = command.wall_grade
         if target is None or command.tower_count:
@@ -1049,6 +1083,68 @@ def _walls_error(
     for resource, quantity in _wall_materials(civilization, command).items():
         if _short(civilization, site.tile, reserved, resource, quantity):
             return error("insufficient_materials", f"not enough {resource} for the walls")
+    return None
+
+
+def besieged(state: WorldState, civilization_id: EntityId) -> dict[HexCoord, set[HexCoord]]:
+    """This civilization's settlements under siege, with the camps around each."""
+    camps: dict[HexCoord, set[HexCoord]] = {}
+    for siege in state.sieges:
+        if siege.active and siege.defender_id == civilization_id:
+            camps.setdefault(siege.settlement_tile, set()).add(siege.camp)
+    return camps
+
+
+def _blockade_error(
+    command: DirectOrder, civilization_id: EntityId, state: WorldState
+) -> CommandError | None:
+    """Nothing leaves or reaches a besieged settlement, except a sally against its camp."""
+    camps = besieged(state, civilization_id)
+    route = command.route
+    if not camps or not route:
+        return None
+    sally = command.kind is DirectOrderKind.SEND_WAR_PARTY and route[-1] in camps.get(
+        route[0], set()
+    )
+    if (route[0] in camps and not sally) or route[-1] in camps:
+        return CommandError(
+            command_id=command.command_id,
+            code="blockaded",
+            message="a besieged settlement can send out only a sally against the camp",
+        )
+    return None
+
+
+def _siege_order_error(
+    command: DirectOrder, civilization_id: EntityId, state: WorldState, ordered: set[EntityId]
+) -> CommandError | None:
+    """Lifting or storming needs one of this civilization's own camps, ordered once."""
+    camp = next(
+        (
+            journey
+            for journey in state.journeys
+            if journey.journey_id == command.journey_id
+            and journey.sender_civilization_id == civilization_id
+            and journey.encamped
+        ),
+        None,
+    )
+    if camp is None or camp.journey_id in ordered:
+        return CommandError(
+            command_id=command.command_id,
+            code="invalid_siege_order",
+            message="the order names one of this civilization's standing siege camps, once",
+        )
+    if command.kind is DirectOrderKind.STORM_SETTLEMENT and command.war_objective not in {
+        None,
+        WarObjective.RAID,
+        WarObjective.ATTACK,
+    }:
+        return CommandError(
+            command_id=command.command_id,
+            code="invalid_siege_order",
+            message="a storm either raids the settlement or only beats its defenders",
+        )
     return None
 
 
@@ -1173,6 +1269,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     reserved_cargo: Reserved = {}
     upgrading: set[EntityId] = set()
     walling: set[HexCoord] = set()
+    ordered_camps: set[EntityId] = set()
     for command in envelope.commands:
         if command.command_id in seen:
             errors.append(
@@ -1398,6 +1495,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 DirectOrderKind.BUILD_STOREHOUSE,
                 DirectOrderKind.BUILD_WALLS,
                 DirectOrderKind.BUILD_TOWERS,
+                DirectOrderKind.REPAIR_WALLS,
             }:
                 home_duty = command.worker_ids
             elif command.kind is DirectOrderKind.START_TEACHING and command_error is None:
@@ -1429,6 +1527,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     DirectOrderKind.BUILD_STOREHOUSE,
                     DirectOrderKind.BUILD_WALLS,
                     DirectOrderKind.BUILD_TOWERS,
+                    DirectOrderKind.REPAIR_WALLS,
                 }:
                     away |= committed_at_home | teaching_people
                 if any(person_id in away for person_id in home_duty):
@@ -1451,6 +1550,18 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 command_error = _journey_error(
                     command, envelope.civilization_id, state, reserved_cargo
                 )
+            if command.kind in JOURNEY_ORDERS and command_error is None:
+                command_error = _blockade_error(command, envelope.civilization_id, state)
+            if (
+                command.kind in {DirectOrderKind.LIFT_SIEGE, DirectOrderKind.STORM_SETTLEMENT}
+                and command_error is None
+            ):
+                command_error = _siege_order_error(
+                    command, envelope.civilization_id, state, ordered_camps
+                )
+                if command_error is None:
+                    assert command.journey_id is not None
+                    ordered_camps.add(command.journey_id)
             if command.kind is DirectOrderKind.DRILL and command_error is None:
                 civilization = state.civilizations[envelope.civilization_id]
                 homes = {settlement.tile for settlement in civilization.settlements}
@@ -1509,10 +1620,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 command_error = _craft_error(
                     command, envelope.civilization_id, state, reserved_cargo
                 )
-            if (
-                command.kind in {DirectOrderKind.BUILD_WALLS, DirectOrderKind.BUILD_TOWERS}
-                and command_error is None
-            ):
+            if command.kind in WALL_ORDERS and command_error is None:
                 command_error = _walls_error(
                     command, envelope.civilization_id, state, reserved_cargo, walling
                 )
@@ -1695,7 +1803,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 )
                 if command.storehouse_id is not None:
                     upgrading.add(command.storehouse_id)
-            if command.kind in {DirectOrderKind.BUILD_WALLS, DirectOrderKind.BUILD_TOWERS}:
+            if command.kind in WALL_ORDERS:
                 site_tile = civilization.population.people[command.worker_ids[0]].location
                 _reserve(
                     civilization, site_tile, reserved_cargo, _wall_materials(civilization, command)

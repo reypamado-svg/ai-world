@@ -47,7 +47,7 @@ from sovereign_world.stores import (
 from sovereign_world.territory import Claim, Garrison, Settlement, Territory
 from sovereign_world.tolls import TollPost, TollView
 from sovereign_world.walls import WallJob, Walls
-from sovereign_world.war import Battle, BattleReport, Drill, War
+from sovereign_world.war import Battle, BattleReport, Drill, Siege, War
 from sovereign_world.work import ConstructionProject, WorkOrder
 from sovereign_world.worldgen import generate_world
 
@@ -111,6 +111,8 @@ class WorldState(BaseModel):
     wars: tuple[War, ...] = ()
     battles: tuple[Battle, ...] = ()
     """Every battle as it really happened; civilizations see only their own reports."""
+    sieges: tuple[Siege, ...] = ()
+    """Every siege, standing or ended; each side sees the ones it is part of."""
     joined_roads: tuple[EntityId, ...] = ()
     """Trade treaties whose partners' settlements a continuous road now links."""
 
@@ -457,6 +459,21 @@ def validate_world(state: WorldState) -> None:
         raise ValueError("two civilizations fight at most one war at a time")
     if state.battles != tuple(sorted(state.battles, key=lambda battle: battle.battle_id)):
         raise ValueError("battles must be sorted")
+    sieges = state.sieges
+    if sieges != tuple(sorted(sieges, key=lambda siege: siege.siege_id)):
+        raise ValueError("sieges must be sorted")
+    camps = {journey.journey_id: journey for journey in state.journeys}
+    standing = [siege.journey_id for siege in sieges if siege.active]
+    if len(standing) != len(set(standing)):
+        raise ValueError("a camp lays at most one siege")
+    for siege in sieges:
+        if {siege.besieger_id, siege.defender_id} - set(state.civilizations):
+            raise ValueError("a siege is laid between existing civilizations")
+        camp = camps.get(siege.journey_id)
+        if siege.active and (camp is None or not camp.encamped):
+            raise ValueError("a standing siege has its camp")
+    if any(journey.encamped and journey.journey_id not in standing for journey in state.journeys):
+        raise ValueError("every camp lays a standing siege")
     roads = state.roads
     if roads != tuple(sorted(roads, key=lambda road: road.tile)):
         raise ValueError("roads must be sorted by tile")

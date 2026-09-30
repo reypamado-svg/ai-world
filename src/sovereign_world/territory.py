@@ -255,6 +255,7 @@ def advance_territory(
     garrisons: Iterable[Garrison] = (),
     garrisoned: Mapping[EntityId, int] | None = None,
     roads: Roads | None = None,
+    besieged: frozenset[EntityId] = frozenset(),
 ) -> TerritoryDayResult:
     """Drift each civilization's hold toward its influence, then settle ownership.
 
@@ -292,6 +293,7 @@ def advance_territory(
         capital = capitals.get(civilization_id)
         if strength and (
             capital is None
+            or source_id in besieged
             or not supply_connected(world_map, tile, capital, civilization_id, owners)
         ):
             strength //= 2

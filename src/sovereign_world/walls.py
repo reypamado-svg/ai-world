@@ -148,13 +148,17 @@ class WallJob(BaseModel):
     """The grade to raise the walls to; none for a job that only adds towers."""
     towers: int = Field(default=0, ge=0)
     """Towers to add to walls of `start_grade`."""
+    repair: bool = False
+    """Restore walls of `start_grade` to full strength."""
     started_day: int = Field(ge=0)
     person_days_done: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def one_task(self) -> WallJob:
-        if (self.target is None) == (self.towers == 0):
-            raise ValueError("a wall job either raises the walls or adds towers")
+        if sum((self.target is not None, self.towers > 0, self.repair)) != 1:
+            raise ValueError("a wall job raises the walls, adds towers, or repairs them")
+        if self.repair and self.start_grade is None:
+            raise ValueError("only standing walls are repaired")
         if self.target is not None and rank(self.target) <= rank(self.start_grade):
             raise ValueError("a wall job raises the walls' grade")
         if self.towers and self.start_grade is None:
@@ -179,10 +183,19 @@ class WallJob(BaseModel):
             return 0
         return min(self.towers, self.person_days_done // tower_spec(self.start_grade).person_days)
 
+    def repaired(self) -> bool:
+        return (
+            self.repair
+            and self.start_grade is not None
+            and self.person_days_done >= repair_person_days(self.start_grade)
+        )
+
     @property
     def done(self) -> bool:
         if self.target is not None:
             return self.built() is self.target
+        if self.repair:
+            return self.repaired()
         return self.towers_built() == self.towers
 
 
@@ -202,3 +215,45 @@ def wall_bonus_after_engines(grade: WallGrade | None, engines: dict[Resource, in
 
 def manned_towers(towers: int, defenders: int) -> int:
     return min(towers, defenders // TOWER_CREW)
+
+
+WALL_HIT = 5
+"""Strength a catapult hit knocks off a settlement's walls."""
+
+
+def battered(walls: Walls, points: int) -> tuple[Walls | None, bool]:
+    """Walls after taking damage, and whether they fell a grade.
+
+    Walls whose strength reaches zero fall to the grade below at its full strength, and the
+    towers beyond its limit fall with them; earthwork that falls leaves no walls.
+    """
+    strength = walls.strength - points
+    if strength > 0:
+        return walls.model_copy(update={"strength": strength}), False
+    below = rank(walls.grade) - 1
+    if below == 0:
+        return None, True
+    grade = GRADES[below - 1]
+    spec = WALL_GRADES[grade]
+    return (
+        walls.model_copy(
+            update={
+                "grade": grade,
+                "strength": spec.strength,
+                "towers": min(walls.towers, spec.towers),
+            }
+        ),
+        True,
+    )
+
+
+def repair_materials(grade: WallGrade) -> dict[Resource, int]:
+    """A quarter of the grade's own materials, rounded up."""
+    return {
+        resource: -(-quantity // 4)
+        for resource, quantity in sorted(WALL_GRADES[grade].materials.items())
+    }
+
+
+def repair_person_days(grade: WallGrade) -> int:
+    return -(-WALL_GRADES[grade].person_days // 4)

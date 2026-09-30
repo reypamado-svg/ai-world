@@ -7,8 +7,11 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 
+import numpy as np
+
 from sovereign_world.armoury import (
     BASIS,
+    CATAPULT_HITS_BP,
     RECIPES,
     CraftJob,
     cargo_load,
@@ -30,6 +33,7 @@ from sovereign_world.capabilities import (
 from sovereign_world.commands import (
     JOURNEY_ORDERS,
     MESSAGE_ORDERS,
+    WALL_ORDERS,
     Decree,
     DirectOrder,
     DirectOrderKind,
@@ -120,11 +124,15 @@ from sovereign_world.territory import (
     advance_territory,
 )
 from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
+from sovereign_world.travel import travel_days
 from sovereign_world.walls import (
     WALL_GRADES,
+    WALL_HIT,
     WallJob,
     Walls,
+    battered,
     manned_towers,
+    repair_materials,
     tower_materials,
     wall_bonus_after_engines,
 )
@@ -136,10 +144,15 @@ from sovereign_world.war import (
     BATTLE_WON_POINTS,
     DRILL_CAP,
     DRILL_DAYS_PER_POINT,
+    MIN_BESIEGERS,
     SETTLEMENT_DEFENCE_BP,
+    WOUND_MAX,
+    WOUND_MIN,
     Battle,
     BattleReport,
     Drill,
+    Siege,
+    SiegeEnd,
     War,
     WarObjective,
     able_to_fight,
@@ -1751,7 +1764,11 @@ def _fight(
                 **(
                     {}
                     if held
-                    else {"phase": JourneyPhase.RETURNING, "outcome": JourneyOutcome.ROUTED}
+                    else {
+                        "phase": JourneyPhase.RETURNING,
+                        "outcome": JourneyOutcome.ROUTED,
+                        "encamped": False,
+                    }
                 ),
             }
         )
@@ -1764,6 +1781,7 @@ def _fight(
                 "phase": JourneyPhase.RETURNING,
                 "outcome": JourneyOutcome.ROUTED,
                 "cargo": personal_kits(party.cargo),
+                "encamped": False,
             }
         )
         if abandoned:
@@ -1939,13 +1957,27 @@ def _resolve_war(state: WorldState, rng: StableRng) -> list[DomainEvent]:
             continue
         tile = party.route[party.route_index]
         enemy = _enemy_at(state, party, tile)
-        if enemy is not None and _defenders(state, enemy, tile) != ([], []):
+        # A party fights at most one battle a day, whether it attacked or was attacked.
+        fought_today = any(
+            battle_id.startswith(f"battle:{state.day:06d}:") for battle_id in party.battles
+        )
+        if enemy is not None and not fought_today and _defenders(state, enemy, tile) != ([], []):
             party, fought = _fight(state, party, enemy, rng)
             events.extend(fought)
         if party.phase is JourneyPhase.OUTBOUND:
             events.extend(_ambush(state, party))
             party = next(item for item in state.journeys if item.journey_id == journey_id)
+        if party.encamped:
+            events.extend(_hold_camp(state, party, rng))
+            continue
         at_target = party.route_index == len(party.route) - 1
+        if (
+            party.phase is JourneyPhase.OUTBOUND
+            and at_target
+            and (party.objective is WarObjective.BESIEGE)
+        ):
+            events.extend(_encamp(state, party))
+            continue
         if party.phase is JourneyPhase.OUTBOUND and at_target:
             target = party.recipient_civilization_id
             if _war_between(state, party.sender_civilization_id, target) is None:
@@ -1961,7 +1993,237 @@ def _resolve_war(state: WorldState, rng: StableRng) -> list[DomainEvent]:
                 update={"phase": JourneyPhase.RETURNING, "outcome": JourneyOutcome.DELIVERED}
             )
             _replace_journey(state, party)
+    events.extend(_end_sieges(state))
     return events
+
+
+def _besieged_settlement(state: WorldState, party: Journey) -> Settlement | None:
+    """The target's settlement next to the end of a besieging party's route."""
+    camp = party.route[-1]
+    return next(
+        (
+            settlement
+            for settlement in state.civilizations[party.recipient_civilization_id].settlements
+            if settlement.tile.distance(camp) == 1
+        ),
+        None,
+    )
+
+
+def _encamp(state: WorldState, party: Journey) -> list[DomainEvent]:
+    """A besieging party reaches its camp: the siege and, if need be, the war begin."""
+    events: list[DomainEvent] = []
+    sender, target = party.sender_civilization_id, party.recipient_civilization_id
+    settlement = _besieged_settlement(state, party)
+    if settlement is None:
+        # The settlement it came for is gone; the party marches home.
+        _replace_journey(
+            state,
+            party.model_copy(
+                update={"phase": JourneyPhase.RETURNING, "outcome": JourneyOutcome.FAILED}
+            ),
+        )
+        return events
+    war = _war_between(state, sender, target)
+    if war is None:
+        war, started = _start_war(state, sender, target, declared=False)
+        events.extend(started)
+    events.extend(_learn_war(state, war, target))
+    _replace_journey(state, party.model_copy(update={"encamped": True}))
+    siege = Siege(
+        siege_id=EntityId(f"siege:{state.day:06d}:{party.journey_id}"),
+        journey_id=party.journey_id,
+        besieger_id=sender,
+        defender_id=target,
+        settlement_id=settlement.settlement_id,
+        settlement_tile=settlement.tile,
+        camp=party.route[-1],
+        started_day=state.day,
+    )
+    state.sieges = tuple(sorted((*state.sieges, siege), key=lambda item: item.siege_id))
+    events.append(
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "siege_began",
+            str(sender),
+            str(siege.siege_id),
+            defender=str(target),
+            settlement=str(settlement.settlement_id),
+        )
+    )
+    return events
+
+
+def _siege_of(state: WorldState, journey_id: EntityId) -> Siege | None:
+    return next(
+        (item for item in state.sieges if item.active and item.journey_id == journey_id), None
+    )
+
+
+def _break_camp(state: WorldState, party: Journey, end: SiegeEnd) -> list[DomainEvent]:
+    """The camp marches home; the siege ends for the reason given."""
+    _replace_journey(
+        state,
+        party.model_copy(
+            update={
+                "encamped": False,
+                "phase": JourneyPhase.RETURNING,
+                "outcome": JourneyOutcome.DELIVERED,
+            }
+        ),
+    )
+    return _close_siege(state, party.journey_id, end)
+
+
+def _close_siege(state: WorldState, journey_id: EntityId, end: SiegeEnd) -> list[DomainEvent]:
+    siege = _siege_of(state, journey_id)
+    if siege is None:
+        return []
+    ended = siege.model_copy(update={"ended_day": state.day, "end": end})
+    state.sieges = tuple(
+        ended if item.siege_id == siege.siege_id else item for item in state.sieges
+    )
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "siege_lifted",
+            str(siege.besieger_id),
+            str(siege.siege_id),
+            defender=str(siege.defender_id),
+            reason=end.value,
+        )
+    ]
+
+
+def _end_sieges(state: WorldState) -> list[DomainEvent]:
+    """A siege whose camp was routed or wiped out is over."""
+    events: list[DomainEvent] = []
+    journeys = {item.journey_id: item for item in state.journeys}
+    for siege in state.sieges:
+        if not siege.active:
+            continue
+        camp = journeys.get(siege.journey_id)
+        if camp is None or not (camp.active and camp.encamped):
+            events.extend(_close_siege(state, siege.journey_id, SiegeEnd.BROKEN))
+    return events
+
+
+def _hold_camp(state: WorldState, party: Journey, rng: StableRng) -> list[DomainEvent]:
+    """A day in camp: the catapults bombard, and the camp goes home if it cannot stay."""
+    siege = _siege_of(state, party.journey_id)
+    if siege is None:
+        return []
+    people = state.civilizations[party.sender_civilization_id].population.people
+    living = [
+        person_id
+        for person_id in party.traveller_ids
+        if people[person_id].alive and able_to_fight(people[person_id])
+    ]
+    if len(living) < MIN_BESIEGERS:
+        return _break_camp(state, party, SiegeEnd.TOO_FEW)
+    home = travel_days(state.world_map, tuple(reversed(party.route))[1:], grades_of(state.roads))
+    if party.provisions < len(living) * home:
+        return _break_camp(state, party, SiegeEnd.STARVED)
+    catapults = crewed_engines(len(living), engines_in(party.cargo)).get(Resource.CATAPULT, 0)
+    if not catapults:
+        return []
+    roll = rng.stream(f"day:{state.day}:siege:{siege.siege_id}")
+    hits = sum(int(roll.integers(0, BASIS)) < CATAPULT_HITS_BP for _ in range(catapults))
+    return _bombard(state, siege, hits, roll) if hits else []
+
+
+def _bombard(
+    state: WorldState, siege: Siege, hits: int, roll: np.random.Generator
+) -> list[DomainEvent]:
+    """Catapult hits batter the walls, or wound people in a settlement without them."""
+    events: list[DomainEvent] = []
+    walls = _walls_at(state, siege.defender_id, siege.settlement_tile)
+    if walls is not None:
+        after, fell = battered(walls, hits * WALL_HIT)
+        civilization = state.civilizations[siege.defender_id]
+        civilization.walls = tuple(
+            item
+            for item in (
+                after if item.settlement_id == siege.settlement_id else item
+                for item in civilization.walls
+            )
+            if item is not None
+        )
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "walls_fell" if fell else "walls_damaged",
+                str(siege.besieger_id),
+                str(siege.settlement_id),
+                grade=after.grade.value if after is not None else "none",
+                strength=after.strength if after is not None else 0,
+            )
+        )
+        return events
+    people = state.civilizations[siege.defender_id].population.people
+    inside = sorted(
+        person_id
+        for person_id, person in people.items()
+        if person.alive and person.location == siege.settlement_tile
+    )
+    for _ in range(hits):
+        if not inside:
+            break
+        victim = people[inside.pop(int(roll.integers(0, len(inside))))]
+        wound = int(roll.integers(WOUND_MIN, WOUND_MAX + 1))
+        if wound >= victim.health_bp:
+            victim.health_bp = 0
+            victim.alive = False
+            victim.death_day = state.day
+            events.append(
+                _event(
+                    state,
+                    EventPhase.DEATH,
+                    "person_died",
+                    str(siege.defender_id),
+                    str(victim.person_id),
+                    cause="bombardment",
+                )
+            )
+        else:
+            victim.health_bp -= wound
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "person_wounded",
+                    str(siege.defender_id),
+                    str(victim.person_id),
+                    damage=wound,
+                )
+            )
+    return events
+
+
+def _siege_order(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> list[DomainEvent]:
+    """Lift a siege and march home, or storm the settlement from the camp."""
+    party = next(item for item in state.journeys if item.journey_id == command.journey_id)
+    if command.kind is DirectOrderKind.LIFT_SIEGE:
+        return _break_camp(state, party, SiegeEnd.RECALLED)
+    siege = _siege_of(state, party.journey_id)
+    assert siege is not None
+    # The camp marches the last step into the settlement and fights there tomorrow.
+    _replace_journey(
+        state,
+        party.model_copy(
+            update={
+                "encamped": False,
+                "route": (*party.route, siege.settlement_tile),
+                "objective": command.war_objective or WarObjective.ATTACK,
+            }
+        ),
+    )
+    return _close_siege(state, party.journey_id, SiegeEnd.STORMED)
 
 
 def _war_party_home(state: WorldState, party: Journey) -> dict[Resource, int]:
@@ -2168,6 +2430,9 @@ def _start_walls(state: WorldState, civilization_id: EntityId, command: DirectOr
     if command.kind is DirectOrderKind.BUILD_TOWERS:
         assert current is not None
         materials = tower_materials(current, command.tower_count)
+    elif command.kind is DirectOrderKind.REPAIR_WALLS:
+        assert current is not None
+        materials = repair_materials(current)
     else:
         assert command.wall_grade is not None
         materials = wall_step_materials(current, command.wall_grade)
@@ -2184,6 +2449,7 @@ def _start_walls(state: WorldState, civilization_id: EntityId, command: DirectOr
         start_grade=current,
         target=command.wall_grade if command.kind is DirectOrderKind.BUILD_WALLS else None,
         towers=command.tower_count if command.kind is DirectOrderKind.BUILD_TOWERS else 0,
+        repair=command.kind is DirectOrderKind.REPAIR_WALLS,
         started_day=state.day,
     )
     civilization.wall_jobs = (*civilization.wall_jobs, job)
@@ -2193,7 +2459,7 @@ def _start_walls(state: WorldState, civilization_id: EntityId, command: DirectOr
         "wall_work_started",
         str(civilization_id),
         str(site.settlement_id),
-        target=job.target.value if job.target is not None else "towers",
+        target=job.target.value if job.target is not None else "repair" if job.repair else "towers",
         towers=job.towers,
     )
 
@@ -2271,12 +2537,36 @@ def _advance_walls(state: WorldState) -> list[DomainEvent]:
                         towers=walls.towers + after_towers - before_towers,
                     )
                 )
+            if job.repair and job.done:
+                standing = _walls_at(state, civilization_id, job.tile)
+                if standing is not None:
+                    _set_walls(
+                        state,
+                        civilization_id,
+                        job.settlement_id,
+                        standing.model_copy(
+                            update={"strength": WALL_GRADES[standing.grade].strength}
+                        ),
+                    )
+                    events.append(
+                        _event(
+                            state,
+                            EventPhase.PROJECT,
+                            "walls_repaired",
+                            str(civilization_id),
+                            str(job.settlement_id),
+                            grade=standing.grade.value,
+                        )
+                    )
             if job.done:
                 continue
             if not living:
                 # With every builder dead, the materials not yet used go back into the store.
                 if job.target is not None:
                     unused = wall_step_materials(after_grade, job.target)
+                elif job.repair:
+                    assert job.start_grade is not None
+                    unused = repair_materials(job.start_grade)
                 else:
                     assert job.start_grade is not None
                     unused = tower_materials(job.start_grade, job.towers - after_towers)
@@ -2585,6 +2875,7 @@ def _advance_territory(state: WorldState) -> list[DomainEvent]:
         garrisons,
         garrisoned,
         grades_of(state.roads),
+        besieged=frozenset(siege.settlement_id for siege in state.sieges if siege.active),
     )
     state.territory = result.territory
     owner_of_source = {
@@ -2718,11 +3009,13 @@ def _run_councils(
                 and command.storehouse_grade is not None
             ):
                 events.append(_start_storehouse(state, civilization_id, command))
-            elif isinstance(command, DirectOrder) and command.kind in {
-                DirectOrderKind.BUILD_WALLS,
-                DirectOrderKind.BUILD_TOWERS,
-            }:
+            elif isinstance(command, DirectOrder) and command.kind in WALL_ORDERS:
                 events.append(_start_walls(state, civilization_id, command))
+            elif isinstance(command, DirectOrder) and command.kind in {
+                DirectOrderKind.LIFT_SIEGE,
+                DirectOrderKind.STORM_SETTLEMENT,
+            }:
+                events.extend(_siege_order(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.RESEARCH
@@ -3302,13 +3595,19 @@ def advance_day(
             assert store_id is not None
             fields.setdefault(store_id, []).append(coord)
         fed_today = fed_on_the_road & set(people)
+        blockaded = {
+            siege.settlement_id
+            for siege in candidate.sieges
+            if siege.active and siege.defender_id == civilization_id
+        }
         for store_id in sorted(residents):
             local = residents[store_id]
             living_count = len(local)
             larder = store(civilization, store_id)
             current_food = larder.quantities.get(Resource.FOOD, 0)
             target_food = living_count * reserve_days
-            if labor_priority > 0 and current_food < target_food:
+            # Under siege the fields lie outside the walls, beyond reach.
+            if labor_priority > 0 and current_food < target_food and store_id not in blockaded:
                 capacity = larder.capacity - larder.total_units
                 farm_capacity = sum(
                     (candidate.world_map.tile(coord).soil // 200)
