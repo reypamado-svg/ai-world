@@ -57,6 +57,8 @@ class WarObjective(StrEnum):
     """Beat the defenders of the target tile, then march home."""
     BESIEGE = "besiege"
     """Camp beside the target settlement and cut it off until ordered home or broken."""
+    OCCUPY = "occupy"
+    """Beat the defenders of the target settlement, then stay and hold it."""
 
 
 class War(BaseModel):
@@ -125,6 +127,46 @@ class Siege(BaseModel):
             raise ValueError("a camp stands next to the settlement it besieges")
         if (self.ended_day is None) != (self.end is None):
             raise ValueError("an ended siege records why it ended")
+        return self
+
+    @property
+    def active(self) -> bool:
+        return self.ended_day is None
+
+
+RISING_RATIO = 3
+"""Residents rise when their able people outnumber the occupiers this many times over."""
+
+
+class OccupationEnd(StrEnum):
+    RECALLED = "recalled"
+    STARVED = "starved"
+    TOO_FEW = "too_few"
+    BEATEN = "beaten"
+    ROSE = "rose"
+
+
+class Occupation(BaseModel):
+    """A war party holding an enemy settlement. The owner keeps it; its people stay loyal."""
+
+    model_config = ConfigDict(frozen=True)
+
+    occupation_id: EntityId
+    journey_id: EntityId
+    occupier_id: EntityId
+    owner_id: EntityId
+    settlement_id: EntityId
+    tile: HexCoord
+    started_day: int = Field(ge=0)
+    ended_day: int | None = Field(default=None, ge=0)
+    end: OccupationEnd | None = None
+
+    @model_validator(mode="after")
+    def consistent(self) -> Occupation:
+        if self.occupier_id == self.owner_id:
+            raise ValueError("a civilization cannot occupy its own settlement")
+        if (self.ended_day is None) != (self.end is None):
+            raise ValueError("an ended occupation records why it ended")
         return self
 
     @property

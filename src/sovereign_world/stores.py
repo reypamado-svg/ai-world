@@ -63,6 +63,12 @@ def rank(grade: StorehouseGrade | None) -> int:
     return 0 if grade is None else GRADES.index(grade) + 1
 
 
+def grade_below(grade: StorehouseGrade) -> StorehouseGrade | None:
+    """The grade a burned storehouse falls to; a burned storage pit is gone."""
+    level = rank(grade)
+    return GRADES[level - 2] if level > 1 else None
+
+
 def steps(current: StorehouseGrade | None, target: StorehouseGrade) -> tuple[StorehouseGrade, ...]:
     """The grades built one after another to raise a storehouse from `current` to `target`."""
     return GRADES[rank(current) : rank(target)]
@@ -215,6 +221,36 @@ def enlarge(civilization: CivilizationState, tile: HexCoord, units: int) -> int:
     enlarged = inventory.model_copy(update={"capacity": inventory.capacity + units})
     set_store(civilization, settlement_id, enlarged)
     return enlarged.capacity
+
+
+def shrink(civilization: CivilizationState, tile: HexCoord, units: int) -> dict[Resource, int]:
+    """Lower the capacity of the store supplying a tile; return the goods lost with it.
+
+    What no longer fits is lost, food first, then the other goods in their fixed order.
+    """
+    settlement_id = store_id_at(civilization, tile)
+    inventory = store(civilization, settlement_id)
+    capacity = max(inventory.capacity - units, 0)
+    excess = max(inventory.total_units - capacity, 0)
+    quantities = dict(inventory.quantities)
+    lost: dict[Resource, int] = {}
+    for resource in (Resource.FOOD, *(item for item in Resource if item is not Resource.FOOD)):
+        if not excess:
+            break
+        gone = min(quantities.get(resource, 0), excess)
+        if gone:
+            quantities[resource] -= gone
+            lost[resource] = gone
+            excess -= gone
+    set_store(
+        civilization,
+        settlement_id,
+        Inventory(
+            capacity=capacity,
+            quantities={resource: count for resource, count in quantities.items() if count},
+        ),
+    )
+    return lost
 
 
 def has(civilization: CivilizationState, tile: HexCoord, goods: Mapping[Resource, int]) -> bool:

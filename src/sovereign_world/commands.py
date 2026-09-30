@@ -96,6 +96,7 @@ from sovereign_world.walls import steps as wall_steps
 from sovereign_world.war import (
     BattleReport,
     Drill,
+    Occupation,
     Siege,
     War,
     WarObjective,
@@ -140,6 +141,7 @@ class DirectOrderKind(StrEnum):
     REPAIR_WALLS = "repair_walls"
     LIFT_SIEGE = "lift_siege"
     STORM_SETTLEMENT = "storm_settlement"
+    BURN_STOREHOUSE = "burn_storehouse"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -162,6 +164,14 @@ JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.SEND_WAR_PARTY: JourneyKind.CAMPAIGN,
     DirectOrderKind.HAUL_GOODS: JourneyKind.HAUL,
 }
+CAMP_ORDERS = frozenset(
+    {
+        DirectOrderKind.LIFT_SIEGE,
+        DirectOrderKind.STORM_SETTLEMENT,
+        DirectOrderKind.BURN_STOREHOUSE,
+    }
+)
+"""Orders to a war party holding the end of its route: besiegers or occupiers."""
 WALL_ORDERS = frozenset(
     {DirectOrderKind.BUILD_WALLS, DirectOrderKind.BUILD_TOWERS, DirectOrderKind.REPAIR_WALLS}
 )
@@ -231,6 +241,8 @@ class DirectOrder(BaseModel):
         default=DEFAULT_DEPOSIT_DAYS, ge=MIN_DEPOSIT_DAYS, le=MAX_DEPOSIT_DAYS
     )
     war_objective: WarObjective | None = None
+    wreck_roads: bool = False
+    """A war party stops on each enemy road tile it passes and pulls it down a grade."""
     drill_days: int = Field(default=30, ge=1, le=180)
     craft_item: Resource | None = None
     storehouse_id: EntityId | None = None
@@ -314,6 +326,8 @@ class CouncilReport(BaseModel):
     wars: tuple[War, ...] = ()
     sieges: tuple[Siege, ...] = ()
     """Sieges this civilization is laying or suffering."""
+    occupations: tuple[Occupation, ...] = ()
+    """Settlements this civilization holds, or has lost to occupiers."""
     war_reports: tuple[BattleReport, ...] = ()
     drills: tuple[Drill, ...] = ()
     craft_jobs: tuple[CraftJob, ...] = ()
@@ -397,6 +411,11 @@ def build_council_report(
         known_roads=known_roads(state, civilization_id),
         toll_posts=civilization.toll_posts,
         known_tolls=known_tolls(state, civilization_id),
+        occupations=tuple(
+            occupation
+            for occupation in state.occupations
+            if civilization_id in {occupation.occupier_id, occupation.owner_id}
+        ),
         sieges=tuple(
             siege
             for siege in state.sieges
@@ -686,6 +705,10 @@ def _campaign_error(
         return error(
             "invalid_route", "a war party leaves one of its own settlements over known land"
         )
+    if command.war_objective is WarObjective.OCCUPY and route[-1] not in {
+        contact.settlement for contact in civilization.contacts if contact.civilization_id == target
+    }:
+        return error("invalid_route", "occupiers march on a settlement of the target they know")
     if command.war_objective is WarObjective.BESIEGE:
         known = {
             contact.settlement
@@ -1100,8 +1123,13 @@ def _blockade_error(
 ) -> CommandError | None:
     """Nothing leaves or reaches a besieged settlement, except a sally against its camp."""
     camps = besieged(state, civilization_id)
+    held = {
+        occupation.tile
+        for occupation in state.occupations
+        if occupation.active and occupation.owner_id == civilization_id
+    }
     route = command.route
-    if not camps or not route:
+    if not (camps or held) or not route:
         return None
     sally = command.kind is DirectOrderKind.SEND_WAR_PARTY and route[-1] in camps.get(
         route[0], set()
@@ -1111,6 +1139,12 @@ def _blockade_error(
             command_id=command.command_id,
             code="blockaded",
             message="a besieged settlement can send out only a sally against the camp",
+        )
+    if route[0] in held or route[-1] in held:
+        return CommandError(
+            command_id=command.command_id,
+            code="occupied",
+            message="an occupied settlement's people cannot be sent anywhere, nor sent to",
         )
     return None
 
@@ -1133,8 +1167,35 @@ def _siege_order_error(
         return CommandError(
             command_id=command.command_id,
             code="invalid_siege_order",
-            message="the order names one of this civilization's standing siege camps, once",
+            message="the order names one of this civilization's standing camps, once",
         )
+    if command.kind is DirectOrderKind.STORM_SETTLEMENT and camp.objective is not (
+        WarObjective.BESIEGE
+    ):
+        return CommandError(
+            command_id=command.command_id,
+            code="invalid_siege_order",
+            message="only a siege camp storms; occupiers already hold the settlement",
+        )
+    if command.kind is DirectOrderKind.BURN_STOREHOUSE:
+        occupation = next(
+            (
+                item
+                for item in state.occupations
+                if item.active and item.journey_id == camp.journey_id
+            ),
+            None,
+        )
+        if occupation is None or not any(
+            house.storehouse_id == command.storehouse_id
+            and house.settlement_id == occupation.settlement_id
+            for house in state.civilizations[occupation.owner_id].storehouses
+        ):
+            return CommandError(
+                command_id=command.command_id,
+                code="invalid_siege_order",
+                message="occupiers burn a storehouse in the settlement they hold",
+            )
     if command.kind is DirectOrderKind.STORM_SETTLEMENT and command.war_objective not in {
         None,
         WarObjective.RAID,
@@ -1552,10 +1613,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 )
             if command.kind in JOURNEY_ORDERS and command_error is None:
                 command_error = _blockade_error(command, envelope.civilization_id, state)
-            if (
-                command.kind in {DirectOrderKind.LIFT_SIEGE, DirectOrderKind.STORM_SETTLEMENT}
-                and command_error is None
-            ):
+            if command.kind in CAMP_ORDERS and command_error is None:
                 command_error = _siege_order_error(
                     command, envelope.civilization_id, state, ordered_camps
                 )

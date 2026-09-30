@@ -256,6 +256,7 @@ def advance_territory(
     garrisoned: Mapping[EntityId, int] | None = None,
     roads: Roads | None = None,
     besieged: frozenset[EntityId] = frozenset(),
+    occupied: Mapping[EntityId, EntityId] | None = None,
 ) -> TerritoryDayResult:
     """Drift each civilization's hold toward its influence, then settle ownership.
 
@@ -271,15 +272,29 @@ def advance_territory(
     sources: dict[EntityId, list[tuple[HexCoord, int]]] = {}
     cut_off: list[EntityId] = []
     garrisoned = garrisoned or {}
+    occupied = occupied or {}
+    # An occupied settlement stops anchoring its owner; its occupiers hold it as a garrison.
     projecting: list[tuple[EntityId, EntityId, HexCoord, int]] = [
         (
             settlement.settlement_id,
             settlement.civilization_id,
             settlement.tile,
-            settlement_strength(residents.get(settlement.settlement_id, 0)),
+            0
+            if settlement.settlement_id in occupied
+            else settlement_strength(residents.get(settlement.settlement_id, 0)),
         )
         for settlement in settlement_list
     ]
+    projecting.extend(
+        (
+            EntityId(f"occupation:{settlement.settlement_id}"),
+            occupied[settlement.settlement_id],
+            settlement.tile,
+            GARRISON_STRENGTH,
+        )
+        for settlement in settlement_list
+        if settlement.settlement_id in occupied
+    )
     projecting.extend(
         (
             garrison.garrison_id,
