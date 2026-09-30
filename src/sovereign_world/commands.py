@@ -56,7 +56,20 @@ from sovereign_world.roads import (
     materials_for,
 )
 from sovereign_world.state import CivilizationState, WorldState
-from sovereign_world.stores import all_stores, holdings, store_at, store_id_at
+from sovereign_world.stores import (
+    STOREHOUSE_GRADES,
+    Storehouse,
+    StorehouseGrade,
+    StorehouseJob,
+    all_stores,
+    holdings,
+    rank,
+    settlement_at,
+    step_materials,
+    steps,
+    store_at,
+    store_id_at,
+)
 from sovereign_world.territory import SETTLEMENT_SPACING, Garrison, Settlement, visible_tiles
 from sovereign_world.tolls import (
     DEFAULT_DEPOSIT_DAYS,
@@ -108,6 +121,7 @@ class DirectOrderKind(StrEnum):
     CRAFT_EQUIPMENT = "craft_equipment"
     RESEARCH = "research"
     HAUL_GOODS = "haul_goods"
+    BUILD_STOREHOUSE = "build_storehouse"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -198,6 +212,10 @@ class DirectOrder(BaseModel):
     war_objective: WarObjective | None = None
     drill_days: int = Field(default=30, ge=1, le=180)
     craft_item: Resource | None = None
+    storehouse_id: EntityId | None = None
+    """The storehouse to upgrade; none builds a new one."""
+    storehouse_grade: StorehouseGrade | None = None
+    """The grade the storehouse is raised to, one step at a time."""
     craft_quantity: int = Field(default=1, ge=1, le=MAX_CRAFT_QUANTITY)
     research_topic: CapabilityId | None = None
     research_days: int = Field(default=30, ge=1, le=MAX_RESEARCH_DAYS)
@@ -250,6 +268,8 @@ class CouncilReport(BaseModel):
     """Every settlement's store, the capital's included."""
     store_capacity: dict[EntityId, int] = Field(default_factory=dict)
     """How much each settlement's store can hold; storehouses raise it."""
+    storehouses: tuple[Storehouse, ...] = ()
+    storehouse_jobs: tuple[StorehouseJob, ...] = ()
     holdings: dict[Resource, int] = Field(default_factory=dict)
     """All the goods in all the civilization's stores."""
     project_ids: tuple[EntityId, ...]
@@ -322,6 +342,8 @@ def build_council_report(
             for settlement_id, inventory in all_stores(civilization).items()
         },
         holdings=holdings(civilization),
+        storehouses=civilization.storehouses,
+        storehouse_jobs=civilization.storehouse_jobs,
         store_capacity={
             settlement_id: inventory.capacity
             for settlement_id, inventory in all_stores(civilization).items()
@@ -501,6 +523,7 @@ def _drilling_people(state: WorldState, civilization_id: EntityId) -> set[Entity
             if not job.done
             for person_id in job.worker_ids
         }
+        | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
         | {
             person_id
             for assignment in civilization.research
@@ -865,6 +888,70 @@ def _craft_error(
     return None
 
 
+def _storehouse_grade(
+    civilization: CivilizationState, storehouse_id: EntityId | None
+) -> StorehouseGrade | None:
+    house = next(
+        (item for item in civilization.storehouses if item.storehouse_id == storehouse_id), None
+    )
+    return None if house is None else house.grade
+
+
+def _storehouse_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved: Reserved,
+    upgrading: set[EntityId],
+) -> CommandError | None:
+    """Validate building or upgrading a storehouse where its builders stand."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    target = command.storehouse_grade
+    if target is None or not command.worker_ids:
+        return error("invalid_storehouse", "a storehouse order names a grade and builders")
+    if len(set(command.worker_ids)) != len(command.worker_ids):
+        return error("invalid_storehouse", "each builder is named once")
+    people = civilization.population.people
+    places = {people[person_id].location for person_id in command.worker_ids}
+    site = settlement_at(civilization, next(iter(places))) if len(places) == 1 else None
+    if site is None:
+        return error("invalid_storehouse", "builders work together at one of their settlements")
+    current: StorehouseGrade | None = None
+    if command.storehouse_id is not None:
+        house = next(
+            (
+                item
+                for item in civilization.storehouses
+                if item.storehouse_id == command.storehouse_id
+            ),
+            None,
+        )
+        if house is None or house.settlement_id != site.settlement_id:
+            return error("invalid_storehouse", "builders upgrade a storehouse where they stand")
+        busy = {job.storehouse_id for job in civilization.storehouse_jobs}
+        if house.storehouse_id in busy | upgrading:
+            return error("invalid_storehouse", "that storehouse is already being worked on")
+        current = house.grade
+    if rank(target) <= rank(current):
+        return error("invalid_storehouse", "an upgrade raises the storehouse's grade")
+    for grade in steps(current, target):
+        needed = STOREHOUSE_GRADES[grade].capability
+        if needed is not None and not any(
+            people[person_id].skills.get(needed.value, 0) > 0 for person_id in command.worker_ids
+        ):
+            return error(
+                "unqualified_worker", f"building a {grade} needs someone who knows {needed}"
+            )
+    for resource, quantity in step_materials(current, target).items():
+        if _short(civilization, site.tile, reserved, resource, quantity):
+            return error("insufficient_materials", f"not enough {resource} for the storehouse")
+    return None
+
+
 def _toll_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -984,6 +1071,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     garrisoned = _garrisoned_people(state, envelope.civilization_id)
     drilling = _drilling_people(state, envelope.civilization_id)
     reserved_cargo: Reserved = {}
+    upgrading: set[EntityId] = set()
     for command in envelope.commands:
         if command.command_id in seen:
             errors.append(
@@ -1206,6 +1294,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 DirectOrderKind.DRILL,
                 DirectOrderKind.CRAFT_EQUIPMENT,
                 DirectOrderKind.RESEARCH,
+                DirectOrderKind.BUILD_STOREHOUSE,
             }:
                 home_duty = command.worker_ids
             elif command.kind is DirectOrderKind.START_TEACHING and command_error is None:
@@ -1234,6 +1323,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     DirectOrderKind.DRILL,
                     DirectOrderKind.CRAFT_EQUIPMENT,
                     DirectOrderKind.RESEARCH,
+                    DirectOrderKind.BUILD_STOREHOUSE,
                 }:
                     away |= committed_at_home | teaching_people
                 if any(person_id in away for person_id in home_duty):
@@ -1313,6 +1403,10 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             if command.kind is DirectOrderKind.CRAFT_EQUIPMENT and command_error is None:
                 command_error = _craft_error(
                     command, envelope.civilization_id, state, reserved_cargo
+                )
+            if command.kind is DirectOrderKind.BUILD_STOREHOUSE and command_error is None:
+                command_error = _storehouse_error(
+                    command, envelope.civilization_id, state, reserved_cargo, upgrading
                 )
             if (
                 command.kind is DirectOrderKind.DECLARE_WAR
@@ -1477,5 +1571,17 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             if command.kind in JOURNEY_ORDERS:
                 _, taken = journey_supplies(command, state, envelope.civilization_id)
                 _reserve(civilization, command.route[0], reserved_cargo, taken)
+            if command.kind is DirectOrderKind.BUILD_STOREHOUSE:
+                assert command.storehouse_grade is not None
+                site = civilization.population.people[command.worker_ids[0]].location
+                current = _storehouse_grade(civilization, command.storehouse_id)
+                _reserve(
+                    civilization,
+                    site,
+                    reserved_cargo,
+                    step_materials(current, command.storehouse_grade),
+                )
+                if command.storehouse_id is not None:
+                    upgrading.add(command.storehouse_id)
         accepted.append(command)
     return CommandValidation(accepted=tuple(accepted), errors=tuple(errors))

@@ -95,14 +95,17 @@ from sovereign_world.roads import Road, RoadView, grades_of
 from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.stores import (
-    STOREHOUSE_CAPACITY,
-    STOREHOUSE_MATERIALS,
-    STOREHOUSE_PERSON_DAYS,
+    STOREHOUSE_GRADES,
+    Storehouse,
+    StorehouseGrade,
+    StorehouseJob,
     enlarge,
     has,
     holdings,
     put,
     set_store,
+    settlement_at,
+    step_materials,
     store,
     store_at,
     store_id_at,
@@ -1990,6 +1993,140 @@ def _start_craft(state: WorldState, civilization_id: EntityId, command: DirectOr
     )
 
 
+def _raise_storehouse(
+    state: WorldState,
+    civilization_id: EntityId,
+    storehouse_id: EntityId,
+    settlement_id: EntityId,
+    old: StorehouseGrade | None,
+    new: StorehouseGrade,
+) -> DomainEvent:
+    """Record a storehouse's new grade and add the room it gained to its settlement's store."""
+    civilization = state.civilizations[civilization_id]
+    site = next(item for item in civilization.settlements if item.settlement_id == settlement_id)
+    gained = STOREHOUSE_GRADES[new].capacity - (
+        0 if old is None else STOREHOUSE_GRADES[old].capacity
+    )
+    capacity = enlarge(civilization, site.tile, gained)
+    built = Storehouse(
+        storehouse_id=storehouse_id,
+        settlement_id=settlement_id,
+        grade=new,
+        built_day=state.day,
+    )
+    civilization.storehouses = tuple(
+        sorted(
+            (
+                *(item for item in civilization.storehouses if item.storehouse_id != storehouse_id),
+                built,
+            ),
+            key=lambda item: item.storehouse_id,
+        )
+    )
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "storehouse_built" if old is None else "storehouse_upgraded",
+        str(civilization_id),
+        str(storehouse_id),
+        grade=new.value,
+        settlement=str(settlement_id),
+        capacity=capacity,
+    )
+
+
+def _start_storehouse(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> DomainEvent:
+    """Take every step's materials now; the builders then raise the grades one by one."""
+    assert command.storehouse_grade is not None
+    civilization = state.civilizations[civilization_id]
+    tile = civilization.population.people[command.worker_ids[0]].location
+    site = settlement_at(civilization, tile)
+    assert site is not None
+    current = next(
+        (
+            item.grade
+            for item in civilization.storehouses
+            if item.storehouse_id == command.storehouse_id
+        ),
+        None,
+    )
+    job_id = EntityId(f"storehouse-job:{civilization_id}:{state.day}:{command.command_id}")
+    materials = step_materials(current, command.storehouse_grade)
+    if not has(civilization, tile, materials):
+        return _event(
+            state, EventPhase.PROJECT, "storehouse_unfunded", str(civilization_id), str(job_id)
+        )
+    take(civilization, tile, materials)
+    storehouse_id = command.storehouse_id or EntityId(
+        f"storehouse:{site.settlement_id}:{state.day:06d}:{command.command_id}"
+    )
+    job = StorehouseJob(
+        job_id=job_id,
+        storehouse_id=storehouse_id,
+        settlement_id=site.settlement_id,
+        tile=tile,
+        worker_ids=tuple(sorted(command.worker_ids)),
+        start_grade=current,
+        target=command.storehouse_grade,
+        started_day=state.day,
+    )
+    civilization.storehouse_jobs = (*civilization.storehouse_jobs, job)
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "storehouse_work_started",
+        str(civilization_id),
+        str(storehouse_id),
+        target=job.target.value,
+    )
+
+
+def _advance_storehouses(state: WorldState) -> list[DomainEvent]:
+    """Builders at the site put in a day each; every finished grade adds its room at once."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        people = civilization.population.people
+        kept: list[StorehouseJob] = []
+        for job in civilization.storehouse_jobs:
+            living = [person_id for person_id in job.worker_ids if people[person_id].alive]
+            present = sum(
+                people[person_id].location == job.tile and person_id not in away
+                for person_id in living
+            )
+            before = job.built()
+            job = job.model_copy(update={"person_days_done": job.person_days_done + present})
+            after = job.built()
+            if after is not None and after != before:
+                events.append(
+                    _raise_storehouse(
+                        state, civilization_id, job.storehouse_id, job.settlement_id, before, after
+                    )
+                )
+            if after is job.target:
+                continue
+            if not living:
+                # With every builder dead, the unused materials go back into the store.
+                put(civilization, job.tile, step_materials(after, job.target))
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.PROJECT,
+                        "storehouse_work_stopped",
+                        str(civilization_id),
+                        str(job.storehouse_id),
+                        grade=after.value if after is not None else "none",
+                    )
+                )
+                continue
+            kept.append(job)
+        civilization.storehouse_jobs = tuple(kept)
+    return events
+
+
 def _advance_crafting(state: WorldState) -> list[DomainEvent]:
     """Workers at their settlements put in a day each; finished items go into the store."""
     events: list[DomainEvent] = []
@@ -2358,7 +2495,8 @@ def _run_councils(
                 civilization = state.civilizations[civilization_id]
                 if command.project_id not in civilization.projects:
                     is_storage = command.project_kind is ProjectKind.STORAGE
-                    materials = dict(STOREHOUSE_MATERIALS) if is_storage else {Resource.TIMBER: 40}
+                    granary = STOREHOUSE_GRADES[StorehouseGrade.GRANARY]
+                    materials = dict(granary.materials) if is_storage else {Resource.TIMBER: 40}
                     # A storehouse stands in the settlement of the people who build it.
                     site = (
                         supplying(
@@ -2377,8 +2515,8 @@ def _run_councils(
                             required_materials=materials,
                             delivered_materials=materials,
                             required_labor_minutes=480
-                            * (STOREHOUSE_PERSON_DAYS if is_storage else len(command.worker_ids)),
-                            adds_capacity=STOREHOUSE_CAPACITY if is_storage else 0,
+                            * (granary.person_days if is_storage else len(command.worker_ids)),
+                            adds_capacity=granary.capacity if is_storage else 0,
                         )
                         civilization.work_orders += (
                             WorkOrder(
@@ -2405,6 +2543,12 @@ def _run_councils(
                 and command.craft_item is not None
             ):
                 events.append(_start_craft(state, civilization_id, command))
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.BUILD_STOREHOUSE
+                and command.storehouse_grade is not None
+            ):
+                events.append(_start_storehouse(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.RESEARCH
@@ -2936,6 +3080,7 @@ def advance_day(
     events.extend(_resolve_war(candidate, rng))
     events.extend(_advance_drills(candidate))
     events.extend(_advance_crafting(candidate))
+    events.extend(_advance_storehouses(candidate))
     events.extend(_advance_research(candidate))
     events.extend(_advance_tolls(candidate))
 
@@ -2955,6 +3100,7 @@ def advance_day(
         drilling = (
             {person_id for drill in civilization.drills for person_id in drill.person_ids}
             | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids}
+            | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
             | {
                 person_id
                 for assignment in civilization.research
@@ -3180,15 +3326,17 @@ def advance_day(
             )
             project = civilization.projects[project_id]
             if project.adds_capacity:
-                capacity = enlarge(civilization, project.location, project.adds_capacity)
+                # A storage project builds one new granary where it stands.
+                site = supplying(civilization, project.location)
+                assert site is not None
                 events.append(
-                    _event(
+                    _raise_storehouse(
                         candidate,
-                        EventPhase.PROJECT,
-                        "storehouse_built",
-                        str(civilization_id),
-                        str(store_id_at(civilization, project.location)),
-                        capacity=capacity,
+                        civilization_id,
+                        EntityId(f"storehouse:{site.settlement_id}:{project_id}"),
+                        site.settlement_id,
+                        None,
+                        StorehouseGrade.GRANARY,
                     )
                 )
         # Recovery follows the death roll, so the day food returns is still a dangerous one.

@@ -6,6 +6,7 @@ from logistics_helpers import (
     treaty_world,
 )
 
+from sovereign_world.capabilities import CapabilityId, CapabilityRecord
 from sovereign_world.commands import (
     DirectOrder,
     DirectOrderKind,
@@ -21,13 +22,16 @@ from sovereign_world.rng import StableRng
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.stores import (
     BASE_CAPACITY,
-    STOREHOUSE_CAPACITY,
+    STOREHOUSE_GRADES,
+    StorehouseGrade,
     founding_capacity,
     holdings,
     store,
 )
 from sovereign_world.territory import Settlement
 from sovereign_world.war import WarObjective
+
+GRANARY = STOREHOUSE_GRADES[StorehouseGrade.GRANARY].capacity
 
 
 def _run(
@@ -269,9 +273,9 @@ def test_armourers_use_and_fill_their_own_settlement_store() -> None:
 def test_a_capital_starts_with_five_storehouses_and_a_new_settlement_with_none() -> None:
     _, state, home, _, route = linked_world(distance=8)
     civilization = state.civilizations[home]
-    assert civilization.inventory.capacity == BASE_CAPACITY + 5 * STOREHOUSE_CAPACITY == 27_000
+    assert civilization.inventory.capacity == BASE_CAPACITY + 5 * GRANARY == 27_000
     assert civilization.inventory.total_units <= civilization.inventory.capacity
-    assert founding_capacity(40_000) == BASE_CAPACITY + 8 * STOREHOUSE_CAPACITY, (
+    assert founding_capacity(40_000) == BASE_CAPACITY + 8 * GRANARY, (
         "a large founding gets the storehouses its goods need"
     )
     colony = _colony(state, home, route[4], people=0, food=0)
@@ -303,11 +307,11 @@ def test_a_storehouse_enlarges_the_store_of_the_settlement_that_builds_it() -> N
     state, results = _run(state, 6, {home: OneShotSovereign(build)})
 
     [built] = _events(results, "storehouse_built")
-    assert built.subject_id == str(colony.settlement_id)
+    assert built.payload["settlement"] == str(colony.settlement_id)
     assert built.day == 4, "two builders put in the 10 person-days over five days"
     civilization = state.civilizations[home]
     colony_store = civilization.stores[colony.settlement_id]
-    assert colony_store.capacity == BASE_CAPACITY + STOREHOUSE_CAPACITY
+    assert colony_store.capacity == BASE_CAPACITY + GRANARY
     assert colony_store.quantities.get(Resource.STONE, 0) == 0
     assert civilization.inventory.capacity == 27_000
     assert civilization.inventory.quantities[Resource.STONE] == stone
@@ -332,3 +336,123 @@ def test_goods_beyond_a_small_store_are_wasted() -> None:
     eaten = 2 * delivered.day
     assert delivered.payload["units"] == 10 + eaten
     assert delivered.payload["wasted"] == 30 - 10 - eaten
+
+
+def _grant(state: WorldState, civilization_id: EntityId, person_id, capability) -> None:
+    civilization = state.civilizations[civilization_id]
+    person = civilization.population.people[person_id]
+    person.skills = {**person.skills, capability.value: 100}
+    others = [item for item in civilization.capabilities if item.capability is not capability]
+    civilization.capabilities = tuple(
+        sorted(
+            (
+                *others,
+                CapabilityRecord(
+                    capability=capability, practitioner_ids=(person_id,), discovered_day=0
+                ),
+            ),
+            key=lambda item: item.capability.value,
+        )
+    )
+
+
+def _build(state, home, builders, grade, *, storehouse_id=None, command_id="build"):
+    return DirectOrder(
+        command_id=command_id,
+        kind=DirectOrderKind.BUILD_STOREHOUSE,
+        worker_ids=builders,
+        storehouse_grade=grade,
+        storehouse_id=storehouse_id,
+    )
+
+
+def test_the_capital_starts_with_five_granaries() -> None:
+    state, home, _, _ = treaty_world()
+    civilization = state.civilizations[home]
+    assert [item.grade for item in civilization.storehouses] == [StorehouseGrade.GRANARY] * 5
+    assert {item.settlement_id for item in civilization.storehouses} == {
+        civilization.settlements[0].settlement_id
+    }
+
+
+def test_a_new_storehouse_rises_grade_by_grade_and_adds_room_at_each() -> None:
+    state, home, _, _ = treaty_world()
+    civilization = state.civilizations[home]
+    builders = civilization.population.living_ids[:5]
+    _grant(state, home, builders[0], CapabilityId.TIMBERCRAFT)
+    stone = civilization.inventory.quantities[Resource.STONE]
+    timber = civilization.inventory.quantities[Resource.TIMBER]
+    order = _build(state, home, builders, StorehouseGrade.STOREHOUSE)
+    assert _codes(state, home, order) == []
+
+    state, results = _run(state, 8, {home: OneShotSovereign(order)})
+
+    civilization = state.civilizations[home]
+    assert civilization.inventory.quantities[Resource.STONE] == stone - 70
+    assert civilization.inventory.quantities[Resource.TIMBER] == timber - 20
+    [built] = _events(results, "storehouse_built")
+    upgraded = _events(results, "storehouse_upgraded")
+    assert built.payload["grade"] == "storage_pit" and built.day == 0, "5 builders: 5 days of work"
+    assert [event.payload["grade"] for event in upgraded] == ["granary", "storehouse"]
+    assert [event.day for event in upgraded] == [2, 6], "10 more, then 20 more person-days"
+    assert civilization.inventory.capacity == 27_000 + 10_000
+    [house] = [item for item in civilization.storehouses if item.storehouse_id == built.subject_id]
+    assert house.grade is StorehouseGrade.STOREHOUSE
+    assert civilization.storehouse_jobs == ()
+    validate_world(state)
+
+
+def test_upgrades_need_the_craft_the_materials_and_a_higher_grade() -> None:
+    state, home, _, _ = treaty_world()
+    civilization = state.civilizations[home]
+    builders = civilization.population.living_ids[:4]
+    granary = civilization.storehouses[0].storehouse_id
+    warehouse = _build(state, home, builders, StorehouseGrade.WAREHOUSE, storehouse_id=granary)
+    _grant(state, home, builders[0], CapabilityId.TIMBERCRAFT)
+    assert _codes(state, home, warehouse) == ["unqualified_worker"], "a warehouse is stonework"
+    _grant(state, home, builders[1], CapabilityId.STONEWORKING)
+    assert _codes(state, home, warehouse) == ["insufficient_materials"], "no planks in store"
+    civilization.inventory = civilization.inventory.model_copy(
+        update={"quantities": {**civilization.inventory.quantities, Resource.PLANK: 20}}
+    )
+    assert _codes(state, home, warehouse) == []
+    assert _codes(
+        state, home, _build(state, home, builders, StorehouseGrade.PIT, storehouse_id=granary)
+    ) == ["invalid_storehouse"], "a granary is already above a pit"
+    twice = _build(
+        state,
+        home,
+        civilization.population.living_ids[4:6],
+        StorehouseGrade.STOREHOUSE,
+        storehouse_id=granary,
+        command_id="again",
+    )
+    assert _codes(state, home, warehouse, twice) == ["invalid_storehouse"]
+
+    state, results = _run(state, 20, {home: OneShotSovereign(warehouse)})
+    upgraded = _events(results, "storehouse_upgraded")
+    assert [event.payload["grade"] for event in upgraded] == ["storehouse", "warehouse"]
+    assert state.civilizations[home].inventory.capacity == 27_000 - 5_000 + 20_000
+
+
+def test_builders_stay_home_and_unused_materials_return_if_they_all_die() -> None:
+    state, home, _, _ = treaty_world()
+    civilization = state.civilizations[home]
+    builders = civilization.population.living_ids[:2]
+    order = _build(state, home, builders, StorehouseGrade.GRANARY)
+    stone = civilization.inventory.quantities[Resource.STONE]
+    state, results = _run(state, 3, {home: OneShotSovereign(order)})
+    assert _events(results, "storehouse_built"), "the pit is dug in 5 person-days"
+    assert state.civilizations[home].inventory.quantities[Resource.STONE] == stone - 30
+    for person_id in builders:
+        person = state.civilizations[home].population.people[person_id]
+        person.alive = False
+        person.death_day = state.day
+
+    state, results = _run(state, 1)
+
+    [stopped] = _events(results, "storehouse_work_stopped")
+    assert stopped.payload["grade"] == "storage_pit"
+    civilization = state.civilizations[home]
+    assert civilization.inventory.quantities[Resource.STONE] == stone, "the granary's stone is back"
+    assert civilization.storehouse_jobs == ()

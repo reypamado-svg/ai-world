@@ -37,7 +37,13 @@ from sovereign_world.research import ResearchAssignment
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView
-from sovereign_world.stores import founding_capacity
+from sovereign_world.stores import (
+    FOUNDING_GRADE,
+    Storehouse,
+    StorehouseJob,
+    founding_capacity,
+    founding_storehouses,
+)
 from sovereign_world.territory import Claim, Garrison, Settlement, Territory
 from sovereign_world.tolls import TollPost, TollView
 from sovereign_world.war import Battle, BattleReport, Drill, War
@@ -53,6 +59,8 @@ class CivilizationState(BaseModel):
     """The capital's store."""
     stores: dict[EntityId, Inventory] = Field(default_factory=dict)
     """Every other settlement's store, by settlement id."""
+    storehouses: tuple[Storehouse, ...] = ()
+    storehouse_jobs: tuple[StorehouseJob, ...] = ()
     work_orders: tuple[WorkOrder, ...] = ()
     projects: dict[EntityId, ConstructionProject] = Field(default_factory=dict)
     known_tiles: tuple[HexCoord, ...] = ()
@@ -161,6 +169,7 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
             capacity=founding_capacity(sum(founding_goods.values())),
             quantities=founding_goods,
         )
+        capital_id = EntityId(f"settlement:{civilization_id.rsplit(':', 1)[-1]}-0001")
         civilizations[civilization_id] = CivilizationState(
             civilization_id=civilization_id,
             start_center=start.center,
@@ -168,9 +177,18 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
             inventory=inventory,
             known_tiles=known_tiles,
             observations=observations,
+            storehouses=tuple(
+                Storehouse(
+                    storehouse_id=EntityId(f"storehouse:{capital_id}:{number:02d}"),
+                    settlement_id=capital_id,
+                    grade=FOUNDING_GRADE,
+                    built_day=0,
+                )
+                for number in range(1, founding_storehouses(sum(founding_goods.values())) + 1)
+            ),
             settlements=(
                 Settlement(
-                    settlement_id=EntityId(f"settlement:{civilization_id.rsplit(':', 1)[-1]}-0001"),
+                    settlement_id=capital_id,
                     civilization_id=civilization_id,
                     tile=start.center,
                     founded_day=0,
@@ -276,6 +294,17 @@ def validate_world(state: WorldState) -> None:
         others = {item.settlement_id for item in settlements if not item.capital}
         if not set(civilization.stores) <= others:
             raise ValueError("stores belong to the civilization's non-capital settlements")
+        houses = civilization.storehouses
+        if houses != tuple(sorted(houses, key=lambda item: item.storehouse_id)):
+            raise ValueError("storehouses must be sorted")
+        if len({item.storehouse_id for item in houses}) != len(houses):
+            raise ValueError("storehouses must be unique")
+        settlement_ids = {item.settlement_id for item in settlements}
+        if any(item.settlement_id not in settlement_ids for item in houses):
+            raise ValueError("a storehouse stands in one of its civilization's settlements")
+        building = [job.storehouse_id for job in civilization.storehouse_jobs]
+        if len(building) != len(set(building)):
+            raise ValueError("one job at a time works on a storehouse")
         capitals = [item for item in settlements if item.capital]
         if len(capitals) != 1 or capitals[0].tile != civilization.start_center:
             raise ValueError("a civilization has exactly one capital, at its start")
