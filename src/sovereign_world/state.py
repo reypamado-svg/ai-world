@@ -28,6 +28,7 @@ from sovereign_world.espionage import CaughtSpy, SpyReport
 from sovereign_world.exploration import Expedition, ExpeditionStatus, Observation
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
+from sovereign_world.institutions import Institution
 from sovereign_world.logistics import (
     Journey,
     JourneyKind,
@@ -84,6 +85,8 @@ class CivilizationState(BaseModel):
     spy_reports: tuple[SpyReport, ...] = ()
     """Findings its spies and couriers have brought home."""
     caught_spies: tuple[CaughtSpy, ...] = ()
+    institutions: tuple[Institution, ...] = ()
+    """Archives, schools, healers' houses, workshops and diplomatic services."""
     """Foreign spies and couriers it has caught, and who sent them."""
     settlements: tuple[Settlement, ...] = ()
     garrisons: tuple[Garrison, ...] = ()
@@ -269,6 +272,15 @@ def validate_world(state: WorldState) -> None:
         )
         if capabilities != sorted_capabilities:
             raise ValueError("civilization capabilities must be unique and sorted")
+        kept_by: dict[EntityId, EntityId] = {}
+        for institution in civilization.institutions:
+            for person_id in institution.staff_ids:
+                if person_id not in civilization.population.people:
+                    raise ValueError("an institution's staff belong to its civilization")
+                if kept_by.setdefault(person_id, institution.institution_id) != (
+                    institution.institution_id
+                ):
+                    raise ValueError("a person keeps one institution")
         for record in civilization.capabilities:
             for person_id in record.practitioner_ids:
                 person = civilization.population.people.get(person_id)
