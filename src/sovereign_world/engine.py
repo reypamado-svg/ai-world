@@ -40,6 +40,7 @@ from sovereign_world.commands import (
     known_tolls,
     trade_partners,
     validate_envelope,
+    war_party_carry,
 )
 from sovereign_world.diplomacy import (
     ActiveTreaty,
@@ -79,6 +80,15 @@ from sovereign_world.logistics import (
     provisions_needed,
 )
 from sovereign_world.people import advance_population_day, go_hungry, recover
+from sovereign_world.research import (
+    DISCOVERED_SKILL,
+    DOCTRINE_DRILL_CAP,
+    POINTS_PER_SCHOLAR,
+    TOPICS,
+    WRITING_BONUS,
+    ResearchAssignment,
+    knows,
+)
 from sovereign_world.resources import InventoryDelta, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView, grades_of
@@ -413,6 +423,11 @@ def _dispatch_journey(
         provisions=provisions,
         departed_day=state.day,
         objective=command.war_objective if kind is JourneyKind.CAMPAIGN else None,
+        carry_per_person=(
+            war_party_carry(civilization)
+            if kind is JourneyKind.CAMPAIGN
+            else CARGO_UNITS_PER_CARRIER
+        ),
         road_grade=command.road_grade if kind is JourneyKind.ROADWORK else None,
         materials=(
             {
@@ -1568,7 +1583,11 @@ def _fight(
     # Engines need hands: their crews, the last fighters in id order, fight at half strength.
     working = crewed_engines(len(attacker_ids), engines_in(party.cargo)) if at_home else {}
     crew = set(attacker_ids[len(attacker_ids) - crew_needed(working) :]) if working else set()
-    issued = kit_assignment(attacker_ids, personal_kits(party.cargo))
+    issued = kit_assignment(
+        attacker_ids,
+        personal_kits(party.cargo),
+        formations=knows(state.civilizations[sender].capabilities, CapabilityId.SPEAR_FORMATIONS),
+    )
     attackers = [
         fighter(
             attackers_people[person_id],
@@ -1589,12 +1608,14 @@ def _fight(
         and any(person_id in marching for person_id in journey.traveller_ids)
     ]
     # Home defenders arm from their store; defending war parties use what they carry.
-    defender_kits = kit_assignment(home_side, personal_kits(dict(store)))
+    formations = knows(state.civilizations[enemy].capabilities, CapabilityId.SPEAR_FORMATIONS)
+    defender_kits = kit_assignment(home_side, personal_kits(dict(store)), formations=formations)
     for journey in defending_parties:
         defender_kits.update(
             kit_assignment(
                 [item for item in journey.traveller_ids if item in marching],
                 personal_kits(journey.cargo),
+                formations=formations,
             )
         )
     defenders = [
@@ -1712,7 +1733,7 @@ def _room(state: WorldState, party: Journey) -> int:
     living = sum(people[person_id].alive for person_id in party.traveller_ids)
     load = cargo_load(party.cargo) + party.provisions + sum(party.plunder.values())
     return max(
-        min(CARGO_UNITS_PER_CARRIER * living, CARGO_UNITS_PER_CARRIER * len(party.traveller_ids))
+        party.carry_per_person * min(living, len(party.traveller_ids))
         - load,
         0,
     )
@@ -1977,6 +1998,96 @@ def _advance_crafting(state: WorldState) -> list[DomainEvent]:
     return events
 
 
+def _advance_research(state: WorldState) -> list[DomainEvent]:
+    """Scholars at home add points to their topic; enough points make a discovery."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        homes = {settlement.tile for settlement in civilization.settlements}
+        people = civilization.population.people
+        points = dict(civilization.research_points)
+        kept: list[ResearchAssignment] = []
+        for assignment in civilization.research:
+            present = [
+                people[person_id]
+                for person_id in assignment.scholar_ids
+                if people[person_id].alive
+                and people[person_id].location in homes
+                and person_id not in away
+            ]
+            earned = sum(
+                POINTS_PER_SCHOLAR
+                + (WRITING_BONUS if person.skills.get(CapabilityId.WRITING.value, 0) > 0 else 0)
+                for person in present
+            )
+            points[assignment.topic] = points.get(assignment.topic, 0) + earned
+            assignment = assignment.model_copy(update={"days_done": assignment.days_done + 1})
+            if assignment.active:
+                kept.append(assignment)
+            else:
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.WORK,
+                        "research_paused",
+                        str(civilization_id),
+                        str(assignment.assignment_id),
+                        topic=assignment.topic.value,
+                        points=points[assignment.topic],
+                    )
+                )
+        for topic in sorted(points):
+            if points[topic] < TOPICS[topic].cost or knows(civilization.capabilities, topic):
+                continue
+            # The discovery belongs to everyone who worked on it and is alive to know it.
+            discoverers = sorted(
+                {
+                    person_id
+                    for assignment in (*civilization.research, *kept)
+                    if assignment.topic is topic
+                    for person_id in assignment.scholar_ids
+                    if people[person_id].alive
+                }
+            )
+            if not discoverers:
+                continue
+            for person_id in discoverers:
+                person = people[person_id]
+                person.skills = {
+                    **person.skills,
+                    topic.value: max(person.skills.get(topic.value, 0), DISCOVERED_SKILL),
+                }
+            civilization.capabilities = tuple(
+                sorted(
+                    (
+                        *civilization.capabilities,
+                        CapabilityRecord(
+                            capability=topic,
+                            practitioner_ids=tuple(discoverers),
+                            discovered_day=state.day,
+                        ),
+                    ),
+                    key=lambda record: record.capability.value,
+                )
+            )
+            del points[topic]
+            kept = [assignment for assignment in kept if assignment.topic is not topic]
+            events.append(
+                _event(
+                    state,
+                    EventPhase.WORK,
+                    "research_completed",
+                    str(civilization_id),
+                    topic.value,
+                    scholars=len(discoverers),
+                )
+            )
+        civilization.research = tuple(kept)
+        civilization.research_points = points
+    return events
+
+
 def _advance_drills(state: WorldState) -> list[DomainEvent]:
     """Drilling people at their settlements gain arms slowly, up to the drill cap."""
     events: list[DomainEvent] = []
@@ -1994,13 +2105,21 @@ def _advance_drills(state: WorldState) -> list[DomainEvent]:
                 and people[person_id].location in homes
                 and person_id not in away
             ]
+            # Drill doctrine teaches twice as fast, and further.
+            pace, cap = (
+                (2, DOCTRINE_DRILL_CAP)
+                if knows(civilization.capabilities, CapabilityId.DRILL_DOCTRINE)
+                else (1, DRILL_CAP)
+            )
+            before = drill.days_done * pace // DRILL_DAYS_PER_POINT
             drill = drill.model_copy(update={"days_done": drill.days_done + 1})
-            if drill.days_done % DRILL_DAYS_PER_POINT == 0:
+            gained = drill.days_done * pace // DRILL_DAYS_PER_POINT - before
+            if gained:
                 for person_id in present:
                     person = people[person_id]
                     current = person.skills.get(ARMS, 0)
-                    if current < DRILL_CAP:
-                        person.skills = {**person.skills, ARMS: current + 1}
+                    if current < cap:
+                        person.skills = {**person.skills, ARMS: min(current + gained, cap)}
             if drill.active:
                 kept.append(drill)
             else:
@@ -2249,6 +2368,33 @@ def _run_councils(
                 and command.craft_item is not None
             ):
                 events.append(_start_craft(state, civilization_id, command))
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.RESEARCH
+                and command.research_topic is not None
+            ):
+                civilization = state.civilizations[civilization_id]
+                assignment = ResearchAssignment(
+                    assignment_id=EntityId(
+                        f"research:{civilization_id}:{state.day}:{command.command_id}"
+                    ),
+                    topic=command.research_topic,
+                    scholar_ids=tuple(sorted(command.worker_ids)),
+                    started_day=state.day,
+                    days=command.research_days,
+                )
+                civilization.research = (*civilization.research, assignment)
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.WORK,
+                        "research_started",
+                        str(civilization_id),
+                        str(assignment.assignment_id),
+                        topic=assignment.topic.value,
+                        scholars=len(assignment.scholar_ids),
+                    )
+                )
             elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.DRILL:
                 civilization = state.civilizations[civilization_id]
                 drill = Drill(
@@ -2753,6 +2899,7 @@ def advance_day(
     events.extend(_resolve_war(candidate, rng))
     events.extend(_advance_drills(candidate))
     events.extend(_advance_crafting(candidate))
+    events.extend(_advance_research(candidate))
     events.extend(_advance_tolls(candidate))
 
     for civilization_id in sorted(candidate.civilizations):
@@ -2770,7 +2917,11 @@ def advance_day(
         # People at drill or in the armoury eat but neither farm nor do other work.
         drilling = {
             person_id for drill in civilization.drills for person_id in drill.person_ids
-        } | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids}
+        } | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids} | {
+            person_id
+            for assignment in civilization.research
+            for person_id in assignment.scholar_ids
+        }
         home_living = tuple(
             person_id for person_id in civilization.population.living_ids if person_id not in away
         )

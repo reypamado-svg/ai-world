@@ -143,6 +143,8 @@ class Journey(BaseModel):
     """Goods a war party has seized and carries home."""
     battles: tuple[EntityId, ...] = ()
     """Battles this war party fought; home hears of them only when survivors return."""
+    carry_per_person: int = Field(default=CARGO_UNITS_PER_CARRIER, ge=1)
+    """What each traveller can bear; military logistics lets fighters carry more."""
     tolls_paid: tuple[HexCoord, ...] = ()
     """Toll posts this party has already passed, paying or free; each charges a journey once."""
 
@@ -189,7 +191,7 @@ class Journey(BaseModel):
             raise ValueError("migration journeys carry no trade cargo")
         if self.kind is JourneyKind.SHIPMENT and not self.cargo:
             raise ValueError("a shipment requires cargo")
-        capacity = CARGO_UNITS_PER_CARRIER * len(self.traveller_ids)
+        capacity = self.carry_per_person * len(self.traveller_ids)
         gear = cargo_load(self.cargo) if campaign else sum(self.cargo.values())
         if gear + self.provisions_packed > capacity:
             raise ValueError("cargo and provisions exceed carrier capacity")

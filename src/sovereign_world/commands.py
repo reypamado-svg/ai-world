@@ -40,6 +40,13 @@ from sovereign_world.logistics import (
     provisions_needed,
     roadwork_days,
 )
+from sovereign_world.research import (
+    LOGISTICS_CARRY,
+    MAX_RESEARCH_DAYS,
+    ResearchAssignment,
+    knows,
+    research_error,
+)
 from sovereign_world.resources import Resource
 from sovereign_world.roads import (
     STONE_LAYING,
@@ -48,7 +55,7 @@ from sovereign_world.roads import (
     RoadView,
     materials_for,
 )
-from sovereign_world.state import WorldState
+from sovereign_world.state import CivilizationState, WorldState
 from sovereign_world.territory import SETTLEMENT_SPACING, Garrison, Settlement, visible_tiles
 from sovereign_world.tolls import (
     DEFAULT_DEPOSIT_DAYS,
@@ -98,6 +105,7 @@ class DirectOrderKind(StrEnum):
     SEND_WAR_PARTY = "send_war_party"
     DRILL = "drill"
     CRAFT_EQUIPMENT = "craft_equipment"
+    RESEARCH = "research"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -188,6 +196,8 @@ class DirectOrder(BaseModel):
     drill_days: int = Field(default=30, ge=1, le=180)
     craft_item: Resource | None = None
     craft_quantity: int = Field(default=1, ge=1, le=MAX_CRAFT_QUANTITY)
+    research_topic: CapabilityId | None = None
+    research_days: int = Field(default=30, ge=1, le=MAX_RESEARCH_DAYS)
     extra_provisions: int = Field(default=0, ge=0, le=CARGO_UNITS_PER_CARRIER * MAX_TRAVELLERS)
     priority: int = Field(default=50, ge=0, le=100)
 
@@ -248,6 +258,8 @@ class CouncilReport(BaseModel):
     war_reports: tuple[BattleReport, ...] = ()
     drills: tuple[Drill, ...] = ()
     craft_jobs: tuple[CraftJob, ...] = ()
+    research: tuple[ResearchAssignment, ...] = ()
+    research_points: dict[CapabilityId, int] = Field(default_factory=dict)
     recent_events: tuple[DomainEvent, ...] = ()
 
 
@@ -324,6 +336,8 @@ def build_council_report(
         war_reports=civilization.war_reports,
         drills=civilization.drills,
         craft_jobs=civilization.craft_jobs,
+        research=civilization.research,
+        research_points=dict(civilization.research_points),
         recent_events=visible_events,
     )
 
@@ -465,6 +479,11 @@ def _drilling_people(state: WorldState, civilization_id: EntityId) -> set[Entity
         for job in civilization.craft_jobs
         if not job.done
         for person_id in job.worker_ids
+    } | {
+        person_id
+        for assignment in civilization.research
+        if assignment.active
+        for person_id in assignment.scholar_ids
     }
 
 
@@ -521,6 +540,13 @@ def journey_supplies(
     return provisions, taken
 
 
+def war_party_carry(civilization: CivilizationState) -> int:
+    """What each fighter can bear: more once military logistics is known."""
+    if knows(civilization.capabilities, CapabilityId.MILITARY_LOGISTICS):
+        return LOGISTICS_CARRY
+    return CARGO_UNITS_PER_CARRIER
+
+
 def _campaign_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -570,8 +596,10 @@ def _campaign_error(
     if crew_needed(engines_in(command.cargo)) > fighters:
         return error("invalid_cargo", "every engine needs its crew from among the fighters")
     provisions, taken = journey_supplies(command, state, civilization_id)
-    if provisions + cargo_load(command.cargo) > CARGO_UNITS_PER_CARRIER * fighters:
-        return error("cargo_over_capacity", "each fighter can bear 50 units of food and arms")
+    if provisions + cargo_load(command.cargo) > war_party_carry(civilization) * fighters:
+        return error(
+            "cargo_over_capacity", "each fighter can bear only so much food and gear"
+        )
     for resource, quantity in taken.items():
         if reserved_cargo.get(resource, 0) + quantity > civilization.inventory.quantities.get(
             resource, 0
@@ -890,6 +918,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     committed_travellers: set[EntityId] = set()
     committed_at_home: set[EntityId] = set()
     tolled: set[HexCoord] = set()
+    researching: set[CapabilityId] = set()
     teaching_people = {
         person_id
         for assignment in state.civilizations[envelope.civilization_id].teaching_assignments
@@ -1122,6 +1151,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 DirectOrderKind.START_PROJECT,
                 DirectOrderKind.DRILL,
                 DirectOrderKind.CRAFT_EQUIPMENT,
+                DirectOrderKind.RESEARCH,
             }:
                 home_duty = command.worker_ids
             elif command.kind is DirectOrderKind.START_TEACHING and command_error is None:
@@ -1146,7 +1176,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     )
             if home_duty and command_error is None:
                 away = committed_travellers | already_travelling | garrisoned | drilling
-                if command.kind in {DirectOrderKind.DRILL, DirectOrderKind.CRAFT_EQUIPMENT}:
+                if command.kind in {
+                    DirectOrderKind.DRILL,
+                    DirectOrderKind.CRAFT_EQUIPMENT,
+                    DirectOrderKind.RESEARCH,
+                }:
                     away |= committed_at_home | teaching_people
                 if any(person_id in away for person_id in home_duty):
                     command_error = CommandError(
@@ -1188,6 +1222,39 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         command_id=command.command_id,
                         code="invalid_drill",
                         message="only people fit to fight, at one of their settlements, drill",
+                    )
+            if command.kind is DirectOrderKind.RESEARCH and command_error is None:
+                civilization = state.civilizations[envelope.civilization_id]
+                homes = {settlement.tile for settlement in civilization.settlements}
+                people = civilization.population.people
+                reason = (
+                    research_error(command.research_topic, civilization.capabilities)
+                    if command.research_topic is not None
+                    else "names no topic"
+                )
+                if reason is None and command.research_topic in researching:
+                    reason = "is already being researched in this council"
+                if reason is not None:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_research",
+                        message=f"this research {reason}",
+                    )
+                elif not command.worker_ids or len(set(command.worker_ids)) != len(
+                    command.worker_ids
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_research",
+                        message="research names one or more distinct scholars",
+                    )
+                elif any(
+                    people[person_id].location not in homes for person_id in command.worker_ids
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_research",
+                        message="scholars work at one of their settlements",
                     )
             if command.kind is DirectOrderKind.CRAFT_EQUIPMENT and command_error is None:
                 command_error = _craft_error(
@@ -1342,6 +1409,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             committed_at_home.update(home_duty)
             if command.kind is DirectOrderKind.SET_TOLL:
                 tolled.add(command.route[0])
+            if command.kind is DirectOrderKind.RESEARCH and command.research_topic is not None:
+                researching.add(command.research_topic)
             if command.kind is DirectOrderKind.CRAFT_EQUIPMENT and command.craft_item:
                 for resource, quantity in craft_materials(
                     command.craft_item, command.craft_quantity

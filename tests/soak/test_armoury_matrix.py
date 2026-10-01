@@ -1,9 +1,11 @@
-"""Seeded wars fought with crafted kits and engines: nothing is ever made from nothing."""
+"""Seeded wars fought with crafted kits, engines and researched doctrine: nothing is ever
+made from nothing."""
 
 import pytest
 from logistics_helpers import treaty_world
 
 from sovereign_world.armoury import ENGINES, KITS
+from sovereign_world.capabilities import CapabilityId
 from sovereign_world.commands import CommandEnvelope, CouncilReport, DirectOrder, DirectOrderKind
 from sovereign_world.engine import advance_day
 from sovereign_world.hexmap import HexCoord
@@ -19,7 +21,7 @@ GEAR = (*KITS, *ENGINES)
 
 
 class ArmingSovereign:
-    """Make slings and ladders at the first council, then raid with them."""
+    """Make slings and ladders and study spear formations at the first council, then raid."""
 
     def __init__(self, enemy: EntityId, route: tuple[HexCoord, ...], *, raids: bool) -> None:
         self.enemy = enemy
@@ -43,6 +45,13 @@ class ArmingSovereign:
                     worker_ids=people[2:4],
                     craft_item=Resource.LADDER,
                     craft_quantity=1,
+                ),
+                DirectOrder(
+                    command_id="formations",
+                    kind=DirectOrderKind.RESEARCH,
+                    worker_ids=people[-4:],
+                    research_topic=CapabilityId.SPEAR_FORMATIONS,
+                    research_days=60,
                 ),
             ]
         elif self.raids:
@@ -124,6 +133,7 @@ def test_seeded_armed_wars_never_make_gear_from_nothing(seed: int) -> None:
     rerun, rerun_kinds = _simulate(initial, first, second, route)
 
     assert kinds.count("equipment_crafted") >= 2, "both sides armed themselves"
+    assert kinds.count("research_completed") == 2, "both sides learned spear formations"
     assert "battle_joined" in kinds
     assert state_hash(rerun) == state_hash(final)
     assert rerun_kinds == kinds
