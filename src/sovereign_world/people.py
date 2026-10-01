@@ -42,6 +42,10 @@ class Person(BaseModel):
     skills: dict[str, int] = Field(default_factory=dict)
     alive: bool = True
     death_day: int | None = None
+    captive_of: EntityId | None = None
+    """The civilization holding this person prisoner; they keep their own allegiance."""
+    held_at: EntityId | None = None
+    """The captor's settlement holding them; none while they march with a war party."""
 
 
 class ScheduledBirth(BaseModel):

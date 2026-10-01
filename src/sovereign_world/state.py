@@ -474,6 +474,28 @@ def validate_world(state: WorldState) -> None:
         camp = camps.get(siege.journey_id)
         if siege.active and (camp is None or not camp.encamped):
             raise ValueError("a standing siege has its camp")
+    marching = {
+        person_id: journey.sender_civilization_id
+        for journey in state.journeys
+        if journey.active
+        for person_id in journey.captive_ids
+    }
+    for civilization_id, civilization in state.civilizations.items():
+        for person_id, person in civilization.population.people.items():
+            if person.captive_of is None:
+                if person.held_at is not None:
+                    raise ValueError("only captives are held at a settlement")
+                continue
+            if person.captive_of == civilization_id or person.captive_of not in state.civilizations:
+                raise ValueError("a captive is held by another existing civilization")
+            if not person.alive:
+                continue
+            captor = state.civilizations[person.captive_of]
+            if person.held_at is not None:
+                if person.held_at not in {item.settlement_id for item in captor.settlements}:
+                    raise ValueError("a captive is held at one of the captor's settlements")
+            elif marching.get(person_id) != person.captive_of:
+                raise ValueError("a captive not held at a settlement marches with the captor")
     occupations = state.occupations
     if occupations != tuple(sorted(occupations, key=lambda item: item.occupation_id)):
         raise ValueError("occupations must be sorted")
