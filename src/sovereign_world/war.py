@@ -12,6 +12,7 @@ from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person
 from sovereign_world.rng import StableRng
+from sovereign_world.walls import TOWER_HITS_BP
 
 ARMS = "arms"
 """The fighting skill: drill and battle both raise it."""
@@ -248,11 +249,13 @@ def resolve_battle(
     rng: StableRng,
     stream: str,
     catapults: int = 0,
+    towers: int = 0,
 ) -> BattleOutcome:
     """Fight rounds until a side's losses pass its morale; the rout costs it more.
 
     Slingers and archers on both sides loose one volley before the lines meet, and the
-    attackers' catapults bombard the defenders before every round. Then each round,
+    attackers' catapults bombard the defenders before every round. Manned towers on the
+    defenders' walls shoot in the opening volley and before every round. Then each round,
     each side loses a share of its standing fighters that grows with the other side's
     strength. A hit wounds; a wound deeper than a fighter's health kills.
     """
@@ -308,7 +311,10 @@ def resolve_battle(
     else:
         # The opening volley: every slinger and archer looses once, on both sides at once.
         volleys = {
-            side: chance_hits(sum(item.volley_bp for item in standing[side]))
+            side: chance_hits(
+                sum(item.volley_bp for item in standing[side])
+                + (towers * TOWER_HITS_BP if side == "defenders" else 0)
+            )
             for side in ("attackers", "defenders")
         }
         strike("defenders", volleys["attackers"], WOUND_MIN, WOUND_MAX)
@@ -318,6 +324,8 @@ def resolve_battle(
         rounds += 1
         if catapults:
             strike("defenders", chance_hits(catapults * CATAPULT_HITS_BP), WOUND_MIN, WOUND_MAX)
+        if towers:
+            strike("attackers", chance_hits(towers * TOWER_HITS_BP), WOUND_MIN, WOUND_MAX)
         attack = sum(item.strength for item in standing["attackers"])
         defence = sum(item.strength for item in standing["defenders"]) * defence_bp // BASIS
         if not attack or not defence:
