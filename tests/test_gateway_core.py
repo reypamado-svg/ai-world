@@ -162,7 +162,7 @@ def test_a_failed_council_leaves_standing_decrees_and_the_day_untouched() -> Non
     assert result.state.day == state.day + 1
     assert result.state.active_decrees[civilization]["food_reserve_target"] == 75
     [held] = [event for event in result.events.events if event.kind == "council_held"]
-    assert held.payload == {"commands": 0, "accepted": 0, "rejected": 0}
+    assert held.payload == {"commands": 0, "accepted": 0, "rejected": 0, "crisis": False}
 
 
 def test_foreign_words_stay_inside_the_report_and_out_of_the_charter() -> None:
