@@ -7,6 +7,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from sovereign_world.armoury import CATAPULT_HITS_BP, CREW_STRENGTH_BP, LEVY, Kit
 from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person
@@ -40,7 +41,6 @@ WOUND_MAX = 12_000
 ROUT_WOUND_MIN = 6_000
 ROUT_WOUND_MAX = 15_000
 VETERAN_WOUND_BP = 9_000
-AXE_BONUS_BP = 5_000
 
 TERRAIN_DEFENCE_BP: dict[Terrain, int] = {
     Terrain.FOREST: 12_500,
@@ -151,8 +151,17 @@ def able_to_fight(person: Person) -> bool:
     return person.alive and 13 <= years <= 60 and person.health_bp > 0
 
 
-def fighting_strength(person: Person, *, armed: bool) -> int:
-    """A fighter's strength, from health, age, hunger, arms skill, and an axe."""
+def fighting_strength(
+    person: Person,
+    kit: Kit | None = None,
+    *,
+    attacking: bool = True,
+    crewing: bool = False,
+) -> int:
+    """A fighter's strength, from health, age, hunger, arms skill, and kit.
+
+    A fighter working a siege engine fights at half strength.
+    """
     if not able_to_fight(person):
         return 0
     years = person.age_days // DAYS_PER_YEAR
@@ -163,8 +172,11 @@ def fighting_strength(person: Person, *, armed: bool) -> int:
     strength_bp = strength_bp * hunger_bp // BASIS
     arms_bp = min(person.skills.get(ARMS, 0) * 100, MAX_ARMS_BONUS_BP)
     strength_bp = strength_bp * (BASIS + arms_bp) // BASIS
-    if armed:
-        strength_bp = strength_bp * (BASIS + AXE_BONUS_BP) // BASIS
+    kit = kit or LEVY
+    strength_bp = strength_bp * kit.strength_bp // BASIS
+    strength_bp = strength_bp * (kit.attack_bp if attacking else kit.defence_bp) // BASIS
+    if crewing:
+        strength_bp = strength_bp * CREW_STRENGTH_BP // BASIS
     return max(BASE_STRENGTH * strength_bp // BASIS, 1)
 
 
@@ -174,6 +186,8 @@ def morale_bp(fighters: list[Fighter], *, at_home: bool, supplied: bool) -> int:
     if fighters:
         veterans = sum(fighter.veteran for fighter in fighters)
         base += VETERAN_MORALE_BP_PER_TENTH * (veterans * 10 // len(fighters))
+        # Heavy infantry steadies a line in proportion to its share of it.
+        base += sum(fighter.morale_bp for fighter in fighters) // len(fighters)
         hungry = sum(fighter.hungry for fighter in fighters)
         # Hunger and a severed supply line can halve a side's resolve.
         penalty_bp = BASIS // 2 * hungry // len(fighters)
@@ -191,16 +205,29 @@ class Fighter:
     health_bp: int
     veteran: bool
     hungry: bool
+    volley_bp: int = 0
+    morale_bp: int = 0
+    unit: str = LEVY.unit.value
 
 
-def fighter(person: Person, *, armed: bool) -> Fighter:
+def fighter(
+    person: Person,
+    kit: Kit | None = None,
+    *,
+    attacking: bool = True,
+    crewing: bool = False,
+) -> Fighter:
+    kit = kit or LEVY
     return Fighter(
         person_id=person.person_id,
         civilization_id=person.civilization_id,
-        strength=fighting_strength(person, armed=armed),
+        strength=fighting_strength(person, kit, attacking=attacking, crewing=crewing),
         health_bp=person.health_bp,
         veteran=person.skills.get(ARMS, 0) >= VETERAN,
         hungry=person.nutrition_debt > 0,
+        volley_bp=0 if crewing else kit.volley_bp,
+        morale_bp=kit.morale_bp,
+        unit=kit.unit.value,
     )
 
 
@@ -220,11 +247,14 @@ def resolve_battle(
     defender_morale_bp: int,
     rng: StableRng,
     stream: str,
+    catapults: int = 0,
 ) -> BattleOutcome:
     """Fight rounds until a side's losses pass its morale; the rout costs it more.
 
-    Each round, each side loses a share of its standing fighters that grows with the
-    other side's strength. A hit wounds; a wound deeper than a fighter's health kills.
+    Slingers and archers on both sides loose one volley before the lines meet, and the
+    attackers' catapults bombard the defenders before every round. Then each round,
+    each side loses a share of its standing fighters that grows with the other side's
+    strength. A hit wounds; a wound deeper than a fighter's health kills.
     """
     roll = rng.stream(stream)
     standing = {
@@ -256,12 +286,38 @@ def resolve_battle(
         whole, part = divmod(exact, BASIS)
         return whole + (1 if int(roll.integers(0, BASIS)) < part else 0)
 
+    def chance_hits(total_bp: int) -> int:
+        whole, part = divmod(total_bp, BASIS)
+        return whole + (1 if int(roll.integers(0, BASIS)) < part else 0)
+
+    def breaking_side() -> str | None:
+        shares = {
+            side: fallen[side] * BASIS // max(starting[side], 1)
+            for side in ("attackers", "defenders")
+        }
+        breaking = [side for side in shares if shares[side] >= thresholds[side]]
+        if len(breaking) == 2:
+            # Both lines waver: the side that has suffered more gives way; attackers on a tie.
+            return "defenders" if shares["defenders"] > shares["attackers"] else "attackers"
+        return breaking[0] if breaking else None
+
     broken: str | None = None
     rounds = 0
     if not standing["defenders"]:
         broken = "defenders"
+    else:
+        # The opening volley: every slinger and archer looses once, on both sides at once.
+        volleys = {
+            side: chance_hits(sum(item.volley_bp for item in standing[side]))
+            for side in ("attackers", "defenders")
+        }
+        strike("defenders", volleys["attackers"], WOUND_MIN, WOUND_MAX)
+        strike("attackers", volleys["defenders"], WOUND_MIN, WOUND_MAX)
+        broken = breaking_side()
     while broken is None and rounds < MAX_ROUNDS:
         rounds += 1
+        if catapults:
+            strike("defenders", chance_hits(catapults * CATAPULT_HITS_BP), WOUND_MIN, WOUND_MAX)
         attack = sum(item.strength for item in standing["attackers"])
         defence = sum(item.strength for item in standing["defenders"]) * defence_bp // BASIS
         if not attack or not defence:
@@ -273,16 +329,7 @@ def resolve_battle(
         attacker_hits = hits_for("attackers", to_attackers)
         strike("defenders", defender_hits, WOUND_MIN, WOUND_MAX)
         strike("attackers", attacker_hits, WOUND_MIN, WOUND_MAX)
-        shares = {
-            side: fallen[side] * BASIS // max(starting[side], 1)
-            for side in ("attackers", "defenders")
-        }
-        breaking = [side for side in shares if shares[side] >= thresholds[side]]
-        if len(breaking) == 2:
-            # Both lines waver: the side that has suffered more gives way; attackers on a tie.
-            breaking = ["defenders" if shares["defenders"] > shares["attackers"] else "attackers"]
-        if breaking:
-            broken = breaking[0]
+        broken = breaking_side()
     if broken is None:
         # A long stalemate: the attackers, far from home, give up the field.
         broken = "attackers"

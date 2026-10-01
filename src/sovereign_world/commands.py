@@ -8,6 +8,18 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sovereign_world.armoury import (
+    MAX_CRAFT_QUANTITY,
+    RECIPES,
+    WAR_GEAR,
+    CraftJob,
+    cargo_load,
+    craft_materials,
+    crew_needed,
+    engines_in,
+    personal_kits,
+    slows,
+)
 from sovereign_world.capabilities import CapabilityId
 from sovereign_world.diplomacy import Contact, DiplomaticMessage, MissionStatus, TreatyKind
 from sovereign_world.events import DomainEvent
@@ -85,6 +97,7 @@ class DirectOrderKind(StrEnum):
     DECLARE_WAR = "declare_war"
     SEND_WAR_PARTY = "send_war_party"
     DRILL = "drill"
+    CRAFT_EQUIPMENT = "craft_equipment"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -173,6 +186,8 @@ class DirectOrder(BaseModel):
     )
     war_objective: WarObjective | None = None
     drill_days: int = Field(default=30, ge=1, le=180)
+    craft_item: Resource | None = None
+    craft_quantity: int = Field(default=1, ge=1, le=MAX_CRAFT_QUANTITY)
     extra_provisions: int = Field(default=0, ge=0, le=CARGO_UNITS_PER_CARRIER * MAX_TRAVELLERS)
     priority: int = Field(default=50, ge=0, le=100)
 
@@ -232,6 +247,7 @@ class CouncilReport(BaseModel):
     wars: tuple[War, ...] = ()
     war_reports: tuple[BattleReport, ...] = ()
     drills: tuple[Drill, ...] = ()
+    craft_jobs: tuple[CraftJob, ...] = ()
     recent_events: tuple[DomainEvent, ...] = ()
 
 
@@ -307,6 +323,7 @@ def build_council_report(
         ),
         war_reports=civilization.war_reports,
         drills=civilization.drills,
+        craft_jobs=civilization.craft_jobs,
         recent_events=visible_events,
     )
 
@@ -439,11 +456,15 @@ def at_war(state: WorldState, first: EntityId, second: EntityId) -> War | None:
 
 
 def _drilling_people(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
+    """People bound to home duties that keep them from travel: drill and the armoury."""
+    civilization = state.civilizations[civilization_id]
     return {
+        person_id for drill in civilization.drills if drill.active for person_id in drill.person_ids
+    } | {
         person_id
-        for drill in state.civilizations[civilization_id].drills
-        if drill.active
-        for person_id in drill.person_ids
+        for job in civilization.craft_jobs
+        if not job.done
+        for person_id in job.worker_ids
     }
 
 
@@ -486,7 +507,13 @@ def journey_supplies(
         taken = materials_for(command.route, command.road_grade, roads)
     else:
         provisions = provisions_needed(
-            journey_days(kind, state.world_map, command.route, roads),
+            journey_days(
+                kind,
+                state.world_map,
+                command.route,
+                roads,
+                heavy=kind is JourneyKind.CAMPAIGN and slows(command.cargo),
+            ),
             crew,
             command.extra_provisions + toll_food,
         )
@@ -531,14 +558,19 @@ def _campaign_error(
     expectant = {birth.parent_ids[0] for birth in civilization.population.scheduled_births}
     if expectant & set(command.traveller_ids):
         return error("expectant_traveller", "a mother with a birth due cannot march")
-    if set(command.cargo) - {Resource.AXE} or command.cargo.get(Resource.AXE, 0) > len(
-        command.traveller_ids
+    fighters = len(command.traveller_ids)
+    if (
+        set(command.cargo) - WAR_GEAR
+        or any(count <= 0 for count in command.cargo.values())
+        or sum(personal_kits(command.cargo).values()) > fighters
     ):
-        return error("invalid_cargo", "a war party carries at most one axe per fighter")
+        return error(
+            "invalid_cargo", "a war party carries kits, at most one per fighter, and engines"
+        )
+    if crew_needed(engines_in(command.cargo)) > fighters:
+        return error("invalid_cargo", "every engine needs its crew from among the fighters")
     provisions, taken = journey_supplies(command, state, civilization_id)
-    if provisions + sum(command.cargo.values()) > CARGO_UNITS_PER_CARRIER * len(
-        command.traveller_ids
-    ):
+    if provisions + cargo_load(command.cargo) > CARGO_UNITS_PER_CARRIER * fighters:
         return error("cargo_over_capacity", "each fighter can bear 50 units of food and arms")
     for resource, quantity in taken.items():
         if reserved_cargo.get(resource, 0) + quantity > civilization.inventory.quantities.get(
@@ -712,6 +744,40 @@ def _journey_error(
             if resource is Resource.FOOD and cargo_only <= available:
                 return error("insufficient_provisions", "not enough food to provision the party")
             return error("insufficient_goods", f"not enough {resource} to ship")
+    return None
+
+
+def _craft_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved: dict[Resource, int],
+) -> CommandError | None:
+    """Validate an armoury order: something makeable, by people who know how, from stock."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    item = command.craft_item
+    if item is None or item not in RECIPES or not command.worker_ids:
+        return error("invalid_craft", "the armoury makes a known kit or engine, with workers")
+    if len(set(command.worker_ids)) != len(command.worker_ids):
+        return error("invalid_craft", "each worker is named once")
+    people = civilization.population.people
+    homes = {settlement.tile for settlement in civilization.settlements}
+    if any(people[person_id].location not in homes for person_id in command.worker_ids):
+        return error("invalid_craft", "workers make equipment at one of their settlements")
+    needed = RECIPES[item].capability
+    if needed is not None and not any(
+        people[person_id].skills.get(needed.value, 0) > 0 for person_id in command.worker_ids
+    ):
+        return error("unqualified_worker", f"making {item} needs someone who knows {needed}")
+    for resource, quantity in craft_materials(item, command.craft_quantity).items():
+        if reserved.get(resource, 0) + quantity > civilization.inventory.quantities.get(
+            resource, 0
+        ):
+            return error("insufficient_materials", f"not enough {resource} to make {item}")
     return None
 
 
@@ -1052,7 +1118,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             elif command.kind in MESSAGE_ORDERS and command.ambassador_id is not None:
                 travellers = (command.ambassador_id,)
             home_duty: tuple[EntityId, ...] = ()
-            if command.kind in {DirectOrderKind.START_PROJECT, DirectOrderKind.DRILL}:
+            if command.kind in {
+                DirectOrderKind.START_PROJECT,
+                DirectOrderKind.DRILL,
+                DirectOrderKind.CRAFT_EQUIPMENT,
+            }:
                 home_duty = command.worker_ids
             elif command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
@@ -1076,7 +1146,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     )
             if home_duty and command_error is None:
                 away = committed_travellers | already_travelling | garrisoned | drilling
-                if command.kind is DirectOrderKind.DRILL:
+                if command.kind in {DirectOrderKind.DRILL, DirectOrderKind.CRAFT_EQUIPMENT}:
                     away |= committed_at_home | teaching_people
                 if any(person_id in away for person_id in home_duty):
                     command_error = CommandError(
@@ -1119,6 +1189,10 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="invalid_drill",
                         message="only people fit to fight, at one of their settlements, drill",
                     )
+            if command.kind is DirectOrderKind.CRAFT_EQUIPMENT and command_error is None:
+                command_error = _craft_error(
+                    command, envelope.civilization_id, state, reserved_cargo
+                )
             if (
                 command.kind is DirectOrderKind.DECLARE_WAR
                 and command_error is None
@@ -1268,6 +1342,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             committed_at_home.update(home_duty)
             if command.kind is DirectOrderKind.SET_TOLL:
                 tolled.add(command.route[0])
+            if command.kind is DirectOrderKind.CRAFT_EQUIPMENT and command.craft_item:
+                for resource, quantity in craft_materials(
+                    command.craft_item, command.craft_quantity
+                ).items():
+                    reserved_cargo[resource] = reserved_cargo.get(resource, 0) + quantity
             if command.kind in JOURNEY_ORDERS:
                 _, taken = journey_supplies(command, state, envelope.civilization_id)
                 for resource, quantity in taken.items():

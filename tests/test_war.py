@@ -7,6 +7,7 @@ from logistics_helpers import (
     treaty_world,
 )
 
+from sovereign_world.armoury import KITS
 from sovereign_world.commands import (
     DirectOrder,
     DirectOrderKind,
@@ -93,24 +94,25 @@ def test_fighting_strength_follows_health_age_hunger_skill_and_arms() -> None:
     )
     person.health_bp = 10_000
     person.age_days = 30 * 365
-    assert fighting_strength(person, armed=False) == 100
-    assert fighting_strength(person, armed=True) == 150
+    assert fighting_strength(person) == 100
+    assert fighting_strength(person, KITS[Resource.AXE], attacking=False) == 150
+    assert fighting_strength(person, KITS[Resource.AXE]) == 165, "axes favour attack"
     person.skills = {ARMS: 60}
-    assert fighting_strength(person, armed=False) == 160
+    assert fighting_strength(person) == 160
     person.skills = {ARMS: 200}
-    assert fighting_strength(person, armed=False) == 160, "arms skill is capped at +60%"
+    assert fighting_strength(person) == 160, "arms skill is capped at +60%"
     person.skills = {}
     person.nutrition_debt = 20
-    assert fighting_strength(person, armed=False) == 80
+    assert fighting_strength(person) == 80
     person.nutrition_debt = 90
-    assert fighting_strength(person, armed=False) == 50, "hunger halves strength at most"
+    assert fighting_strength(person) == 50, "hunger halves strength at most"
     person.nutrition_debt = 0
     person.age_days = 55 * 365
-    assert fighting_strength(person, armed=False) == 60
+    assert fighting_strength(person) == 60
     person.age_days = 70 * 365
-    assert fighting_strength(person, armed=False) == 0, "the old do not fight"
+    assert fighting_strength(person) == 0, "the old do not fight"
     person.age_days = 10 * 365
-    assert fighting_strength(person, armed=False) == 0, "nor do children"
+    assert fighting_strength(person) == 0, "nor do children"
 
 
 def test_defenders_gain_from_terrain_and_their_own_settlement() -> None:
@@ -123,11 +125,11 @@ def test_defenders_gain_from_terrain_and_their_own_settlement() -> None:
 def test_battles_are_deterministic_and_the_stronger_side_wins() -> None:
     state, home, rival, _ = _world()
     strong = [
-        fighter(person, armed=True)
+        fighter(person, KITS[Resource.AXE])
         for person in list(state.civilizations[home].population.people.values())[:20]
     ]
     weak = [
-        fighter(person, armed=False)
+        fighter(person, attacking=False)
         for person in list(state.civilizations[rival].population.people.values())[:5]
     ]
 

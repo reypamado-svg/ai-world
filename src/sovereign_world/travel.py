@@ -21,7 +21,8 @@ ENTRY_COST: dict[Terrain, int | None] = {
 }
 """Cost of entering a tile, in tenths of a day; None means impassable."""
 
-MAX_PROGRESS = max(cost for cost in ENTRY_COST.values() if cost is not None) + DAY
+MAX_PROGRESS = -(-max(cost for cost in ENTRY_COST.values() if cost is not None) * 3 // 2) + DAY
+"""Unspent walking never reaches this: the dearest tile, slowed by siege engines, plus a day."""
 
 
 Roads = Mapping[HexCoord, RoadGrade]
