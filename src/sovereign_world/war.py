@@ -102,6 +102,8 @@ class SiegeEnd(StrEnum):
     BROKEN = "broken"
     STORMED = "stormed"
     PEACE = "peace"
+    GONE = "gone"
+    """The besieged civilization is no more."""
 
 
 class Siege(BaseModel):
@@ -152,6 +154,8 @@ class OccupationEnd(StrEnum):
     BEATEN = "beaten"
     ROSE = "rose"
     PEACE = "peace"
+    GONE = "gone"
+    """The occupied civilization is no more."""
 
 
 class Occupation(BaseModel):

@@ -29,6 +29,7 @@ from sovereign_world.diplomacy import (
     PeaceTerms,
     TreatyKind,
 )
+from sovereign_world.endings import Ending, Ruin
 from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
 from sovereign_world.hexmap import HexCoord, Terrain
@@ -152,6 +153,7 @@ class DirectOrderKind(StrEnum):
     RELEASE_PRISONERS = "release_prisoners"
     RELEASE_PEOPLE = "release_people"
     ANSWER_PETITION = "answer_petition"
+    SALVAGE = "salvage"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -174,6 +176,7 @@ JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.SEND_WAR_PARTY: JourneyKind.CAMPAIGN,
     DirectOrderKind.HAUL_GOODS: JourneyKind.HAUL,
     DirectOrderKind.RELEASE_PEOPLE: JourneyKind.PETITION,
+    DirectOrderKind.SALVAGE: JourneyKind.SALVAGE,
 }
 CAMP_ORDERS = frozenset(
     {
@@ -349,6 +352,10 @@ class CouncilReport(BaseModel):
     """Foreign prisoners this civilization holds, at home or marching with its war parties."""
     petitions: tuple[Journey, ...] = ()
     """People of other civilizations waiting at this one's gates to be taken in."""
+    ruins: tuple[Ruin, ...] = ()
+    """Ruins on land this civilization knows."""
+    endings: tuple[Ending, ...] = ()
+    """The endings of the world so far: the last civilization standing, or none."""
     held_captive: tuple[EntityId, ...] = ()
     """This civilization's own people held prisoner by others."""
     occupations: tuple[Occupation, ...] = ()
@@ -399,6 +406,8 @@ def build_council_report(
                 if person_id not in emigrants and person.captive_of is None
             )
         ),
+        ruins=tuple(ruin for ruin in state.ruins if ruin.tile in set(civilization.known_tiles)),
+        endings=state.endings,
         petitions=tuple(
             journey
             for journey in state.journeys
@@ -878,6 +887,8 @@ def _internal_journey_error(
         return error("invalid_destination", "people relocate to another of their own settlements")
     if hauling and destination not in own_settlements - {route[0]}:
         return error("invalid_destination", "goods are hauled to another of their own settlements")
+    if kind is JourneyKind.SALVAGE and destination not in {ruin.tile for ruin in state.ruins}:
+        return error("invalid_destination", "salvagers go to a ruin")
     if kind is JourneyKind.SETTLEMENT and (
         foreign
         or any(tile.distance(destination) < SETTLEMENT_SPACING for tile in known_settlements)
@@ -1795,6 +1806,17 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="invalid_release",
                         message="only prisoners held at this civilization's settlements are let go",
                     )
+            if (
+                command_error is None
+                and command.recipient_civilization_id in state.civilizations
+                and state.civilizations[command.recipient_civilization_id].eliminated_day
+                is not None
+            ):
+                command_error = CommandError(
+                    command_id=command.command_id,
+                    code="eliminated",
+                    message="that civilization is no more",
+                )
             if command.kind is DirectOrderKind.ANSWER_PETITION and command_error is None:
                 waiting = next(
                     (

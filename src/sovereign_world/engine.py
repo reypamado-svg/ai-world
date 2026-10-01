@@ -58,6 +58,13 @@ from sovereign_world.diplomacy import (
     TreatyOffer,
     advance_diplomacy_day,
 )
+from sovereign_world.endings import (
+    BREAKUP_GRACE_DAYS,
+    BREAKUP_SHARE,
+    Ending,
+    EndingKind,
+    Ruin,
+)
 from sovereign_world.events import DomainEvent, EventBatch, EventPhase
 from sovereign_world.exploration import (
     Expedition,
@@ -102,7 +109,7 @@ from sovereign_world.research import (
     ResearchAssignment,
     knows,
 )
-from sovereign_world.resources import InventoryDelta, Resource
+from sovereign_world.resources import Inventory, InventoryDelta, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView, grade_below, grades_of
 from sovereign_world.scripted import Sovereign
@@ -290,6 +297,9 @@ def _settle_arrival(state: WorldState, journey: Journey, provisions: int) -> lis
         civilization.settlements = tuple(
             sorted((*civilization.settlements, settlement), key=lambda item: item.settlement_id)
         )
+        ruin = next((item for item in state.ruins if item.tile == destination), None)
+        if ruin is not None:
+            _resettle(state, civilization_id, settlement.settlement_id, ruin)
     # Settlers' leftover food is their new settlement's first store.
     stored = _store_provisions(state, civilization_id, destination, provisions)
     _add_notice(
@@ -375,6 +385,7 @@ DISPATCH_EVENT = {
     JourneyKind.CAMPAIGN: "war_party_dispatched",
     JourneyKind.HAUL: "haul_dispatched",
     JourneyKind.PETITION: "people_released",
+    JourneyKind.SALVAGE: "salvagers_dispatched",
 }
 RETURNED_EVENT = {
     JourneyKind.ROADWORK: "road_crew_returned",
@@ -382,6 +393,7 @@ RETURNED_EVENT = {
     JourneyKind.CAMPAIGN: "war_party_returned",
     JourneyKind.HAUL: "haulers_returned",
     JourneyKind.PETITION: "petitioners_returned",
+    JourneyKind.SALVAGE: "salvagers_returned",
 }
 PLUNDER_ORDER = (
     Resource.FOOD,
@@ -970,6 +982,9 @@ def _advance_journeys(
             continue
         if journey.kind is JourneyKind.HAUL:
             events.extend(_haul_arrival(state, journey))
+            continue
+        if journey.kind is JourneyKind.SALVAGE:
+            events.extend(_salvage(state, journey))
             continue
         if journey.kind in INTERNAL_KINDS:
             events.extend(
@@ -2614,6 +2629,314 @@ def _refuse_unanswered(state: WorldState, civilization_id: EntityId) -> list[Dom
     return events
 
 
+def _working(state: WorldState, civilization_id: EntityId) -> bool:
+    """Whether any settlement still has its own free people and no enemy holding it."""
+    civilization = state.civilizations[civilization_id]
+    away = _away(state)
+    held = {item.settlement_id for item in state.occupations if item.active}
+    homes = {
+        person.location
+        for person_id, person in civilization.population.people.items()
+        if person.alive and person.captive_of is None and person_id not in away
+    }
+    return any(
+        settlement.tile in homes and settlement.settlement_id not in held
+        for settlement in civilization.settlements
+    )
+
+
+def _advance_civilizations(state: WorldState) -> list[DomainEvent]:
+    """Eliminate the civilizations with no one left, track the homeless and break them up,
+    and record the endings of the world."""
+    events: list[DomainEvent] = []
+    council = state.day % state.config.council_interval_days == 0
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        if civilization.eliminated_day is not None:
+            continue
+        if not civilization.population.living_ids:
+            events.extend(_eliminate(state, civilization_id))
+            continue
+        working = _working(state, civilization_id)
+        if not working and civilization.homeless_since is None:
+            civilization.homeless_since = state.day
+            events.append(
+                _event(state, EventPhase.MOVEMENT, "civilization_homeless", str(civilization_id))
+            )
+        elif working and civilization.homeless_since is not None:
+            civilization.homeless_since = None
+            events.append(
+                _event(state, EventPhase.MOVEMENT, "civilization_recovered", str(civilization_id))
+            )
+        if (
+            council
+            and civilization.homeless_since is not None
+            and state.day - civilization.homeless_since >= BREAKUP_GRACE_DAYS
+        ):
+            events.extend(_break_up(state, civilization_id))
+    alive = sorted(
+        civilization_id
+        for civilization_id, civilization in state.civilizations.items()
+        if civilization.eliminated_day is None
+    )
+    recorded = {ending.kind for ending in state.endings}
+    ending: Ending | None = None
+    if len(alive) == 1 and EndingKind.LAST_CIVILIZATION not in recorded:
+        survivor = alive[0]
+        ending = Ending(
+            kind=EndingKind.LAST_CIVILIZATION,
+            day=state.day,
+            survivor_id=survivor,
+            population=len(state.civilizations[survivor].population.living_ids),
+        )
+    elif not alive and EndingKind.NO_CIVILIZATION not in recorded:
+        ending = Ending(kind=EndingKind.NO_CIVILIZATION, day=state.day)
+    if ending is not None:
+        state.endings = (*state.endings, ending)
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                ending.kind.value,
+                str(ending.survivor_id) if ending.survivor_id else None,
+                population=ending.population,
+            )
+        )
+    return events
+
+
+def _break_up(state: WorldState, civilization_id: EntityId) -> list[DomainEvent]:
+    """A quarter of a homeless civilization's free people set out to ask the nearest
+    civilization they know to take them in."""
+    civilization = state.civilizations[civilization_id]
+    away = _away(state)
+    free = sorted(
+        person_id
+        for person_id, person in civilization.population.people.items()
+        if person.alive and person.captive_of is None and person_id not in away
+    )
+    known = [
+        contact
+        for contact in civilization.contacts
+        if state.civilizations[contact.civilization_id].eliminated_day is None
+    ]
+    if not free or not known:
+        return []
+    leaving = free[: max(1, len(free) // BREAKUP_SHARE)]
+    people = civilization.population.people
+    groups: dict[tuple[HexCoord, EntityId, HexCoord], list[EntityId]] = {}
+    for person_id in leaving:
+        here = people[person_id].location
+        contact = min(
+            known, key=lambda item: (item.settlement.distance(here), item.civilization_id)
+        )
+        groups.setdefault((here, contact.civilization_id, contact.settlement), []).append(person_id)
+    events: list[DomainEvent] = []
+    taken = {journey.journey_id for journey in state.journeys}
+    for (here, recipient, gate), group in sorted(groups.items()):
+        route = way_to(state.world_map, here, frozenset({gate}))
+        if route is None or len(route) < 2:
+            continue
+        for chunk in batched(group, MAX_TRAVELLERS):
+            number = 0
+            while (
+                journey_id := EntityId(
+                    f"journey:{civilization_id}:drift:{state.day:06d}:{here.q}:{here.r}:{number}"
+                )
+            ) in taken:
+                number += 1
+            taken.add(journey_id)
+            journey = Journey(
+                journey_id=journey_id,
+                kind=JourneyKind.PETITION,
+                sender_civilization_id=civilization_id,
+                recipient_civilization_id=recipient,
+                traveller_ids=tuple(sorted(chunk)),
+                route=route,
+                departed_day=state.day,
+            )
+            state.journeys = tuple(
+                sorted((*state.journeys, journey), key=lambda item: item.journey_id)
+            )
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "people_drifted",
+                    str(civilization_id),
+                    str(journey_id),
+                    to=str(recipient),
+                    people=len(chunk),
+                )
+            )
+    return events
+
+
+def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent]:
+    """No one is left: wars and treaties end, captives go free, settlements become ruins."""
+    civilization = state.civilizations[civilization_id]
+    civilization.eliminated_day = state.day
+    events: list[DomainEvent] = []
+    state.wars = tuple(
+        war.model_copy(update={"ended_day": state.day})
+        if war.active and civilization_id in {war.aggressor_id, war.defender_id}
+        else war
+        for war in state.wars
+    )
+    for treaty in state.active_treaties:
+        if treaty.in_force and civilization_id in {
+            treaty.proposer_civilization_id,
+            treaty.recipient_civilization_id,
+        }:
+            _end_treaty(state, treaty.treaty_id, TreatyEndKind.CANCELLED, civilization_id)
+    held = tuple(
+        person_id
+        for other in state.civilizations.values()
+        for person_id, person in sorted(other.population.people.items())
+        if person.alive and person.captive_of == civilization_id
+    )
+    events.extend(_free_captives(state, held, "released"))
+    journeys = {journey.journey_id: journey for journey in state.journeys}
+    for siege in state.sieges:
+        if siege.active and siege.defender_id == civilization_id:
+            events.extend(_break_camp(state, journeys[siege.journey_id], SiegeEnd.GONE))
+    for occupation in state.occupations:
+        if occupation.active and occupation.owner_id == civilization_id:
+            events.extend(_withdraw(state, journeys[occupation.journey_id], OccupationEnd.GONE))
+    for journey in state.journeys:
+        if journey.waiting and journey.recipient_civilization_id == civilization_id:
+            events.extend(_refuse(state, journey))
+    ruins = list(state.ruins)
+    for settlement in civilization.settlements:
+        sid = settlement.settlement_id
+        ruins.append(
+            Ruin(
+                ruin_id=EntityId(f"ruin:{sid}"),
+                tile=settlement.tile,
+                former_settlement_id=sid,
+                former_civilization_id=civilization_id,
+                since_day=state.day,
+                store=store(civilization, sid),
+                storehouses=tuple(
+                    item for item in civilization.storehouses if item.settlement_id == sid
+                ),
+                walls=next(
+                    (item for item in civilization.walls if item.settlement_id == sid), None
+                ),
+            )
+        )
+        events.append(
+            _event(state, EventPhase.MOVEMENT, "settlement_ruined", str(civilization_id), str(sid))
+        )
+    state.ruins = tuple(sorted(ruins, key=lambda item: item.tile))
+    # With no one left to hold it, the civilization's land is no one's.
+    territory = state.territory
+    state.territory = territory.model_copy(
+        update={
+            "held": tuple(
+                item for item in territory.held if item.civilization_id != civilization_id
+            ),
+            "owners": tuple(
+                item for item in territory.owners if item.civilization_id != civilization_id
+            ),
+            "challenges": tuple(
+                item for item in territory.challenges if item.civilization_id != civilization_id
+            ),
+        }
+    )
+    civilization.settlements = ()
+    civilization.stores = {}
+    civilization.inventory = Inventory(capacity=0)
+    civilization.storehouses = ()
+    civilization.walls = ()
+    civilization.toll_posts = ()
+    civilization.garrisons = ()
+    civilization.storehouse_jobs = ()
+    civilization.wall_jobs = ()
+    civilization.craft_jobs = ()
+    civilization.drills = ()
+    civilization.research = ()
+    civilization.teaching_assignments = ()
+    civilization.work_orders = ()
+    events.append(_event(state, EventPhase.DEATH, "civilization_eliminated", str(civilization_id)))
+    return events
+
+
+def _salvage(state: WorldState, journey: Journey) -> list[DomainEvent]:
+    """Salvagers at a ruin load what they can bear from its store and turn for home."""
+    ruin = next((item for item in state.ruins if item.tile == journey.route[-1]), None)
+    if ruin is None:
+        return []
+    # Room is what the party set out able to bear, less the food it packed.
+    room = journey.carry_per_person * len(journey.traveller_ids) - journey.provisions_packed
+    left = dict(ruin.store.quantities)
+    taken: dict[Resource, int] = {}
+    order = (*PLUNDER_ORDER, *(item for item in Resource if item not in PLUNDER_ORDER))
+    for resource in order:
+        grab = min(left.get(resource, 0), max(room, 0))
+        if grab:
+            taken[resource] = grab
+            left[resource] -= grab
+            room -= grab
+    updated = ruin.model_copy(
+        update={
+            "store": Inventory(
+                capacity=ruin.store.capacity,
+                quantities={key: value for key, value in left.items() if value},
+            )
+        }
+    )
+    state.ruins = tuple(updated if item.tile == ruin.tile else item for item in state.ruins)
+    if taken:
+        _replace_journey(
+            state,
+            journey.model_copy(
+                update={"cargo": dict(sorted(taken.items())), "carrying_cargo": True}
+            ),
+        )
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "ruin_salvaged",
+            str(journey.sender_civilization_id),
+            str(ruin.ruin_id),
+            units=sum(taken.values()),
+        )
+    ]
+
+
+def _resettle(
+    state: WorldState, civilization_id: EntityId, settlement_id: EntityId, ruin: Ruin
+) -> None:
+    """Settlers on a ruin take over what is left of it: its store, storehouses and walls."""
+    civilization = state.civilizations[civilization_id]
+    civilization.stores = {**civilization.stores, settlement_id: ruin.store}
+    civilization.storehouses = tuple(
+        sorted(
+            (
+                *civilization.storehouses,
+                *(
+                    item.model_copy(update={"settlement_id": settlement_id})
+                    for item in ruin.storehouses
+                ),
+            ),
+            key=lambda item: item.storehouse_id,
+        )
+    )
+    if ruin.walls is not None:
+        civilization.walls = tuple(
+            sorted(
+                (
+                    *civilization.walls,
+                    ruin.walls.model_copy(update={"settlement_id": settlement_id}),
+                ),
+                key=lambda item: item.settlement_id,
+            )
+        )
+    state.ruins = tuple(item for item in state.ruins if item.tile != ruin.tile)
+
+
 def _resolve_war(state: WorldState, rng: StableRng) -> list[DomainEvent]:
     """Each war party fights whoever stands against it, ambushes convoys, and at its target
     fights for its objective; then it turns for home."""
@@ -3898,7 +4221,10 @@ def _run_councils(
     if state.day % state.config.council_interval_days != 0:
         return events
     for civilization_id in sorted(sovereigns):
-        if civilization_id not in state.civilizations:
+        if (
+            civilization_id not in state.civilizations
+            or state.civilizations[civilization_id].eliminated_day is not None
+        ):
             continue
         sovereign = sovereigns[civilization_id]
         try:
@@ -4556,6 +4882,8 @@ def advance_day(
 
     for civilization_id in sorted(candidate.civilizations):
         civilization = candidate.civilizations[civilization_id]
+        if civilization.eliminated_day is not None:
+            continue
         # Travellers on the road eat from their own packs, not from home stores.
         away = {
             person_id
@@ -4840,6 +5168,7 @@ def advance_day(
             if eater is not None and eater.alive:
                 recover(eater)
 
+    events.extend(_advance_civilizations(candidate))
     events.extend(_advance_territory(candidate))
     events.extend(_joined_roads(candidate))
 

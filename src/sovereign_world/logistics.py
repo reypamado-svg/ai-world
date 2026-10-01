@@ -60,6 +60,8 @@ class JourneyKind(StrEnum):
     """Carriers taking goods from one of their settlements' stores to another, then home."""
     PETITION = "petition"
     """Released people asking to join another civilization; they wait for its answer."""
+    SALVAGE = "salvage"
+    """Carriers going to a ruin to bring back what they can bear from its store."""
 
 
 INTERNAL_KINDS = frozenset(
@@ -70,6 +72,7 @@ INTERNAL_KINDS = frozenset(
         JourneyKind.ROADWORK,
         JourneyKind.DEPOSIT,
         JourneyKind.HAUL,
+        JourneyKind.SALVAGE,
     }
 )
 ROUND_TRIP_KINDS = frozenset(
@@ -79,6 +82,7 @@ ROUND_TRIP_KINDS = frozenset(
         JourneyKind.CAMPAIGN,
         JourneyKind.HAUL,
         JourneyKind.PETITION,
+        JourneyKind.SALVAGE,
     }
 )
 CARRYING_KINDS = frozenset({JourneyKind.DEPOSIT, JourneyKind.HAUL})
@@ -207,7 +211,12 @@ class Journey(BaseModel):
             raise ValueError("only a war party carries plunder or fights battles")
         if campaign and (set(self.cargo) - WAR_GEAR or self.carrying_cargo):
             raise ValueError("a war party carries only its kits and engines")
-        if internal and self.kind not in CARRYING_KINDS and (self.cargo or self.carrying_cargo):
+        if (
+            internal
+            and self.kind not in CARRYING_KINDS
+            and self.kind is not JourneyKind.SALVAGE
+            and (self.cargo or self.carrying_cargo)
+        ):
             raise ValueError("internal journeys carry no trade cargo")
         if self.kind in CARRYING_KINDS and not self.cargo:
             raise ValueError("a deposit or a haul carries goods")
@@ -637,7 +646,7 @@ def advance_journeys_day(
                 arrived.append(moved)
                 updated.append(moved)
                 continue
-            if journey.kind in CARRYING_KINDS:
+            if journey.kind in CARRYING_KINDS or journey.kind is JourneyKind.SALVAGE:
                 moved = moved.model_copy(
                     update={
                         "arrived_day": day,
