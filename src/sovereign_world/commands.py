@@ -1522,6 +1522,22 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="invalid_treaty",
                         message="peace terms go with a peace offer, and a party pays tribute",
                     )
+                elif (
+                    command.peace_terms is not None
+                    and command.peace_terms.ceded_settlement is not None
+                    and not any(
+                        settlement.settlement_id == command.peace_terms.ceded_settlement
+                        and not settlement.capital
+                        for side in (envelope.civilization_id, command.recipient_civilization_id)
+                        if side in state.civilizations
+                        for settlement in state.civilizations[side].settlements
+                    )
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_treaty",
+                        message="a ceded settlement belongs to one side and is not its capital",
+                    )
                 elif command.treaty_id in seen_treaties or any(
                     offer.offer_id == command.treaty_id for offer in state.treaty_offers
                 ):

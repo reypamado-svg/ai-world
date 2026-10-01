@@ -26,6 +26,21 @@ class Sex(StrEnum):
     MALE = "male"
 
 
+SETTLING_DAYS = 365
+"""A person who changes civilization has a quarter of each skill held back this long."""
+
+
+class AllegianceChange(BaseModel):
+    """The day a person became a member of another civilization, and why."""
+
+    model_config = ConfigDict(frozen=True)
+
+    day: int = Field(ge=0)
+    from_civilization_id: EntityId
+    to_civilization_id: EntityId
+    reason: str
+
+
 class Person(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
@@ -46,6 +61,11 @@ class Person(BaseModel):
     """The civilization holding this person prisoner; they keep their own allegiance."""
     held_at: EntityId | None = None
     """The captor's settlement holding them; none while they march with a war party."""
+    allegiances: tuple[AllegianceChange, ...] = ()
+    """Every change of civilization in this person's life, oldest first."""
+    held_skills: dict[str, int] = Field(default_factory=dict)
+    """Skill held back while a newcomer settles in; restored on `settled_day`."""
+    settled_day: int | None = None
 
 
 class ScheduledBirth(BaseModel):
