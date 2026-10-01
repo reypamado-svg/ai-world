@@ -374,12 +374,14 @@ DISPATCH_EVENT = {
     JourneyKind.DEPOSIT: "toll_deposit_dispatched",
     JourneyKind.CAMPAIGN: "war_party_dispatched",
     JourneyKind.HAUL: "haul_dispatched",
+    JourneyKind.PETITION: "people_released",
 }
 RETURNED_EVENT = {
     JourneyKind.ROADWORK: "road_crew_returned",
     JourneyKind.DEPOSIT: "toll_couriers_returned",
     JourneyKind.CAMPAIGN: "war_party_returned",
     JourneyKind.HAUL: "haulers_returned",
+    JourneyKind.PETITION: "petitioners_returned",
 }
 PLUNDER_ORDER = (
     Resource.FOOD,
@@ -949,6 +951,19 @@ def _advance_journeys(
         events.extend(_settle_toll(state, encounter))
     for journey in result.arrived:
         if journey.kind is JourneyKind.CAMPAIGN:
+            continue
+        if journey.kind is JourneyKind.PETITION:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "petition_arrived",
+                    str(journey.recipient_civilization_id),
+                    str(journey.journey_id),
+                    sender=str(journey.sender_civilization_id),
+                    people=len(journey.traveller_ids),
+                )
+            )
             continue
         if journey.kind is JourneyKind.DEPOSIT:
             events.extend(_deposit_arrival(state, journey))
@@ -2506,6 +2521,99 @@ def _check_tribute(state: WorldState) -> list[DomainEvent]:
     return events
 
 
+def _answer_petition(state: WorldState, command: DirectOrder) -> list[DomainEvent]:
+    journey = next(item for item in state.journeys if item.journey_id == command.journey_id)
+    return _admit(state, journey) if command.admit else _refuse(state, journey)
+
+
+def _admit(state: WorldState, journey: Journey) -> list[DomainEvent]:
+    """The petitioners are taken in: they change allegiance, and their packs go to the store."""
+    sender, receiver = journey.sender_civilization_id, journey.recipient_civilization_id
+    people = state.civilizations[sender].population.people
+    arrivals = tuple(
+        person_id
+        for person_id in journey.traveller_ids
+        if person_id in people and people[person_id].alive
+    )
+    _change_allegiance(state, arrivals, sender, receiver, "release")
+    if journey.provisions:
+        put(state.civilizations[receiver], journey.route[-1], {Resource.FOOD: journey.provisions})
+    _replace_journey(
+        state,
+        journey.model_copy(
+            update={
+                "waiting": False,
+                "phase": JourneyPhase.COMPLETE,
+                "outcome": JourneyOutcome.DELIVERED,
+                "completed_day": state.day,
+                "provisions": 0,
+            }
+        ),
+    )
+    events = [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "petition_admitted",
+            str(receiver),
+            str(journey.journey_id),
+            sender=str(sender),
+            people=len(arrivals),
+        )
+    ]
+    for capability in _adopt_migrant_capabilities(state, receiver, arrivals):
+        events.append(
+            _event(
+                state,
+                EventPhase.WORK,
+                "capability_learned",
+                str(receiver),
+                capability=capability.value,
+                source="release",
+            )
+        )
+    return events
+
+
+def _refuse(state: WorldState, journey: Journey) -> list[DomainEvent]:
+    """Refused petitioners turn and walk home."""
+    _replace_journey(
+        state,
+        journey.model_copy(
+            update={
+                "waiting": False,
+                "phase": JourneyPhase.RETURNING,
+                "outcome": JourneyOutcome.REFUSED,
+            }
+        ),
+    )
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "petition_refused",
+            str(journey.recipient_civilization_id),
+            str(journey.journey_id),
+            sender=str(journey.sender_civilization_id),
+        )
+    ]
+
+
+def _refuse_unanswered(state: WorldState, civilization_id: EntityId) -> list[DomainEvent]:
+    """Petitioners a council let wait past a whole council without an answer are refused."""
+    interval = state.config.council_interval_days
+    events: list[DomainEvent] = []
+    for journey in state.journeys:
+        if (
+            journey.waiting
+            and journey.recipient_civilization_id == civilization_id
+            and journey.arrived_day is not None
+            and journey.arrived_day < state.day - interval
+        ):
+            events.extend(_refuse(state, journey))
+    return events
+
+
 def _resolve_war(state: WorldState, rng: StableRng) -> list[DomainEvent]:
     """Each war party fights whoever stands against it, ambushes convoys, and at its target
     fights for its objective; then it turns for home."""
@@ -3880,6 +3988,10 @@ def _run_councils(
             elif isinstance(command, DirectOrder) and command.kind in CAMP_ORDERS:
                 events.extend(_siege_order(state, civilization_id, command))
             elif (
+                isinstance(command, DirectOrder) and command.kind is DirectOrderKind.ANSWER_PETITION
+            ):
+                events.extend(_answer_petition(state, command))
+            elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.RELEASE_PRISONERS
             ):
@@ -4163,6 +4275,9 @@ def advance_day(
     }
     candidate.active_decrees = deepcopy(state.active_decrees)
     events: list[DomainEvent] = []
+    if candidate.day % candidate.config.council_interval_days == 0:
+        for civilization_id in sorted(candidate.civilizations):
+            events.extend(_refuse_unanswered(candidate, civilization_id))
     if sovereigns is not None:
         events.extend(_run_councils(candidate, sovereigns))
 

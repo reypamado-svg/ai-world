@@ -58,6 +58,8 @@ class JourneyKind(StrEnum):
     """A war party: fighters marching on a foreign target, then home."""
     HAUL = "haul"
     """Carriers taking goods from one of their settlements' stores to another, then home."""
+    PETITION = "petition"
+    """Released people asking to join another civilization; they wait for its answer."""
 
 
 INTERNAL_KINDS = frozenset(
@@ -71,7 +73,13 @@ INTERNAL_KINDS = frozenset(
     }
 )
 ROUND_TRIP_KINDS = frozenset(
-    {JourneyKind.SHIPMENT, JourneyKind.DEPOSIT, JourneyKind.CAMPAIGN, JourneyKind.HAUL}
+    {
+        JourneyKind.SHIPMENT,
+        JourneyKind.DEPOSIT,
+        JourneyKind.CAMPAIGN,
+        JourneyKind.HAUL,
+        JourneyKind.PETITION,
+    }
 )
 CARRYING_KINDS = frozenset({JourneyKind.DEPOSIT, JourneyKind.HAUL})
 """Internal journeys that carry goods to one of their own stores."""
@@ -162,6 +170,8 @@ class Journey(BaseModel):
     """Road tiles this party has already wrecked; each is wrecked once."""
     captive_ids: tuple[EntityId, ...] = ()
     """Enemy prisoners marching with a war party to be held at its home."""
+    waiting: bool = False
+    """Petitioners at the other civilization's settlement, waiting for its answer."""
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
@@ -183,6 +193,14 @@ class Journey(BaseModel):
             raise ValueError("only a war party wrecks roads")
         if not campaign and self.captive_ids:
             raise ValueError("only a war party takes prisoners along")
+        if self.waiting and (
+            self.kind is not JourneyKind.PETITION
+            or self.phase is not JourneyPhase.OUTBOUND
+            or self.route_index != len(self.route) - 1
+        ):
+            raise ValueError("only petitioners wait, at the end of their route")
+        if self.kind is JourneyKind.PETITION and (self.cargo or self.carrying_cargo):
+            raise ValueError("petitioners carry nothing but their provisions")
         if self.captive_ids != tuple(sorted(set(self.captive_ids))):
             raise ValueError("captives are unique and sorted")
         if not campaign and (self.plunder or self.battles):
@@ -514,8 +532,8 @@ def advance_journeys_day(
                 )
             )
             continue
-        if journey.encamped:
-            # A camp stays where it is; it only eats and forages.
+        if journey.encamped or journey.waiting:
+            # A camp, or petitioners at a gate, stay where they are; they only eat and forage.
             updated.append(journey)
             continue
         if journey.phase is JourneyPhase.RETURNING and journey.route_index == 0:
@@ -607,6 +625,12 @@ def advance_journeys_day(
             continue
         route_index = moved.route_index
         if journey.phase is JourneyPhase.OUTBOUND and route_index == len(journey.route) - 1:
+            if journey.kind is JourneyKind.PETITION:
+                # Petitioners wait at the gate for the other civilization's council.
+                moved = moved.model_copy(update={"arrived_day": day, "waiting": True})
+                arrived.append(moved)
+                updated.append(moved)
+                continue
             if journey.kind is JourneyKind.CAMPAIGN:
                 # The engine fights for the objective and turns the party home today.
                 moved = moved.model_copy(update={"arrived_day": day})
