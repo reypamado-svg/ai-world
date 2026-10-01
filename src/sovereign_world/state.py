@@ -24,6 +24,7 @@ from sovereign_world.diplomacy import (
     TreatyOffer,
 )
 from sovereign_world.endings import Ending, Ruin
+from sovereign_world.espionage import CaughtSpy, SpyReport
 from sovereign_world.exploration import Expedition, ExpeditionStatus, Observation
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
@@ -80,6 +81,10 @@ class CivilizationState(BaseModel):
     contacts: tuple[Contact, ...] = ()
     received_messages: tuple[DiplomaticMessage, ...] = ()
     logistics_notices: tuple[LogisticsNotice, ...] = ()
+    spy_reports: tuple[SpyReport, ...] = ()
+    """Findings its spies and couriers have brought home."""
+    caught_spies: tuple[CaughtSpy, ...] = ()
+    """Foreign spies and couriers it has caught, and who sent them."""
     settlements: tuple[Settlement, ...] = ()
     garrisons: tuple[Garrison, ...] = ()
     claims: tuple[Claim, ...] = ()

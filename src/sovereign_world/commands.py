@@ -30,6 +30,7 @@ from sovereign_world.diplomacy import (
     TreatyKind,
 )
 from sovereign_world.endings import Ending, Ruin
+from sovereign_world.espionage import MAX_SPIES, MAX_WATCH_DAYS, CaughtSpy, SpyReport
 from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
 from sovereign_world.hexmap import HexCoord, Terrain
@@ -39,6 +40,7 @@ from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
     INTERNAL_KINDS,
     MAX_TRAVELLERS,
+    SPYING_KINDS,
     TREATY_KINDS,
     Journey,
     JourneyKind,
@@ -155,6 +157,8 @@ class DirectOrderKind(StrEnum):
     RELEASE_PEOPLE = "release_people"
     ANSWER_PETITION = "answer_petition"
     SALVAGE = "salvage"
+    SEND_SPY = "send_spy"
+    SEND_COURIER = "send_courier"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -178,6 +182,7 @@ JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.HAUL_GOODS: JourneyKind.HAUL,
     DirectOrderKind.RELEASE_PEOPLE: JourneyKind.PETITION,
     DirectOrderKind.SALVAGE: JourneyKind.SALVAGE,
+    DirectOrderKind.SEND_SPY: JourneyKind.SPY,
 }
 CAMP_ORDERS = frozenset(
     {
@@ -262,6 +267,8 @@ class DirectOrder(BaseModel):
     captive_ids: tuple[EntityId, ...] = ()
     """Prisoners this civilization holds at its settlements, to be let go."""
     admit: bool = False
+    watch_days: int = Field(default=0, ge=0, le=MAX_WATCH_DAYS)
+    """How long spies watch the settlement at the end of their route."""
     """The answer to a petition: take the petitioners in, or send them home."""
     """A war party stops on each enemy road tile it passes and pulls it down a grade."""
     drill_days: int = Field(default=30, ge=1, le=180)
@@ -355,6 +362,12 @@ class CouncilReport(BaseModel):
     """People of other civilizations waiting at this one's gates to be taken in."""
     ruins: tuple[Ruin, ...] = ()
     """Ruins on land this civilization knows."""
+    spy_missions: tuple[Journey, ...] = ()
+    """This civilization's spies and couriers still out."""
+    spy_reports: tuple[SpyReport, ...] = ()
+    """Findings its spies and couriers have brought home."""
+    caught_spies: tuple[CaughtSpy, ...] = ()
+    """Foreign spies and couriers it has caught, and who sent them."""
     speakers: dict[EntityId, tuple[EntityId, ...]] = Field(default_factory=dict)
     """For each language, this civilization's free people who speak it, natively or fluently."""
     endings: tuple[Ending, ...] = ()
@@ -424,6 +437,15 @@ def build_council_report(
         ),
         ruins=tuple(ruin for ruin in state.ruins if ruin.tile in set(civilization.known_tiles)),
         speakers=_speakers(civilization),
+        spy_missions=tuple(
+            journey
+            for journey in state.journeys
+            if journey.active
+            and journey.kind in SPYING_KINDS
+            and journey.sender_civilization_id == civilization_id
+        ),
+        spy_reports=civilization.spy_reports,
+        caught_spies=civilization.caught_spies,
         endings=state.endings,
         petitions=tuple(
             journey
@@ -738,8 +760,13 @@ def journey_supplies(
                 heavy=kind is JourneyKind.CAMPAIGN and slows(command.cargo),
             ),
             crew,
-            command.extra_provisions + toll_food,
+            command.extra_provisions
+            + toll_food
+            + (crew * command.watch_days if kind is JourneyKind.SPY else 0),
         )
+        if kind is JourneyKind.SPY:
+            # Spies pack what they can bear and forage through a long watch.
+            provisions = min(provisions, CARGO_UNITS_PER_CARRIER * crew)
     taken[Resource.FOOD] = taken.get(Resource.FOOD, 0) + provisions
     return provisions, taken
 
@@ -996,6 +1023,72 @@ def _petition_error(
     return None
 
 
+def _spy_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved_cargo: Reserved,
+) -> CommandError | None:
+    """Spies walk from one of their settlements to watch a known foreign settlement."""
+    if not 1 <= command.watch_days <= MAX_WATCH_DAYS:
+        return CommandError(
+            command_id=command.command_id,
+            code="invalid_watch",
+            message=f"spies watch for between 1 and {MAX_WATCH_DAYS} days",
+        )
+    if len(command.traveller_ids) > MAX_SPIES:
+        return CommandError(
+            command_id=command.command_id,
+            code="invalid_journey",
+            message=f"at most {MAX_SPIES} go spying together",
+        )
+    return _petition_error(command, civilization_id, state, reserved_cargo)
+
+
+def _courier_error(
+    command: DirectOrder, civilization_id: EntityId, state: WorldState, sent: set[EntityId]
+) -> CommandError | None:
+    """One of a watching party goes home ahead with the findings so far."""
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    civilization = state.civilizations[civilization_id]
+    party = next(
+        (
+            journey
+            for journey in state.journeys
+            if journey.journey_id == command.journey_id
+            and journey.sender_civilization_id == civilization_id
+            and journey.watching
+        ),
+        None,
+    )
+    if party is None or party.journey_id in sent:
+        return error(
+            "invalid_courier", "a courier leaves spies of this civilization on watch, once"
+        )
+    if party.findings is None:
+        return error("invalid_courier", "the spies have nothing to send yet")
+    if (
+        len(command.traveller_ids) != 1
+        or command.traveller_ids[0] not in party.traveller_ids
+        or len(party.traveller_ids) < 2
+    ):
+        return error("invalid_courier", "one of the spies goes, and at least one stays")
+    route = command.route
+    if (
+        len(route) < 2
+        or route[0] != party.route[-1]
+        or route[-1] not in {settlement.tile for settlement in civilization.settlements}
+        or any(tile not in civilization.known_tiles for tile in route)
+        or any(first.distance(second) != 1 for first, second in pairwise(route))
+        or not passable(state.world_map, route[1:])
+    ):
+        return error("invalid_route", "a courier walks from the spies to one of its settlements")
+    return None
+
+
 def _journey_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -1015,6 +1108,8 @@ def _journey_error(
         return _campaign_error(command, civilization_id, state, reserved_cargo)
     if kind is JourneyKind.PETITION:
         return _petition_error(command, civilization_id, state, reserved_cargo)
+    if kind is JourneyKind.SPY:
+        return _spy_error(command, civilization_id, state, reserved_cargo)
     treaty = next(
         (item for item in state.active_treaties if item.treaty_id == command.treaty_id),
         None,
@@ -1475,6 +1570,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     seen_messages: set[EntityId] = set()
     seen_treaties: set[EntityId] = set()
     seen_journeys: set[EntityId] = set()
+    couriered: set[EntityId] = set()
     ending_treaties: set[EntityId] = set()
     committed_travellers: set[EntityId] = set()
     committed_at_home: set[EntityId] = set()
@@ -1853,6 +1949,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     )
                 else:
                     answered.add(waiting.journey_id)
+            if command.kind is DirectOrderKind.SEND_COURIER and command_error is None:
+                command_error = _courier_error(command, envelope.civilization_id, state, couriered)
+                if command_error is None:
+                    assert command.journey_id is not None
+                    couriered.add(command.journey_id)
             if command.kind in CAMP_ORDERS and command_error is None:
                 command_error = _siege_order_error(
                     command, envelope.civilization_id, state, ordered_camps
