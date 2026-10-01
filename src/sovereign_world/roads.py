@@ -70,6 +70,12 @@ def next_grade(grade: RoadGrade | None) -> RoadGrade | None:
     return GRADES[level] if level < len(GRADES) else None
 
 
+def grade_below(grade: RoadGrade) -> RoadGrade | None:
+    """The grade a wrecked road falls to; a wrecked footpath leaves no road."""
+    level = rank(grade)
+    return GRADES[level - 2] if level > 1 else None
+
+
 def steps_to(current: RoadGrade | None, target: RoadGrade) -> tuple[RoadGrade, ...]:
     """Every grade a tile must still pass through to reach the target."""
     return GRADES[rank(current) : rank(target)]

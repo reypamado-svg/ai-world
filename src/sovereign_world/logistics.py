@@ -155,7 +155,11 @@ class Journey(BaseModel):
     tolls_paid: tuple[HexCoord, ...] = ()
     """Toll posts this party has already passed, paying or free; each charges a journey once."""
     encamped: bool = False
-    """A besieging war party camped at the end of its route; it stays until it lifts."""
+    """A war party holding the end of its route, besieging or occupying, until it leaves."""
+    wreck_roads: bool = False
+    """A war party that stops a day on each enemy road tile to pull it down one grade."""
+    wrecked: tuple[HexCoord, ...] = ()
+    """Road tiles this party has already wrecked; each is wrecked once."""
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
@@ -168,11 +172,13 @@ class Journey(BaseModel):
         if campaign != (self.objective is not None):
             raise ValueError("only a war party, and every war party, has an objective")
         if self.encamped and (
-            self.objective is not WarObjective.BESIEGE
+            self.objective not in {WarObjective.BESIEGE, WarObjective.OCCUPY}
             or self.phase is not JourneyPhase.OUTBOUND
             or self.route_index != len(self.route) - 1
         ):
-            raise ValueError("only a besieging party camps, at the end of its route")
+            raise ValueError("only besiegers and occupiers hold the end of their route")
+        if not campaign and (self.wreck_roads or self.wrecked):
+            raise ValueError("only a war party wrecks roads")
         if not campaign and (self.plunder or self.battles):
             raise ValueError("only a war party carries plunder or fights battles")
         if campaign and (set(self.cargo) - WAR_GEAR or self.carrying_cargo):

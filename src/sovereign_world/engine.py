@@ -31,6 +31,7 @@ from sovereign_world.capabilities import (
     advance_knowledge_day,
 )
 from sovereign_world.commands import (
+    CAMP_ORDERS,
     JOURNEY_ORDERS,
     MESSAGE_ORDERS,
     WALL_ORDERS,
@@ -95,7 +96,7 @@ from sovereign_world.research import (
 )
 from sovereign_world.resources import InventoryDelta, Resource
 from sovereign_world.rng import StableRng
-from sovereign_world.roads import Road, RoadView, grades_of
+from sovereign_world.roads import Road, RoadView, grade_below, grades_of
 from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.stores import (
@@ -109,6 +110,7 @@ from sovereign_world.stores import (
     put,
     set_store,
     settlement_at,
+    shrink,
     step_materials,
     store,
     store_at,
@@ -116,6 +118,7 @@ from sovereign_world.stores import (
     supplying,
     take,
 )
+from sovereign_world.stores import grade_below as storehouse_grade_below
 from sovereign_world.territory import (
     SETTLEMENT_SPACING,
     Claim,
@@ -145,12 +148,15 @@ from sovereign_world.war import (
     DRILL_CAP,
     DRILL_DAYS_PER_POINT,
     MIN_BESIEGERS,
+    RISING_RATIO,
     SETTLEMENT_DEFENCE_BP,
     WOUND_MAX,
     WOUND_MIN,
     Battle,
     BattleReport,
     Drill,
+    Occupation,
+    OccupationEnd,
     Siege,
     SiegeEnd,
     War,
@@ -463,6 +469,7 @@ def _dispatch_journey(
         provisions=provisions,
         departed_day=state.day,
         objective=command.war_objective if kind is JourneyKind.CAMPAIGN else None,
+        wreck_roads=command.wreck_roads and kind is JourneyKind.CAMPAIGN,
         carry_per_person=(
             war_party_carry(civilization)
             if kind is JourneyKind.CAMPAIGN
@@ -624,7 +631,8 @@ def _advance_journeys(
         roads=grades_of(state.roads),
         tolls=_toll_rules(state),
         halts=lambda journey, tile: (
-            journey.kind is JourneyKind.CAMPAIGN and _enemy_at(state, journey, tile) is not None
+            journey.kind is JourneyKind.CAMPAIGN
+            and (_enemy_at(state, journey, tile) is not None or _wreckable(state, journey, tile))
         ),
     )
     state.journeys = result.journeys
@@ -1961,12 +1969,26 @@ def _resolve_war(state: WorldState, rng: StableRng) -> list[DomainEvent]:
         fought_today = any(
             battle_id.startswith(f"battle:{state.day:06d}:") for battle_id in party.battles
         )
-        if enemy is not None and not fought_today and _defenders(state, enemy, tile) != ([], []):
+        home_side, marching = _defenders(state, enemy, tile) if enemy is not None else ([], [])
+        # Occupiers live among the residents; they fight only an enemy force that comes.
+        holding = party.encamped and party.objective is WarObjective.OCCUPY
+        if (
+            enemy is not None
+            and not fought_today
+            and (marching if holding else (home_side or marching))
+        ):
             party, fought = _fight(state, party, enemy, rng)
             events.extend(fought)
         if party.phase is JourneyPhase.OUTBOUND:
             events.extend(_ambush(state, party))
             party = next(item for item in state.journeys if item.journey_id == journey_id)
+        if party.phase is JourneyPhase.OUTBOUND and _wreckable(state, party, tile):
+            party, wrecked = _wreck(state, party, tile)
+            events.append(wrecked)
+            continue
+        if party.encamped and party.objective is WarObjective.OCCUPY:
+            events.extend(_hold_occupation(state, party, rng))
+            continue
         if party.encamped:
             events.extend(_hold_camp(state, party, rng))
             continue
@@ -1977,6 +1999,13 @@ def _resolve_war(state: WorldState, rng: StableRng) -> list[DomainEvent]:
             and (party.objective is WarObjective.BESIEGE)
         ):
             events.extend(_encamp(state, party))
+            continue
+        if (
+            party.phase is JourneyPhase.OUTBOUND
+            and at_target
+            and (party.objective is WarObjective.OCCUPY)
+        ):
+            events.extend(_occupy(state, party))
             continue
         if party.phase is JourneyPhase.OUTBOUND and at_target:
             target = party.recipient_civilization_id
@@ -1994,7 +2023,265 @@ def _resolve_war(state: WorldState, rng: StableRng) -> list[DomainEvent]:
             )
             _replace_journey(state, party)
     events.extend(_end_sieges(state))
+    events.extend(_end_occupations(state))
     return events
+
+
+def _wreckable(state: WorldState, party: Journey, tile: HexCoord) -> bool:
+    """A road on enemy land that this road-wrecking party has not yet pulled down."""
+    if not party.wreck_roads or party.phase is not JourneyPhase.OUTBOUND or party.encamped:
+        return False
+    if tile in party.wrecked or tile not in grades_of(state.roads):
+        return False
+    owner = state.territory.owner_of().get(tile)
+    sender = party.sender_civilization_id
+    return (
+        owner is not None
+        and owner != sender
+        and (
+            owner == party.recipient_civilization_id
+            or _war_between(state, sender, owner) is not None
+        )
+    )
+
+
+def _wreck(state: WorldState, party: Journey, tile: HexCoord) -> tuple[Journey, DomainEvent]:
+    """The party spends the day pulling the road down one grade; a footpath is lost."""
+    road = next(item for item in state.roads if item.tile == tile)
+    below = grade_below(road.grade)
+    state.roads = tuple(
+        item
+        for item in (
+            (
+                road.model_copy(update={"grade": below, "graded_day": state.day})
+                if below is not None
+                else None
+            )
+            if item.tile == tile
+            else item
+            for item in state.roads
+        )
+        if item is not None
+    )
+    party = party.model_copy(update={"wrecked": (*party.wrecked, tile)})
+    _replace_journey(state, party)
+    return party, _event(
+        state,
+        EventPhase.MOVEMENT,
+        "road_wrecked",
+        str(party.sender_civilization_id),
+        str(party.journey_id),
+        grade=below.value if below is not None else "none",
+        q=tile.q,
+        r=tile.r,
+    )
+
+
+def _occupation_of(state: WorldState, journey_id: EntityId) -> Occupation | None:
+    return next(
+        (item for item in state.occupations if item.active and item.journey_id == journey_id),
+        None,
+    )
+
+
+def _occupy(state: WorldState, party: Journey) -> list[DomainEvent]:
+    """The party has beaten or found no defenders: it stays and holds the settlement."""
+    events: list[DomainEvent] = []
+    sender, target = party.sender_civilization_id, party.recipient_civilization_id
+    tile = party.route[-1]
+    settlement = settlement_at(state.civilizations[target], tile)
+    held = {item.settlement_id for item in state.occupations if item.active}
+    if settlement is None or settlement.settlement_id in held:
+        _replace_journey(
+            state,
+            party.model_copy(
+                update={"phase": JourneyPhase.RETURNING, "outcome": JourneyOutcome.FAILED}
+            ),
+        )
+        return events
+    war = _war_between(state, sender, target)
+    if war is None:
+        war, started = _start_war(state, sender, target, declared=False)
+        events.extend(started)
+    events.extend(_learn_war(state, war, target))
+    _replace_journey(state, party.model_copy(update={"encamped": True}))
+    occupation = Occupation(
+        occupation_id=EntityId(f"occupation:{state.day:06d}:{party.journey_id}"),
+        journey_id=party.journey_id,
+        occupier_id=sender,
+        owner_id=target,
+        settlement_id=settlement.settlement_id,
+        tile=tile,
+        started_day=state.day,
+    )
+    state.occupations = tuple(
+        sorted((*state.occupations, occupation), key=lambda item: item.occupation_id)
+    )
+    events.append(
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "settlement_occupied",
+            str(sender),
+            str(occupation.occupation_id),
+            owner=str(target),
+            settlement=str(settlement.settlement_id),
+        )
+    )
+    return events
+
+
+def _close_occupation(
+    state: WorldState, journey_id: EntityId, end: OccupationEnd
+) -> list[DomainEvent]:
+    occupation = _occupation_of(state, journey_id)
+    if occupation is None:
+        return []
+    ended = occupation.model_copy(update={"ended_day": state.day, "end": end})
+    state.occupations = tuple(
+        ended if item.occupation_id == occupation.occupation_id else item
+        for item in state.occupations
+    )
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "occupation_ended",
+            str(occupation.occupier_id),
+            str(occupation.occupation_id),
+            owner=str(occupation.owner_id),
+            reason=end.value,
+        )
+    ]
+
+
+def _withdraw(state: WorldState, party: Journey, end: OccupationEnd) -> list[DomainEvent]:
+    _replace_journey(
+        state,
+        party.model_copy(
+            update={
+                "encamped": False,
+                "phase": JourneyPhase.RETURNING,
+                "outcome": JourneyOutcome.DELIVERED,
+            }
+        ),
+    )
+    return _close_occupation(state, party.journey_id, end)
+
+
+def _end_occupations(state: WorldState) -> list[DomainEvent]:
+    """Occupiers routed by a relieving force or wiped out have lost the settlement."""
+    events: list[DomainEvent] = []
+    journeys = {item.journey_id: item for item in state.journeys}
+    for occupation in state.occupations:
+        if not occupation.active:
+            continue
+        held = journeys.get(occupation.journey_id)
+        if held is None or not (held.active and held.encamped):
+            events.extend(_close_occupation(state, occupation.journey_id, OccupationEnd.BEATEN))
+    return events
+
+
+def _hold_occupation(state: WorldState, party: Journey, rng: StableRng) -> list[DomainEvent]:
+    """A day holding the settlement: residents may rise; occupiers take food and chests."""
+    occupation = _occupation_of(state, party.journey_id)
+    if occupation is None:
+        return []
+    events: list[DomainEvent] = []
+    people = state.civilizations[party.sender_civilization_id].population.people
+    living = [
+        person_id
+        for person_id in party.traveller_ids
+        if people[person_id].alive and able_to_fight(people[person_id])
+    ]
+    if len(living) < MIN_BESIEGERS:
+        return _withdraw(state, party, OccupationEnd.TOO_FEW)
+    residents, _ = _defenders(state, occupation.owner_id, occupation.tile)
+    fought_today = any(
+        battle_id.startswith(f"battle:{state.day:06d}:") for battle_id in party.battles
+    )
+    if len(residents) >= RISING_RATIO * len(living) and not fought_today:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "residents_rose",
+                str(occupation.owner_id),
+                str(occupation.occupation_id),
+                residents=len(residents),
+                occupiers=len(living),
+            )
+        )
+        party, fought = _fight(state, party, occupation.owner_id, rng)
+        events.extend(fought)
+        if not party.encamped:
+            events.extend(_close_occupation(state, party.journey_id, OccupationEnd.ROSE))
+            return events
+    owner = state.civilizations[occupation.owner_id]
+    # Occupiers take their food from the settlement's store before its people eat.
+    food = store_at(owner, occupation.tile).quantities.get(Resource.FOOD, 0)
+    taken = min(len(living), food)
+    if taken:
+        take(owner, occupation.tile, {Resource.FOOD: taken})
+        party = party.model_copy(update={"provisions": party.provisions + taken})
+        _replace_journey(state, party)
+    post = _post_at(state, occupation.owner_id, occupation.tile)
+    if post is not None and post.chest:
+        room = _room(state, party)
+        chest = dict(post.chest)
+        plunder = dict(party.plunder)
+        for resource in PLUNDER_ORDER:
+            grab = min(chest.get(resource, 0), room)
+            if grab:
+                plunder[resource] = plunder.get(resource, 0) + grab
+                chest[resource] -= grab
+                room -= grab
+        _replace_post(
+            state,
+            post.model_copy(update={"chest": {key: left for key, left in chest.items() if left}}),
+            occupation.tile,
+            occupation.owner_id,
+        )
+        party = party.model_copy(update={"plunder": dict(sorted(plunder.items()))})
+        _replace_journey(state, party)
+    home = travel_days(state.world_map, tuple(reversed(party.route))[1:], grades_of(state.roads))
+    if not taken and party.provisions < len(living) * home:
+        events.extend(_withdraw(state, party, OccupationEnd.STARVED))
+    return events
+
+
+def _burn_storehouse(state: WorldState, command: DirectOrder) -> list[DomainEvent]:
+    """Occupiers set fire to a storehouse: it falls a grade and the room it held is lost."""
+    occupation = _occupation_of(state, command.journey_id or EntityId(""))
+    assert occupation is not None
+    owner = state.civilizations[occupation.owner_id]
+    house = next(item for item in owner.storehouses if item.storehouse_id == command.storehouse_id)
+    below = storehouse_grade_below(house.grade)
+    lost_room = STOREHOUSE_GRADES[house.grade].capacity - (
+        STOREHOUSE_GRADES[below].capacity if below is not None else 0
+    )
+    burned = shrink(owner, occupation.tile, lost_room)
+    owner.storehouses = tuple(
+        item
+        for item in (
+            (house.model_copy(update={"grade": below}) if below is not None else None)
+            if item.storehouse_id == house.storehouse_id
+            else item
+            for item in owner.storehouses
+        )
+        if item is not None
+    )
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "storehouse_burned",
+            str(occupation.occupier_id),
+            str(house.storehouse_id),
+            grade=below.value if below is not None else "none",
+            lost=sum(burned.values()),
+        )
+    ]
 
 
 def _besieged_settlement(state: WorldState, party: Journey) -> Settlement | None:
@@ -2208,6 +2495,10 @@ def _siege_order(
 ) -> list[DomainEvent]:
     """Lift a siege and march home, or storm the settlement from the camp."""
     party = next(item for item in state.journeys if item.journey_id == command.journey_id)
+    if command.kind is DirectOrderKind.BURN_STOREHOUSE:
+        return _burn_storehouse(state, command)
+    if command.kind is DirectOrderKind.LIFT_SIEGE and party.objective is WarObjective.OCCUPY:
+        return _withdraw(state, party, OccupationEnd.RECALLED)
     if command.kind is DirectOrderKind.LIFT_SIEGE:
         return _break_camp(state, party, SiegeEnd.RECALLED)
     siege = _siege_of(state, party.journey_id)
@@ -2876,6 +3167,11 @@ def _advance_territory(state: WorldState) -> list[DomainEvent]:
         garrisoned,
         grades_of(state.roads),
         besieged=frozenset(siege.settlement_id for siege in state.sieges if siege.active),
+        occupied={
+            occupation.settlement_id: occupation.occupier_id
+            for occupation in state.occupations
+            if occupation.active
+        },
     )
     state.territory = result.territory
     owner_of_source = {
@@ -2885,6 +3181,11 @@ def _advance_territory(state: WorldState) -> list[DomainEvent]:
             for settlement in civilization.settlements
         },
         **{garrison.garrison_id: garrison.civilization_id for garrison in garrisons},
+        **{
+            EntityId(f"occupation:{occupation.settlement_id}"): occupation.occupier_id
+            for occupation in state.occupations
+            if occupation.active
+        },
     }
     for kind, sources in (("route_severed", result.severed), ("route_restored", result.restored)):
         events.extend(
@@ -3011,10 +3312,7 @@ def _run_councils(
                 events.append(_start_storehouse(state, civilization_id, command))
             elif isinstance(command, DirectOrder) and command.kind in WALL_ORDERS:
                 events.append(_start_walls(state, civilization_id, command))
-            elif isinstance(command, DirectOrder) and command.kind in {
-                DirectOrderKind.LIFT_SIEGE,
-                DirectOrderKind.STORM_SETTLEMENT,
-            }:
+            elif isinstance(command, DirectOrder) and command.kind in CAMP_ORDERS:
                 events.extend(_siege_order(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
