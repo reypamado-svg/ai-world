@@ -365,7 +365,7 @@ function buildApi(app) {
       const p = project(x, y);
       app.camera.x = p.x;
       app.camera.y = p.y;
-      app.camera.zoom = zoom;
+      app.camera.setZoom(zoom);
       app.frame(0, false);
     },
     viewHex: (q, r, zoom) => {
@@ -374,6 +374,10 @@ function buildApi(app) {
       app.camera.x = p.x;
       app.camera.y = p.y;
       app.camera.zoom = zoom;
+      app.frame(0, false);
+    },
+    home: () => {
+      Object.assign(app.camera, app.home);
       app.frame(0, false);
     },
     viewVillage: (zoom) => {
@@ -387,6 +391,17 @@ function buildApi(app) {
       app.frame(0, false);
     },
     camera: () => ({ x: app.camera.x, y: app.camera.y, zoom: app.camera.zoom, minZoom: app.camera.minZoom }),
+    /** Set the camera directly (world-screen pixels at zoom 1). */
+    setCamera: (x, y, zoom) => {
+      app.camera.x = x;
+      app.camera.y = y;
+      app.camera.zoom = zoom;
+      app.frame(0, false);
+    },
+    villageCamera: () => {
+      const p = project(app.villageData.origin.x, app.villageData.origin.y);
+      return { x: p.x, y: p.y };
+    },
     band: () => bandOf(app.camera.zoom),
     frame: () => app.frame(0, false),
     setPaused: (p) => app.setPaused(p),

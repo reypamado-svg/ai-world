@@ -335,3 +335,40 @@ button.on {
   white-space: pre-wrap;
   margin: 0;
 }
+#topbar {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+#topbar > * {
+  flex-shrink: 0;
+}
+#topbar .brand,
+.clock {
+  white-space: nowrap;
+}
+#topbar .clock {
+  min-width: 0;
+}
+@media (max-width: 1750px) {
+  #topbar .brand .sub {
+    display: none;
+  }
+}
+@media (max-width: 1500px) {
+  #topbar .chip.persp {
+    display: none;
+  }
+}
+@media (max-width: 1300px) {
+  #topbar .chip:not(.warn):not(.persp) {
+    display: none;
+  }
+}
+#footer {
+  white-space: nowrap;
+  overflow: hidden;
+}
+#footer #perf {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -1,59 +1,84 @@
 # AI World observer (browser)
 
-Phase 4 observer client. **Current state: O1a close-zoom art proof.**
+Phase 4 observer client. **Current state: O1 visual prototype** (plus the
+O1a close-zoom art proof).
 
-Everything on the proof page is clearly labelled:
+Everything on screen says where it comes from:
 
-- **PROTOTYPE ARTWORK.** All sprites are original, procedurally painted in
-  the browser from code (no external or licensed assets). They sit behind an
-  asset contract (`src/render/art/registry.js`) so a licensed pack can replace
-  them one asset at a time.
-- **SAMPLE DATA.** The village, buildings, citizens and their routines are
-  invented for visual review. They are not simulation output and prove
-  nothing about what the engine records.
+- **ENGINE TERRAIN · DAY 0.** Terrain and the four capitals are the engine's
+  own world generation for seed 21 (48 × 48 tiles), exported by
+  `python -m sovereign_world.observer.terrain_export`. No day has been
+  simulated. The 64 m per tile is a display scale, not engine data.
+- **SAMPLE VILLAGE.** The village, its buildings, citizens and routines are
+  invented for visual review and placed on the first civilization's capital
+  tile. They prove nothing about what the simulation records or supports.
+- **PROTOTYPE ARTWORK.** All sprites are original and procedurally painted in
+  the browser from code. They sit behind an asset contract
+  (`src/render/art/registry.js`) so a licensed pack can replace them one at a
+  time.
 - **Visual approximation.** Street-level movement is a deterministic
-  presentation of sample routines (`src/sim/paths.js`). It is a pure function
-  of person and display time; the camera, zoom, selection and following
-  never change it.
+  presentation of sample routines (`src/sim/paths.js`): a pure function of
+  person and display time. Camera, zoom, selection and following never change
+  it.
 
 ## Run it
 
 No build step. Serve the `observer/` folder over HTTP (ES modules do not load
-from `file://`):
+from `file://`). From the repository root:
 
 ```sh
-node observer/tests/serve.mjs 8765        # then open http://127.0.0.1:8765/proof.html
+node observer/tests/serve.mjs 8765
 # or
-python3 -m http.server 8765 -d observer
+python -m http.server 8765 -d observer
 ```
 
-- Drag to pan, mouse wheel to zoom, click a person or building to inspect.
-- Click again on the same spot to cycle through people standing together.
-- **Follow person** in the inspector keeps the camera on them, including
-  while they are indoors (their building is highlighted instead).
-- **Footprints** shows the ground boxes used for depth sorting.
-- **Depth debug** draws every object as a flat colour (used by the tests).
-- `proof.html?scene=depth` is the pinned depth-ordering test scene.
+Then open:
+
+- `http://127.0.0.1:8765/index.html` — the observer prototype (world atlas →
+  regional → settlement in one camera).
+  - `?citizens=2000` (up to 5000) adds SAMPLE residents to load the renderer.
+  - `?quality=high|medium|low|auto` (default auto).
+- `http://127.0.0.1:8765/proof.html` — the O1a close-zoom art proof.
+- `http://127.0.0.1:8765/proof.html?scene=depth` — the pinned depth test scene.
+
+Controls: drag to pan, mouse wheel to zoom (around the cursor), click a
+person or building to inspect, click again on the same spot to cycle through
+people standing together. **Follow person** keeps the camera on them, also
+across tiles and while they are indoors. ⌖ goes to the village, ⌂ returns to
+the whole world, the minimap moves the camera. **Measurements** shows and
+copies frame times, counts, texture memory and loaded chunks for your machine.
 
 ## Tests
 
 ```sh
 cd observer
-npm install            # playwright 1.56.1 (uses the installed Chromium) and pixi.js for vendoring
-node --test --test-concurrency=1 tests/*.test.mjs   # browser tests, one file at a time
-node tests/capture.mjs captures --depth --clip   # review screenshots, depth sheet, MP4 clip
+npm install                                            # playwright 1.56.1, pixi.js (for vendoring)
+node --test --test-concurrency=1 tests/*.test.mjs      # browser tests, one file at a time
+node tests/measure.mjs captures                        # rendering measurements (400 / 2,000 / 5,000)
+node tests/capture-observer.mjs captures --clip        # review stills and zoom-through clip
+node tests/capture.mjs captures --depth --clip         # art-proof stills, depth sheet, clip
 ```
+
+| Test file                 | What it proves                                                                                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `depth.test.mjs`          | Ten pinned overlap cases by draw order and by pixel; indoor citizens never drawn; negative control                                                                |
+| `order-snapshot.test.mjs` | Refactors do not change the art proof's draw order                                                                                                                |
+| `hex.test.mjs`            | Hex layout: round trips, spacing, horizontal rows, chunk partition                                                                                                |
+| `streaming.test.mjs`      | R4: 60 rapid jumps over a synthetic 4096 × 4096 world with latency stay within request and cache budgets, stale requests are dropped, textures return to baseline |
+| `bands.test.mjs`          | Zoom continuity across bands, selection (also beside buildings and in crowds), follow across a chunk boundary, positions independent of the camera, pause         |
+| `counts.test.mjs`         | R9 count identities at 400 and 2,000 citizens in every band                                                                                                       |
 
 ## Layout
 
-| Path                         | Purpose                                                                     |
-| ---------------------------- | --------------------------------------------------------------------------- |
-| `vendor/pixi/`               | PixiJS 8.21.0 (MIT), vendored unmodified from the npm package               |
-| `src/world/coords.js`        | One projection for every zoom level (presentation metres, not engine units) |
-| `src/render/art/registry.js` | The asset contract and the catalogue of painted assets                      |
-| `src/render/art/paint/`      | Procedural painters: materials, buildings, nature, people, vehicles, ground |
-| `src/render/art/atlas.js`    | Texture atlas pages (batched drawing), picking alpha, silhouettes           |
-| `src/render/depth.js`        | Footprint-based depth ordering (topological sort over screen overlaps)      |
-| `src/sim/paths.js`           | Presentation paths and schedules (visual approximation only)                |
-| `src/data/naming.js`         | Observer-assigned display labels derived from IDs                           |
-| `src/proof/`                 | The art-proof page: sample village, pinned depth scene, renderer            |
+| Path                                                           | Purpose                                                                                  |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `vendor/pixi/`                                                 | PixiJS 8.21.0 (MIT), vendored unmodified from the npm package                            |
+| `data/terrain/`                                                | Committed engine export for seed 21 (chunks, overview, day-0 capitals)                   |
+| `src/main.js`, `index.html`                                    | The observer prototype                                                                   |
+| `src/world/`                                                   | Projection, hex layout, chunk loader and bounded LRU caches                              |
+| `src/data/`                                                    | Terrain source (and the TEST ONLY synthetic source), naming, SAMPLE village and citizens |
+| `src/render/terrain-layer.js`, `hex-detail.js`                 | Streamed terrain: chunk textures, then per-tile detail                                   |
+| `src/render/village-layer.js`, `scene-renderer.js`, `depth.js` | Village drawing, bands, picking, depth order                                             |
+| `src/render/art/`                                              | Asset contract, painters, atlas                                                          |
+| `src/ui/`                                                      | Inspector, minimap, quality, frame statistics                                            |
+| `src/proof/`                                                   | The O1a art proof page                                                                   |

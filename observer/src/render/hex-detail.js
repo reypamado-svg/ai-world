@@ -7,7 +7,7 @@
 
 import { project } from '../world/coords.js';
 import { hexCentre, hexCorners } from '../world/hex.js';
-import { hashString, mulberry32 } from '../sim/rng.js';
+import { hash2, hashString, mulberry32 } from '../sim/rng.js';
 import { css, jitter, mix, rgbToCss } from './art/paint/color.js';
 
 const K = 16;
@@ -115,6 +115,81 @@ function peak(ctx, p, size, snow) {
   }
 }
 
+const patterns = new Map();
+
+/** Tileable value noise on a period-P lattice. */
+function periodicNoise(x, y, P, seed) {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = x - ix;
+  const fy = y - iy;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const h = (a, b) => hash2(((a % P) + P) % P, ((b % P) + P) % P, seed);
+  const a = h(ix, iy);
+  const b = h(ix + 1, iy);
+  const c = h(ix, iy + 1);
+  const d = h(ix + 1, iy + 1);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+
+/**
+ * A 256 px tileable ground texture per terrain, in the same style as the
+ * village ground (mottled colour plus upright blades). Used for close views.
+ */
+function groundPattern(terrain) {
+  if (patterns.has(terrain)) return patterns.get(terrain);
+  const N = 256;
+  const c = document.createElement('canvas');
+  c.width = N;
+  c.height = N;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(N, N);
+  const palettes = {
+    0: ['#2f5f8c', '#4a80ae'],
+    1: ['#4f6a2c', '#86a24a'],
+    2: ['#3a5228', '#5f7a3a'],
+    3: ['#7a7166', '#a0978a'],
+    4: ['#bfa36c', '#dcc48e'],
+    5: ['#b5bbb2', '#dde1da'],
+  };
+  const [lo, hi] = palettes[terrain] ?? palettes[1];
+  const a = [parseInt(lo.slice(1, 3), 16), parseInt(lo.slice(3, 5), 16), parseInt(lo.slice(5, 7), 16)];
+  const b = [parseInt(hi.slice(1, 3), 16), parseInt(hi.slice(3, 5), 16), parseInt(hi.slice(5, 7), 16)];
+  for (let y = 0; y < N; y += 1) {
+    for (let x = 0; x < N; x += 1) {
+      const n =
+        periodicNoise(x / 32, y / 32, 8, terrain) * 0.55 +
+        periodicNoise(x / 8, y / 8, 32, terrain + 7) * 0.3 +
+        hash2(x, y, terrain + 13) * 0.15;
+      const o = (y * N + x) * 4;
+      for (let k = 0; k < 3; k += 1) img.data[o + k] = a[k] + (b[k] - a[k]) * n;
+      img.data[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const rng = mulberry32(hashString(`pattern:${terrain}`));
+  if (terrain === 1 || terrain === 2 || terrain === 5) {
+    for (let i = 0; i < 900; i += 1) {
+      const x = rng() * N;
+      const y = rng() * N;
+      ctx.strokeStyle = i % 2 ? 'rgba(200,230,140,0.45)' : 'rgba(30,50,20,0.4)';
+      ctx.lineWidth = 1;
+      for (const dx of [0, N, -N]) {
+        for (const dy of [0, N, -N]) {
+          if (x + dx < -4 || x + dx > N + 4 || y + dy < -8 || y + dy > N + 2) continue;
+          ctx.beginPath();
+          ctx.moveTo(x + dx, y + dy);
+          ctx.lineTo(x + dx + (rng() - 0.5) * 2, y + dy - 3 - rng() * 4);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+  patterns.set(terrain, c);
+  return c;
+}
+
 /**
  * Paint tile `t` in world-screen coordinates (zoom 1); the caller has set a
  * transform scaling by `s` (texture px per world-screen px).
@@ -133,10 +208,21 @@ export function paintHexDetail(ctx, t, R, s, { glyphs = true, riverNeighbours = 
   if (t.terrain !== 0) base = rgbToCss(mix(base, '#a0a070', (t.elevation / 1000) * 0.15));
   ctx.fillStyle = base;
   ctx.fillRect(cp.x - span, cp.y - span, span * 2, span * 2);
+  // Close views: a fine tiling ground texture instead of coarse mottling.
+  if (s >= 0.8) {
+    const pattern = ctx.createPattern(groundPattern(t.terrain), 'repeat');
+    // 256 texture px of pattern span 256 / s world px (16 m at s = 1).
+    pattern.setTransform(new DOMMatrix().scale(1 / s));
+    ctx.save();
+    ctx.globalAlpha = t.terrain === 0 ? 0.55 : 0.9;
+    ctx.fillStyle = pattern;
+    ctx.fillRect(cp.x - span, cp.y - span, span * 2, span * 2);
+    ctx.restore();
+  }
   // Ground mottling.
-  for (let i = 0; i < 160; i += 1) {
+  for (let i = 0; i < (s >= 0.8 ? 40 : 160); i += 1) {
     const p = pointIn(rng, t.q, t.r, R, 1.05);
-    ctx.fillStyle = rng() < 0.5 ? 'rgba(0,0,0,0.06)' : 'rgba(255,250,220,0.06)';
+    ctx.fillStyle = rng() < 0.5 ? 'rgba(0,0,0,0.05)' : 'rgba(255,250,220,0.04)';
     ctx.beginPath();
     ctx.ellipse(p.x, p.y, R * K * (0.05 + rng() * 0.1), R * K * (0.025 + rng() * 0.05), 0, 0, Math.PI * 2);
     ctx.fill();

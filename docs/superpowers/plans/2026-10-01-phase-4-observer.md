@@ -184,3 +184,71 @@ except advancing or restoring already committed history."
   - The indoor highlight.
   - Contract and cycles.
   - A negative control proving the naive centre-depth sorter fails the long-storehouse case.
+
+## O1 as built
+
+O1 was planned with Fable 5.1 (decisions below) and built in seven steps, one commit each.
+
+**Decisions**
+- **Presentation scale.** `hex_radius_m = 64`, so one engine tile holds exactly one sample village (inradius 55.4 m). It is recorded in the export's `presentation` section as a display constant.
+- **Day-0 data.** The exporter also writes `day0.json` from `build_initial_state`: capitals, founder counts, known-tile radius and start strengths. No day is advanced and no store is opened. Everything drawn from it is tagged "engine day 0".
+- **Village placement.** The SAMPLE village sits on the first civilization's capital tile (21,28), a forest tile with a lake next door.
+  - The tile has no river, so there is no bridge, and the UI says so.
+  - Sample objects that would fall outside the tile are dropped.
+
+**Step 1: exporter** (`src/sovereign_world/observer/terrain_export.py`).
+- Writes chunked JSON with every `Tile` field verbatim, an overview for the minimap, and the day-0 capitals.
+- The manifest keeps `engine` and `engine_day0` (authoritative) apart from `presentation` (display only).
+- The seed-21 48×48 export is committed (164 KB).
+- Tests: byte-identical repeat exports; every tile round-trips in exactly one chunk; day-0 capitals match the engine starts; only the output directory is written; the engine never imports the observer package.
+
+**Step 2: refactor.** The proof renderer is split into reusable modules (`render/art/bake.js`, `render/scene-renderer.js` with an origin offset, `camera.js`, `ui/inspector.js`, `ui/perf.js`, `debug-api.js`). A draw-order snapshot test proves the split changed nothing.
+
+**Step 3: streaming and the world atlas.**
+- `world/hex.js` lays out pointy-top hexes in a frame rotated 45°, so tile rows are horizontal on screen.
+- `world/chunks.js` has the loader: at most 4 requests in flight, nearest first, with abort and discard of stale requests. It also has the bounded LRU caches; evicted textures are destroyed.
+- `render/terrain-layer.js` bakes chunk textures at a resolution matched to the zoom, showing coarser cached textures until finer ones are ready.
+- Markers for day-0 capitals, and a minimap.
+
+**Step 4: bands.**
+- From zoom 0.1, each visible tile gets its own detailed texture (`render/hex-detail.js`), painted only from that tile's own engine values. At settlement zoom it uses a tiling ground texture in the village style.
+- Neighbouring tiles get tree and rock sprites at settlement zoom.
+- `render/village-layer.js` places the village and crossfades the bands: atlas shows a badge, regional shows buildings and group dots, settlement shows animated citizens.
+- The selected citizen keeps a ring or a pin in every band, and follow works across chunks.
+- Picking prefers a citizen over a building in front of them; clicking again cycles to the building.
+
+**Step 5: scale and quality.**
+- `?citizens=N` (up to 5,000) adds SAMPLE residents: cloned, time-shifted routines with new stable IDs.
+- Beyond the full-detail budget, far citizens are drawn as still frames.
+- Quality High, Medium, Low or Auto.
+- A Measurements panel that copies the numbers.
+
+**Step 6: measurements.** `observer/tests/measure.mjs` and `tests/observer/throughput.py`.
+- Measuring exposed per-frame waste, which was removed.
+- Outside the settlement band, citizens are no longer placed or depth-sorted as sprites.
+- Citizen pairs are skipped before any sort bookkeeping.
+
+**Deviations from the plan, and limits**
+- **No floating origin.** PixiJS composes transforms on the CPU in double precision, and the streaming test renders the far corner of a 4096×4096 world correctly.
+- **Huge worlds can't be shown whole.** Minimum zoom is clamped so visible chunks stay within budget; a whole-world view needs an LOD pyramid (O3). The 48×48 world fits whole.
+- **Decor depth.** Settlement-band tree and rock sprites on neighbouring tiles are sorted among themselves, not against travellers, who are drawn above them.
+- **No borders.** Civilization borders are not drawn, because the day-0 export has no territory. Borders come with O2/O3 data.
+- **Large sprite atlas.** The atlas uses two 4096² pages (about 225 MB of GPU memory including mipmaps) even though they are mostly empty. Tighter packing is a follow-up.
+- **Sequential browser tests.** They run one file at a time (`--test-concurrency=1`), because the streaming test is timing-sensitive.
+
+**Tests:** 19 browser tests (depth, order snapshot, hex, streaming, bands, counts) plus 5 Python exporter tests.
+
+**Measurements: browser.** Headless Chromium in a container with software GL. Frame intervals there (about 65–100 ms) say nothing about a real GPU. The update column is our own per-frame CPU work.
+
+| Citizens | View | Update avg / p95 (ms) | Outdoor | Visible (full / simplified) | Drawn sprites |
+|---|---|---|---|---|---|
+| 400 | settlement | 4.8 / 20.3 | 358 | 327 (327 / 0) | 553 |
+| 400 | regional | 3.2 / 7.2 | 367 | 367 (0 / 367) | 255 |
+| 2,000 | settlement | 16.2 / 36.8 | 1,813 | 1,664 (801 / 863) | 1,927 |
+| 2,000 | regional | 10.0 / 34.0 | 1,811 | 1,811 (0 / 1,811) | 255 |
+| 5,000 | settlement | 38.3 / 57.8 | 4,537 | 4,179 (801 / 3,378) | 4,502 |
+| 5,000 | regional | 19.0 / 52.6 | 4,519 | 4,519 (0 / 4,519) | 255 |
+
+Real-hardware numbers come from the user's machine, via the Measurements panel or `measure.mjs`.
+
+**Measurements: simulation (Python).** `tests/observer/throughput.py` used a disposable scripted world (seed 21, 48×48, no providers). It ran 365 days in 33 s, about 11 days per second, including process start-up and journal writes; 141 people were alive at the end.
