@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from itertools import pairwise
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +21,7 @@ from sovereign_world.armoury import (
     slows,
 )
 from sovereign_world.capabilities import CapabilityId
+from sovereign_world.culture import ancestry, culture
 from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
@@ -379,6 +380,12 @@ class CouncilReport(BaseModel):
     """Ruins on land this civilization knows."""
     institutions: tuple[Institution, ...] = ()
     """This civilization's institutions, built or going up, and their staff."""
+    cultures: dict[EntityId, int] = Field(default_factory=dict)
+    """How many of its living free people live by each culture: how blended it is."""
+    ancestries: dict[EntityId, int] = Field(default_factory=dict)
+    """How many of its living free people have forebears from each culture."""
+    assimilating: int = 0
+    """Newcomers still becoming its people."""
     spy_missions: tuple[Journey, ...] = ()
     """This civilization's spies and couriers still out."""
     spy_reports: tuple[SpyReport, ...] = ()
@@ -399,6 +406,24 @@ class CouncilReport(BaseModel):
     research: tuple[ResearchAssignment, ...] = ()
     research_points: dict[CapabilityId, int] = Field(default_factory=dict)
     recent_events: tuple[DomainEvent, ...] = ()
+
+
+def _blend(civilization: CivilizationState) -> dict[str, Any]:
+    cultures: dict[EntityId, int] = {}
+    ancestries: dict[EntityId, int] = {}
+    assimilating = 0
+    for person in civilization.population.people.values():
+        if not person.alive or person.captive_of is not None:
+            continue
+        cultures[culture(person)] = cultures.get(culture(person), 0) + 1
+        for origin in ancestry(person):
+            ancestries[origin] = ancestries.get(origin, 0) + 1
+        assimilating += person.culture is not None
+    return {
+        "cultures": dict(sorted(cultures.items())),
+        "ancestries": dict(sorted(ancestries.items())),
+        "assimilating": assimilating,
+    }
 
 
 def _speakers(civilization: CivilizationState) -> dict[EntityId, tuple[EntityId, ...]]:
@@ -463,6 +488,7 @@ def build_council_report(
         ),
         spy_reports=civilization.spy_reports,
         institutions=civilization.institutions,
+        **_blend(civilization),
         caught_spies=civilization.caught_spies,
         endings=state.endings,
         petitions=tuple(
