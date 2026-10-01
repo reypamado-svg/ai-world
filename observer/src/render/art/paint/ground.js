@@ -129,7 +129,8 @@ function sampleField(F, x, y, out) {
 }
 
 /** Bake one screen-space tile (zoom-1 pixels) starting at (sx0, sy0). */
-export function paintGroundTile(F, sx0, sy0, w, h, seed = 7) {
+/** alphaFn(x, y) -> 0..1 optionally fades the ground out (e.g. at a tile edge). */
+export function paintGroundTile(F, sx0, sy0, w, h, seed = 7, alphaFn = null) {
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
@@ -147,7 +148,7 @@ export function paintGroundTile(F, sx0, sy0, w, h, seed = 7) {
       img.data[o] = s[0] * f;
       img.data[o + 1] = s[1] * f;
       img.data[o + 2] = s[2] * f;
-      img.data[o + 3] = 255;
+      img.data[o + 3] = alphaFn ? Math.round(255 * alphaFn(g.x, g.y)) : 255;
     }
   }
   ctx.putImageData(img, 0, 0);
@@ -167,6 +168,7 @@ export function paintGroundTile(F, sx0, sy0, w, h, seed = 7) {
       const ly = p.y - sy0;
       if (lx < -6 || ly < -8 || lx > w + 6 || ly > h + 2) continue;
       sampleField(F, x, y, s);
+      if (alphaFn && alphaFn(x, y) < 0.6) continue;
       if (s[3] < 0.15 && s[4] < 0.1) {
         if (r < 0.42) tuft(ctx, lx, ly, s, r);
         else if (r < 0.445) flower(ctx, lx, ly, r);

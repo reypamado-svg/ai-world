@@ -112,3 +112,12 @@ export function worldScreenBounds(width, height, R) {
     R,
   );
 }
+
+/**
+ * Hex distance of a ground-plane offset from a tile centre: the tile is the
+ * set of points with hexDistance <= R * sqrt(3) / 2 (its inradius).
+ */
+export function hexDistance(dx, dy) {
+  const { u, v } = planeToUV(dx, dy);
+  return Math.max(Math.abs(u), (Math.abs(u) + SQ3 * Math.abs(v)) / 2);
+}

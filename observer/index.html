@@ -12,18 +12,26 @@
       <span
         class="chip warn"
         id="source-chip"
-        title="Terrain comes from the engine's own world generation; nothing has been simulated."
+        title="Terrain and capitals come from the engine's own world generation; no day has been simulated."
         >ENGINE TERRAIN · DAY 0</span
       >
-      <span class="chip warn" title="The village, its buildings and citizens are invented sample data."
+      <span class="chip warn" title="The village, its buildings, citizens and routines are invented sample data."
         >SAMPLE VILLAGE</span
       >
       <span class="chip warn" title="Procedurally painted placeholder art.">PROTOTYPE ARTWORK</span>
-      <span class="chip" title="This prototype is not connected to a live run.">Status: prototype (no live run)</span>
+      <span id="clock" class="clock">Engine day 0 · sample time 08:00</span>
+      <div class="group">
+        <button id="btn-pause">❚❚ Pause</button>
+        <button data-speed="1" class="on">1×</button>
+        <button data-speed="4">4×</button>
+        <button data-speed="16">16×</button>
+      </div>
+      <span class="chip" title="This prototype is not connected to a live run.">Prototype · no live run</span>
       <span class="chip persp" title="Only the observer perspective exists in this prototype."
         >Perspective: Observer</span
       >
       <div class="spacer"></div>
+      <label class="toggle"><input type="checkbox" id="chk-footprints" /> Footprints</label>
     </div>
     <div id="stage"></div>
     <aside id="inspector" hidden></aside>
@@ -31,20 +39,22 @@
     <div id="controls">
       <button id="btn-zoom-in" title="Zoom in">+</button>
       <button id="btn-zoom-out" title="Zoom out">−</button>
+      <button id="btn-village" title="Go to the sample village">⌖</button>
       <button id="btn-world" title="Return to world view">⌂</button>
     </div>
     <div id="footer">
       <span id="perf"></span>
       <span id="pick-note"></span>
       <span class="note"
-        >Terrain: engine world generation (presentation scale 64 m per tile). Village and citizens: SAMPLE. Movement:
-        visual approximation.</span
+        >Terrain: engine worldgen (64 m per tile is a display scale). Village, citizens and routines: SAMPLE. Movement:
+        visual approximation. No river on the capital tile, so no bridge.</span
       >
     </div>
     <div id="loading">
       <div class="box">
         <div class="title">Opening the world…</div>
         <div id="loading-status">Starting</div>
+        <div class="hint">All artwork is generated in your browser from code (original, no external assets).</div>
       </div>
     </div>
     <script type="module" src="src/main.js"></script>

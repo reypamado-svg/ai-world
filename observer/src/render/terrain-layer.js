@@ -10,13 +10,26 @@
 // appears where the tile's own values support it.
 
 import { project, unproject } from '../world/coords.js';
-import { chunkScreenBounds, hexCentre, hexCorners, planeToHex, worldScreenBounds } from '../world/hex.js';
+import {
+  chunkOf,
+  chunkScreenBounds,
+  hexCentre,
+  hexCorners,
+  planeToHex,
+  screenBoundsOfTiles,
+  worldScreenBounds,
+} from '../world/hex.js';
+import { paintHexDetail } from './hex-detail.js';
 import { ChunkLoader, LruCache } from '../world/chunks.js';
 import { hash2 } from '../sim/rng.js';
 import { css, mix } from './art/paint/color.js';
 
 /** Texture pixels per world-screen pixel, coarse to fine. */
 export const CHUNK_LEVELS = [0.0125, 0.025, 0.05, 0.1];
+/** From this zoom on, each visible tile gets its own detailed texture. */
+export const HEX_MODE_ZOOM = 0.1;
+export const HEX_LEVELS = [0.2, 0.4, 0.8];
+const MAX_DETAIL_HEXES = 120;
 
 const LAND = {
   1: '#86a24f', // grassland
@@ -111,7 +124,10 @@ export class TerrainLayer {
   }
 
   update(view, zoom) {
-    this.level = this.levelFor(zoom);
+    this.lastView = view;
+    this.hexMode = zoom >= HEX_MODE_ZOOM;
+    // In hex mode the chunk textures are only a coarse base under the tiles.
+    this.level = this.hexMode ? 0.05 : this.levelFor(zoom);
     const keys = this.visibleChunks(view);
     this.visibleKeys = keys;
     this.loader.want(keys);
@@ -144,10 +160,133 @@ export class TerrainLayer {
         }
       }
     }
+    if (this.hexMode) complete = this._updateHexes(view, zoom, show, wantedTex) && complete;
     for (const [k, sprite] of this.sprites) sprite.visible = show.has(k);
     this.shown = show;
     // Coarser fallbacks must draw beneath finer textures.
     this.complete = complete;
+  }
+
+  /** Visible tiles in view, nearest first, capped. */
+  visibleHexes(view) {
+    const corners = [
+      unproject(view.x0, view.y0),
+      unproject(view.x1, view.y0),
+      unproject(view.x0, view.y1),
+      unproject(view.x1, view.y1),
+    ];
+    const hexes = corners.map((c) => planeToHex(c.x, c.y, this.R));
+    const q0 = Math.max(0, Math.min(...hexes.map((h) => h.q)) - 1);
+    const q1 = Math.min(this.width - 1, Math.max(...hexes.map((h) => h.q)) + 1);
+    const r0 = Math.max(0, Math.min(...hexes.map((h) => h.r)) - 1);
+    const r1 = Math.min(this.height - 1, Math.max(...hexes.map((h) => h.r)) + 1);
+    const cx = (view.x0 + view.x1) / 2;
+    const cy = (view.y0 + view.y1) / 2;
+    const out = [];
+    for (let r = r0; r <= r1; r += 1) {
+      for (let q = q0; q <= q1; q += 1) {
+        const b = screenBoundsOfTiles([[q, r]], this.R);
+        if (b.x1 < view.x0 || b.x0 > view.x1 || b.y1 < view.y0 || b.y0 > view.y1) continue;
+        out.push([Math.hypot((b.x0 + b.x1) / 2 - cx, (b.y0 + b.y1) / 2 - cy), q, r, b]);
+      }
+    }
+    out.sort((a, b) => a[0] - b[0]);
+    return out.slice(0, MAX_DETAIL_HEXES);
+  }
+
+  _updateHexes(view, zoom, show, pinned) {
+    const s = HEX_LEVELS.find((l) => l >= zoom * 0.8) ?? HEX_LEVELS[HEX_LEVELS.length - 1];
+    this.hexLevel = s;
+    const hexes = this.visibleHexes(view);
+    this.visibleHexCount = hexes.length;
+    for (const [, q, r] of hexes) pinned.add(`h${q},${r}@${s}`);
+    let complete = true;
+    let bakes = 0;
+    for (const [, q, r, b] of hexes) {
+      const key = `h${q},${r}@${s}`;
+      if (!this.textures.has(key)) {
+        const { cq, cr } = chunkOf(q, r, this.ct);
+        const chunk = this.chunks.get(`${cq},${cr}`);
+        if (chunk && bakes < 2) {
+          this._bakeHex(key, chunk, q, r, b, s, pinned);
+          bakes += 1;
+        }
+      }
+      if (this.textures.has(key)) {
+        this.textures.get(key);
+        show.add(key);
+      } else {
+        complete = false;
+        for (const alt of HEX_LEVELS)
+          if (alt !== s && this.textures.has(`h${q},${r}@${alt}`)) show.add(`h${q},${r}@${alt}`);
+      }
+    }
+    return complete;
+  }
+
+  _bakeHex(key, chunk, q, r, b, s, pinned) {
+    const { PIXI } = this;
+    let i = 0;
+    while (i < chunk.n && !(chunk.q[i] === q && chunk.r[i] === r)) i += 1;
+    if (i >= chunk.n) return;
+    const tile = {
+      q,
+      r,
+      terrain: chunk.terrain[i],
+      elevation: chunk.elevation[i],
+      moisture: chunk.moisture[i],
+      soil: chunk.soil[i],
+      timber: chunk.timber[i],
+      stone: chunk.stone[i],
+      river: !!chunk.river[i],
+    };
+    const pad = 0.04 * (b.x1 - b.x0);
+    const x0 = b.x0 - pad;
+    const y0 = b.y0 - pad;
+    const w = Math.ceil((b.x1 - b.x0 + pad * 2) * s);
+    const h = Math.ceil((b.y1 - b.y0 + pad * 2) * s);
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(s, 0, 0, s, -x0 * s, -y0 * s);
+    paintHexDetail(ctx, tile, this.R, s, { glyphs: s < 0.8, riverNeighbours: this._riverNeighbours(chunk, q, r) });
+    const texture = new PIXI.Texture({
+      source: new PIXI.CanvasSource({ resource: canvas, autoGenerateMipmaps: true, scaleMode: 'linear' }),
+    });
+    const sprite = new PIXI.Sprite(texture);
+    sprite.position.set(x0, y0);
+    sprite.scale.set(1 / s);
+    sprite.zIndex = 10 + HEX_LEVELS.indexOf(s);
+    this.container.addChild(sprite);
+    this.sprites.set(key, sprite);
+    this.liveTextures += 1;
+    this.baked += 1;
+    this.textures.set(key, { sprite, texture }, w * h * 4 * 1.34, pinned);
+  }
+
+  /** Which column neighbours (r - 1, r + 1) also carry a river, when known. */
+  _riverNeighbours(chunk, q, r) {
+    const out = [];
+    for (const dr of [-1, 1]) {
+      const nr = r + dr;
+      if (nr < 0 || nr >= this.height) continue;
+      let known = false;
+      for (let j = 0; j < chunk.n; j += 1) {
+        if (chunk.q[j] === q && chunk.r[j] === nr) {
+          known = true;
+          if (chunk.river[j]) out.push(dr);
+        }
+      }
+      if (!known) {
+        const other = this.chunks.get(`${chunkOf(q, nr, this.ct).cq},${chunkOf(q, nr, this.ct).cr}`);
+        if (other) {
+          for (let j = 0; j < other.n; j += 1)
+            if (other.q[j] === q && other.r[j] === nr && other.river[j]) out.push(dr);
+        } else out.push(dr);
+      }
+    }
+    return out;
   }
 
   _bake(key, chunk, s, pinned) {
@@ -293,6 +432,9 @@ export class TerrainLayer {
       baked: this.baked,
       loader: { ...this.loader.stats, inFlight: this.loader.inFlight.size, generation: this.loader.generation },
       complete: this.complete,
+      hexMode: this.hexMode,
+      hexLevel: this.hexMode ? this.hexLevel : null,
+      visibleHexes: this.hexMode ? this.visibleHexCount : 0,
     };
   }
 }

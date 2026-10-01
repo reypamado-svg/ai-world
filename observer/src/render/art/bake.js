@@ -96,15 +96,15 @@ export async function bakeSceneActors(atlas, scene, status = () => {}) {
  * Bake screen-space ground tiles covering a scene's bounds (local metres).
  * Returns a container of tile sprites positioned in local screen space.
  */
-export async function bakeSceneGround(PIXI, scene, status = () => {}) {
+export async function bakeSceneGround(PIXI, scene, status = () => {}, { alpha = null, bounds = scene.bounds } = {}) {
   status('Painting the ground');
   await nextFrame();
   const container = new PIXI.Container();
   const corners = [
-    project(scene.bounds.x0, scene.bounds.y0),
-    project(scene.bounds.x1, scene.bounds.y1),
-    project(scene.bounds.x0, scene.bounds.y1),
-    project(scene.bounds.x1, scene.bounds.y0),
+    project(bounds.x0, bounds.y0),
+    project(bounds.x1, bounds.y1),
+    project(bounds.x0, bounds.y1),
+    project(bounds.x1, bounds.y0),
   ];
   const gx0 = Math.floor(Math.min(...corners.map((c) => c.x)) / GROUND_TILE.w) * GROUND_TILE.w;
   const gx1 = Math.ceil(Math.max(...corners.map((c) => c.x)) / GROUND_TILE.w) * GROUND_TILE.w;
@@ -122,7 +122,7 @@ export async function bakeSceneGround(PIXI, scene, status = () => {}) {
   let bytes = 0;
   for (let sy = gy0; sy < gy1; sy += GROUND_TILE.h) {
     for (let sx = gx0; sx < gx1; sx += GROUND_TILE.w) {
-      const canvas = paintGroundTile(field, sx, sy, GROUND_TILE.w, GROUND_TILE.h);
+      const canvas = paintGroundTile(field, sx, sy, GROUND_TILE.w, GROUND_TILE.h, 7, alpha);
       const source = new PIXI.CanvasSource({ resource: canvas, autoGenerateMipmaps: true, scaleMode: 'linear' });
       const sprite = new PIXI.Sprite(new PIXI.Texture({ source }));
       sprite.position.set(sx, sy);

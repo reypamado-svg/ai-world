@@ -427,6 +427,9 @@ export class SceneRenderer {
       if (Math.hypot(p.x - wx, p.y - wy) < 10 / Math.max(zoom, 0.5)) hits.push(o);
     }
     if (!hits.length) return null;
+    // Citizens come before buildings, so a person partly hidden behind a
+    // building is still selectable; clicking again cycles to the building.
+    hits.sort((a, b) => (a.kind === 'person' ? 0 : 1) - (b.kind === 'person' ? 0 : 1));
     const last = this.lastClick;
     const sameSpot = last && Math.hypot(last.wx - wx, last.wy - wy) < 4 / zoom;
     const index = sameSpot ? (last.index + 1) % hits.length : 0;
@@ -451,12 +454,25 @@ export class SceneRenderer {
     return null;
   }
 
+  /**
+   * Citizen counts, defined separately (R9):
+   *  worldPopulation  every person in the scene;
+   *  resident         people whose home is this settlement (not visitors);
+   *  indoor           inside a building (drawn only as building occupancy);
+   *  away             travelling beyond the sample area (not drawn);
+   *  outdoor          outside buildings in the loaded area;
+   *  visible          outdoor people whose sprite is in the viewport after culling.
+   */
   counts() {
+    const all = this.caravan ? [...this.people, this.caravan.driver] : this.people;
+    const away = all.filter((o) => o.hidden && o.state?.inside === 'away').length;
+    const indoor = all.filter((o) => o.hidden && o.state?.inside !== 'away').length;
     return {
-      worldPopulation: this.people.length,
-      resident: this.people.length,
-      indoor: this.people.filter((o) => o.hidden).length,
-      outdoor: this.people.filter((o) => !o.hidden).length,
+      worldPopulation: all.length,
+      resident: all.filter((o) => !o.person.envoy && !o.person.caravan).length,
+      indoor,
+      away,
+      outdoor: all.length - indoor - away,
       visible: this.drawOrder.filter((o) => o.kind === 'person').length,
       drawnSprites: this.drawOrder.length,
       depthCycles: this.lastCycles.length,

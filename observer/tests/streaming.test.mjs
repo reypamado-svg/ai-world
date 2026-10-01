@@ -49,7 +49,7 @@ test('rapid jumps across a huge world stay within budgets and leave nothing behi
       o.viewHex(Math.floor(rnd() * 4096), Math.floor(rnd() * 4096), zoom);
       const s = o.terrainStats();
       samples.push({ inFlight: s.loader.inFlight, cpu: s.cpu.bytes, gpu: s.gpu.bytes, gpuEntries: s.gpu.entries });
-      await new Promise((r) => setTimeout(r, 80));
+      await new Promise((r) => setTimeout(r, 50));
       const s2 = o.terrainStats();
       samples.push({ inFlight: s2.loader.inFlight, cpu: s2.cpu.bytes, gpu: s2.gpu.bytes, gpuEntries: s2.gpu.entries });
     }
@@ -88,7 +88,12 @@ test('rapid jumps across a huge world stay within budgets and leave nothing behi
   assert.ok(result.back.complete, 'start view settles again');
   assert.equal(result.end.visible, result.baseline.visible);
   assert.equal(result.end.terrain, result.baseline.terrain, 'terrain textures back to baseline');
+  // PixiJS may also unload idle textures on its own, so "back to baseline"
+  // means no more GPU textures than at the start: nothing leaked.
   if (result.baseline.pixiManaged !== null)
-    assert.equal(result.end.pixiManaged, result.baseline.pixiManaged, 'GPU textures back to baseline');
+    assert.ok(
+      result.end.pixiManaged <= result.baseline.pixiManaged,
+      `GPU textures ${result.end.pixiManaged} > baseline ${result.baseline.pixiManaged}`,
+    );
   assert.equal(result.final.liveTextures, result.final.gpu.entries, 'every live texture is accounted for in the cache');
 });
