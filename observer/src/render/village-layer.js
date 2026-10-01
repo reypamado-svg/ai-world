@@ -5,7 +5,7 @@
 // Bands crossfade, and the selected person stays identifiable in every band
 // (ring when drawn, pin otherwise).
 
-import { project } from '../world/coords.js';
+import { project, unproject } from '../world/coords.js';
 import { SceneRenderer } from './scene-renderer.js';
 import { CIV_COLORS } from './art/registry.js';
 
@@ -51,7 +51,8 @@ export class VillageLayer {
   /** R9 counts; in the regional band visible people are drawn as dots (simplified). */
   counts() {
     const c = this.renderer.counts();
-    const full = this.actors > 0.5 ? c.visible : 0;
+    const simpleDrawn = this.renderer.drawOrder.filter((o) => o.kind === 'person' && o.simple).length;
+    const full = this.actors > 0.5 ? c.visible - simpleDrawn : 0;
     return { ...c, visibleFull: full, visibleSimplified: c.visible - full };
   }
 
@@ -60,8 +61,11 @@ export class VillageLayer {
   }
 
   /** view: world-screen rect; returns the renderer's visible objects. */
-  update(t, view, zoom, { selected, showFootprints }) {
+  update(t, view, zoom, { selected, showFootprints, crowdBudget = Infinity }) {
     const r = this.renderer;
+    const off = r.offset;
+    const focus = unproject((view.x0 + view.x1) / 2 - off.x, (view.y0 + view.y1) / 2 - off.y);
+    r.setCrowd(crowdBudget, focus);
     r.update(t);
     const regional = smooth(0.04, 0.08, zoom);
     const actors = smooth(0.4, 0.6, zoom);
@@ -74,7 +78,6 @@ export class VillageLayer {
         if (o.shadow) o.shadow.alpha = actors;
       }
     }
-    const off = r.offset;
     const local = { x0: view.x0 - off.x, y0: view.y0 - off.y, x1: view.x1 - off.x, y1: view.y1 - off.y };
     const visible = r.root.visible ? r.cullAndSort(local) : [];
     r.decorate({ selected: actors > 0.5 ? selected : null, zoom, showFootprints, visible });

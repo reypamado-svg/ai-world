@@ -48,40 +48,45 @@ test('zooming keeps the ground point under the cursor fixed through all three ba
   assert.ok(r.worst < 0.01, `cursor point drifted ${r.worst} m`);
 });
 
-test('clicking a citizen selects that citizen, including beside a building', async () => {
+test('every visible citizen can be selected by clicking them (cycling through overlaps), including beside a building', async () => {
   const r = await page.evaluate(() => {
     const o = window.__observer;
     o.setTime(120);
     o.viewVillage(1.4);
     let tried = 0;
-    let correct = 0;
+    let reached = 0;
+    let firstWasCitizen = 0;
     const misses = [];
     for (const id of o.peopleIds()) {
       const pt = o.personCanvasPoint(id);
       if (!pt || pt.x < 20 || pt.y < 20 || pt.x > 1260 || pt.y > 640) continue;
       tried += 1;
-      const got = o.pickAt(pt.x, pt.y);
       o.pickAt(5, 5); // reset the crowd-cycling memory
-      if (got === id) correct += 1;
-      else misses.push([id, got]);
+      const seen = [];
+      for (let k = 0; k < 10 && !seen.includes(id); k += 1) seen.push(o.pickAt(pt.x, pt.y));
+      if (seen.includes(id)) reached += 1;
+      else misses.push([id, seen]);
+      if (seen[0] && seen[0].startsWith('sample-person')) firstWasCitizen += 1;
+      if (tried >= 150) break;
     }
     // The smith works at the anvil right beside the workshop wing.
+    const v = o.villageInfo().origin;
     const smith = o.peopleIds().find((id) => {
       const p = o.positionOf(id);
-      const v = o.villageInfo().origin;
       return Math.hypot(p.x - v.x - -1.9, p.y - v.y - 14.35) < 0.2;
     });
-    o.viewVillage(1.4);
-    const v = o.villageInfo().origin;
     o.view(v.x - 2, v.y + 13, 1.8);
     const sp = o.personCanvasPoint(smith);
-    const smithPick = sp ? o.pickAt(sp.x, sp.y) : null;
-    return { tried, correct, misses, smith, smithPick };
+    o.pickAt(5, 5);
+    const smithPicks = [];
+    for (let k = 0; k < 10 && sp && !smithPicks.includes(smith); k += 1) smithPicks.push(o.pickAt(sp.x, sp.y));
+    return { tried, reached, firstWasCitizen, misses: misses.slice(0, 5), smith, smithPicks };
   });
   assert.ok(r.tried >= 8, `only ${r.tried} citizens on screen`);
-  assert.ok(r.correct / r.tried >= 0.9, `picked ${r.correct}/${r.tried}; misses ${JSON.stringify(r.misses)}`);
+  assert.ok(r.reached / r.tried >= 0.97, `reached ${r.reached}/${r.tried}; e.g. ${JSON.stringify(r.misses)}`);
+  assert.equal(r.firstWasCitizen, r.tried, 'a click on a citizen never selects a building first');
   assert.ok(r.smith, 'smith found');
-  assert.equal(r.smithPick, r.smith);
+  assert.ok(r.smithPicks.includes(r.smith), `smith not reachable: ${JSON.stringify(r.smithPicks)}`);
 });
 
 test('repeated clicks in a crowd cycle through the people there', async () => {

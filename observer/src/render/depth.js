@@ -107,7 +107,9 @@ export function depthSort(items, cell = 128, { centreOnly = false } = {}) {
         seen.add(key);
         const a = base[lo];
         const b = base[hi];
-        if (centreOnly || !overlaps(a, b)) continue;
+        // Two citizens: centre depth already orders them; skipping the pair
+        // keeps crowds cheap to sort.
+        if (centreOnly || (a.small && b.small) || !overlaps(a, b)) continue;
         const rel = relation(a, b);
         if (rel === 1) {
           after[hi].push(lo); // b must be drawn before a

@@ -123,7 +123,8 @@ export function facingFor(vx, vy) {
  *   { type: 'inside', building, at, dur, activity }
  * Returns a cyclic schedule; sample() is pure in t.
  */
-export function makeSchedule(segments, offset = 0) {
+/** jitter: optional [dx, dy] metres (clones), tapered to zero at path ends. */
+export function makeSchedule(segments, offset = 0, jitter = null) {
   let t = 0;
   const segs = segments.map((s) => {
     const dur = s.type === 'walk' ? pathLength(s.path) / s.speed : s.dur;
@@ -131,7 +132,7 @@ export function makeSchedule(segments, offset = 0) {
     t += dur;
     return out;
   });
-  return { segs, period: t, offset };
+  return { segs, period: t, offset, jitter };
 }
 
 export const STRIDE_M = 1.35;
@@ -150,9 +151,10 @@ export function sampleSchedule(sched, t) {
     const d = u * seg.speed;
     const p = pointAlong(seg.path, d);
     const f = facingFor(p.vx, p.vy);
+    const k = sched.jitter ? Math.max(0, Math.min(1, d / 2, (seg.dur * seg.speed - d) / 2)) : 0;
     return {
-      x: p.x,
-      y: p.y,
+      x: p.x + (k ? sched.jitter[0] * k : 0),
+      y: p.y + (k ? sched.jitter[1] * k : 0),
       inside: null,
       anim: seg.anim ?? 'walk',
       phase: (d / STRIDE_M) % 1,
@@ -173,6 +175,10 @@ export function sampleSchedule(sched, t) {
       const k = u / seg.dur;
       x += seg.drift[0] * k;
       y += seg.drift[1] * k;
+    }
+    if (sched.jitter) {
+      x += sched.jitter[0];
+      y += sched.jitter[1];
     }
     return {
       x,

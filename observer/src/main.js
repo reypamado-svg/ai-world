@@ -20,6 +20,8 @@ import { Camera } from './camera.js';
 import { Minimap } from './ui/minimap.js';
 import { Inspector } from './ui/inspector.js';
 import { FrameStats, jsHeapBytes } from './ui/perf.js';
+import { Quality } from './ui/quality.js';
+import { scaleCitizens } from './data/sample/citizens.js';
 
 const params = new URLSearchParams(location.search);
 const SYNTHETIC = params.get('source') === 'synthetic';
@@ -94,6 +96,15 @@ class ObserverApp {
     });
     this.home = { x: this.camera.x, y: this.camera.y, zoom: this.camera.zoom };
     this.frameStats = new FrameStats();
+    this.intervalStats = new FrameStats();
+    this.quality = new Quality(
+      (settings) => {
+        this.settings = settings;
+        pixi.renderer.resize(pixi.screen.width, pixi.screen.height, settings.resolution);
+        if (this.village) this.village.renderer.shadowLayer.visible = settings.shadows;
+      },
+      params.get('quality') ?? 'auto',
+    );
     this.t = 30;
     this.paused = false;
     this.speed = 1;
@@ -174,6 +185,7 @@ class ObserverApp {
       this.village.update(this.t, margin, this.camera.zoom, {
         selected: this.selected,
         showFootprints: this.showFootprints,
+        crowdBudget: this.settings?.crowdBudget ?? Infinity,
       });
     }
     this.markers?.update(this.camera.zoom);
@@ -184,9 +196,13 @@ class ObserverApp {
   stats() {
     const t = this.terrain.stats();
     const v = this.village?.counts() ?? {};
+    const iv = this.intervalStats.summary();
     return {
       fps: Math.round(this.pixi.ticker.FPS),
+      frameMsAvg: iv.updateMsAvg,
+      frameMsP95: iv.updateMsP95,
       ...this.frameStats.summary(),
+      quality: `${this.quality.mode}${this.quality.mode === 'auto' ? ` (${this.quality.level})` : ''}`,
       zoom: Number(this.camera.zoom.toFixed(4)),
       band: bandOf(this.camera.zoom),
       ...v,
@@ -199,6 +215,22 @@ class ObserverApp {
       atlasBytes: this.atlas ? Math.round(this.atlas.textureBytes() + this.groundBytes) : 0,
       jsHeapBytes: jsHeapBytes(),
       inFlight: t.loader.inFlight,
+    };
+  }
+
+  /** Everything needed to compare performance across machines (R9 counts kept separate). */
+  measurement() {
+    return {
+      capturedAt: new Date().toISOString(),
+      userAgent: navigator.userAgent,
+      screen: {
+        width: this.pixi.screen.width,
+        height: this.pixi.screen.height,
+        devicePixelRatio: window.devicePixelRatio,
+      },
+      sampleCitizens: this.village ? this.village.renderer.people.length : 0,
+      stats: this.stats(),
+      note: 'Browser rendering only. Simulation throughput is measured separately.',
     };
   }
 
@@ -270,6 +302,26 @@ class ObserverApp {
       });
     }
     $('chk-footprints')?.addEventListener('change', (e) => (this.showFootprints = e.target.checked));
+    const q = $('quality');
+    if (q) {
+      q.value = this.quality.mode;
+      q.addEventListener('change', () => this.quality.setMode(q.value));
+    }
+    $('btn-measure')?.addEventListener('click', () => {
+      const panel = $('measure');
+      panel.hidden = !panel.hidden;
+      if (!panel.hidden) $('measure-json').textContent = JSON.stringify(this.measurement(), null, 1);
+    });
+    $('btn-copy')?.addEventListener('click', async () => {
+      const text = JSON.stringify(this.measurement(), null, 1);
+      $('measure-json').textContent = text;
+      try {
+        await navigator.clipboard.writeText(text);
+        $('btn-copy').textContent = 'Copied';
+      } catch {
+        $('btn-copy').textContent = 'Select the text and copy it';
+      }
+    });
     setInterval(() => {
       if (this.selected) this.inspector?.render();
     }, 500);
@@ -280,6 +332,8 @@ class ObserverApp {
     const clock = $('clock');
     let hud = 0;
     this.pixi.ticker.add((ticker) => {
+      this.intervalStats.push(ticker.deltaMS);
+      this.quality.observe(ticker.deltaMS);
       this.frame(ticker.deltaMS);
       hud += ticker.deltaMS;
       if (hud > 250) {
@@ -290,7 +344,7 @@ class ObserverApp {
           clock.textContent = `Engine day 0 · sample time ${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
         }
         const people = this.village
-          ? ` · people: ${s.worldPopulation} total, ${s.outdoor} outdoor, ${s.visible} visible`
+          ? ` · people: ${s.worldPopulation} total, ${s.indoor} indoor, ${s.outdoor} outdoor, ${s.visible} visible (${s.visibleFull} full)`
           : '';
         perf.textContent = `${s.fps} fps · update ${s.updateMsAvg} ms (p95 ${s.updateMsP95}) · ${s.band} view, zoom ${s.zoom} · chunks: ${s.visibleChunks} visible, ${s.loadedChunks} loaded · ${s.gpuTextures} terrain textures (${(s.gpuBytes / 1e6).toFixed(1)} MB)${people}`;
       }
@@ -411,6 +465,8 @@ function buildApi(app) {
       // Freed slots are left as null in the list, so count live entries only.
       pixiManaged: app.pixi.renderer.texture?.managedTextures?.filter(Boolean).length ?? null,
     }),
+    measurement: () => app.measurement(),
+    setQuality: (mode) => app.quality.setMode(mode),
     villageInfo: () =>
       app.villageData
         ? { tile: app.villageData.tile, origin: app.villageData.origin, dropped: app.villageData.dropped }
@@ -451,6 +507,7 @@ async function main() {
     const footprintOf = (asset) => assetInfo.get(asset).footprint;
     const tile = day0.civilizations[0].capital.tile;
     const village = observerVillage(footprintOf, source.manifest.presentation.hex_radius_m, tile);
+    scaleCitizens(village.scene, Number(params.get('citizens') ?? 400));
     await bakeSceneActors(atlas, village.scene, setStatus);
     atlas.finalize();
     const ground = await bakeSceneGround(PIXI, village.scene, setStatus, {

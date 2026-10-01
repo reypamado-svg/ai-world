@@ -126,6 +126,7 @@ export class SceneRenderer {
         static: false,
         flip: false,
         entry: null,
+        small: true,
       });
       this.people.push(o);
     }
@@ -156,6 +157,7 @@ export class SceneRenderer {
         static: false,
         flip: false,
         entry: null,
+        small: true,
       });
     }
     if (scene.pinnedWagon) {
@@ -226,11 +228,38 @@ export class SceneRenderer {
   }
 
   /** Place every dynamic object for display time t (local metres). */
+  /**
+   * Crowd budget: beyond `budget` outdoor citizens, those farthest from
+   * `focus` (local metres) are drawn with a still frame. Counts, picking and
+   * inspection are unaffected.
+   */
+  setCrowd(budget, focus) {
+    this.crowdBudget = budget;
+    this.crowdFocus = focus;
+  }
+
   update(t) {
     this.occupancy.clear();
-    for (const o of this.people) {
-      const s = sampleSchedule(o.person.schedule, t);
+    const states = this.people.map((o) => sampleSchedule(o.person.schedule, t));
+    let simple = null;
+    const budget = this.crowdBudget ?? Infinity;
+    if (budget < this.people.length) {
+      const f = this.crowdFocus ?? { x: 0, y: 0 };
+      const outdoor = [];
+      states.forEach((s, i) => {
+        if (!s.inside) outdoor.push([Math.hypot(s.x - f.x, s.y - f.y), i]);
+      });
+      if (outdoor.length > budget) {
+        outdoor.sort((a, b) => a[0] - b[0]);
+        simple = new Set(outdoor.slice(budget).map((e) => e[1]));
+      }
+    }
+    this.simplified = simple ? simple.size : 0;
+    for (let i = 0; i < this.people.length; i += 1) {
+      const o = this.people[i];
+      const s = states[i];
       o.state = s;
+      o.simple = !!simple?.has(i);
       if (s.inside) {
         this._hide(o, s);
         if (!this.occupancy.has(s.inside)) this.occupancy.set(s.inside, []);
@@ -240,7 +269,10 @@ export class SceneRenderer {
         continue;
       }
       o.hidden = false;
-      this._place(o, s.x, s.y, this._textureKey(o.person, s), s.flip, [0.25, 0.25]);
+      const key = o.simple
+        ? this._textureKey(o.person, { ...s, anim: o.person.envoy ? s.anim : 'idle', phase: 0, moving: false })
+        : this._textureKey(o.person, s);
+      this._place(o, s.x, s.y, key, s.flip, [0.25, 0.25]);
       const p = project(s.x, s.y);
       o.shadow.position.set(p.x, p.y);
       o.shadow.visible = true;
