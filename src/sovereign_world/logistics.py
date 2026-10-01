@@ -154,6 +154,8 @@ class Journey(BaseModel):
     """What each traveller can bear; military logistics lets fighters carry more."""
     tolls_paid: tuple[HexCoord, ...] = ()
     """Toll posts this party has already passed, paying or free; each charges a journey once."""
+    encamped: bool = False
+    """A besieging war party camped at the end of its route; it stays until it lifts."""
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
@@ -165,6 +167,12 @@ class Journey(BaseModel):
             raise ValueError("trade and migration need a treaty, and nothing else carries one")
         if campaign != (self.objective is not None):
             raise ValueError("only a war party, and every war party, has an objective")
+        if self.encamped and (
+            self.objective is not WarObjective.BESIEGE
+            or self.phase is not JourneyPhase.OUTBOUND
+            or self.route_index != len(self.route) - 1
+        ):
+            raise ValueError("only a besieging party camps, at the end of its route")
         if not campaign and (self.plunder or self.battles):
             raise ValueError("only a war party carries plunder or fights battles")
         if campaign and (set(self.cargo) - WAR_GEAR or self.carrying_cargo):
@@ -489,9 +497,14 @@ def advance_journeys_day(
                         "outcome": outcome,
                         "carrying_cargo": False,
                         "completed_day": day,
+                        "encamped": False,
                     }
                 )
             )
+            continue
+        if journey.encamped:
+            # A camp stays where it is; it only eats and forages.
+            updated.append(journey)
             continue
         if journey.phase is JourneyPhase.RETURNING and journey.route_index == 0:
             completed = journey.model_copy(

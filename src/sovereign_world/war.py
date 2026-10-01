@@ -55,6 +55,8 @@ class WarObjective(StrEnum):
     """Beat the defenders of the target tile, carry off goods, and march home."""
     ATTACK = "attack"
     """Beat the defenders of the target tile, then march home."""
+    BESIEGE = "besiege"
+    """Camp beside the target settlement and cut it off until ordered home or broken."""
 
 
 class War(BaseModel):
@@ -85,6 +87,49 @@ class War(BaseModel):
 
     def known_to(self, civilization_id: EntityId) -> bool:
         return civilization_id == self.aggressor_id or self.defender_learned_day is not None
+
+
+MIN_BESIEGERS = 4
+"""A camp with fewer living fighters cannot hold a blockade and goes home."""
+
+
+class SiegeEnd(StrEnum):
+    STARVED = "starved"
+    TOO_FEW = "too_few"
+    RECALLED = "recalled"
+    BROKEN = "broken"
+    STORMED = "stormed"
+
+
+class Siege(BaseModel):
+    """A war party camped beside an enemy settlement, cutting it off."""
+
+    model_config = ConfigDict(frozen=True)
+
+    siege_id: EntityId
+    journey_id: EntityId
+    besieger_id: EntityId
+    defender_id: EntityId
+    settlement_id: EntityId
+    settlement_tile: HexCoord
+    camp: HexCoord
+    started_day: int = Field(ge=0)
+    ended_day: int | None = Field(default=None, ge=0)
+    end: SiegeEnd | None = None
+
+    @model_validator(mode="after")
+    def consistent(self) -> Siege:
+        if self.besieger_id == self.defender_id:
+            raise ValueError("a siege has two sides")
+        if self.camp.distance(self.settlement_tile) != 1:
+            raise ValueError("a camp stands next to the settlement it besieges")
+        if (self.ended_day is None) != (self.end is None):
+            raise ValueError("an ended siege records why it ended")
+        return self
+
+    @property
+    def active(self) -> bool:
+        return self.ended_day is None
 
 
 class Drill(BaseModel):
