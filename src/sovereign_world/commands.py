@@ -18,6 +18,7 @@ from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
     INTERNAL_KINDS,
     MAX_TRAVELLERS,
+    TREATY_KINDS,
     Journey,
     JourneyKind,
     JourneyOutcome,
@@ -47,6 +48,13 @@ from sovereign_world.tolls import (
     TollView,
 )
 from sovereign_world.travel import passable
+from sovereign_world.war import (
+    BattleReport,
+    Drill,
+    War,
+    WarObjective,
+    able_to_fight,
+)
 
 
 class DecreeKind(StrEnum):
@@ -74,6 +82,9 @@ class DirectOrderKind(StrEnum):
     STATION_GARRISON = "station_garrison"
     BUILD_ROAD = "build_road"
     SET_TOLL = "set_toll"
+    DECLARE_WAR = "declare_war"
+    SEND_WAR_PARTY = "send_war_party"
+    DRILL = "drill"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -82,6 +93,7 @@ MESSAGE_ORDERS = frozenset(
         DirectOrderKind.OFFER_TREATY,
         DirectOrderKind.ACCEPT_TREATY,
         DirectOrderKind.CANCEL_TREATY,
+        DirectOrderKind.DECLARE_WAR,
     }
 )
 TREATY_END_ORDERS = frozenset({DirectOrderKind.CANCEL_TREATY, DirectOrderKind.REPUDIATE_TREATY})
@@ -92,6 +104,7 @@ JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.STATION_GARRISON: JourneyKind.GARRISON,
     DirectOrderKind.RELOCATE_GROUP: JourneyKind.RELOCATION,
     DirectOrderKind.BUILD_ROAD: JourneyKind.ROADWORK,
+    DirectOrderKind.SEND_WAR_PARTY: JourneyKind.CAMPAIGN,
 }
 REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
     JourneyKind.SHIPMENT: TreatyKind.TRADE,
@@ -158,6 +171,8 @@ class DirectOrder(BaseModel):
     deposit_interval_days: int = Field(
         default=DEFAULT_DEPOSIT_DAYS, ge=MIN_DEPOSIT_DAYS, le=MAX_DEPOSIT_DAYS
     )
+    war_objective: WarObjective | None = None
+    drill_days: int = Field(default=30, ge=1, le=180)
     extra_provisions: int = Field(default=0, ge=0, le=CARGO_UNITS_PER_CARRIER * MAX_TRAVELLERS)
     priority: int = Field(default=50, ge=0, le=100)
 
@@ -214,6 +229,9 @@ class CouncilReport(BaseModel):
     known_roads: tuple[RoadView, ...] = ()
     toll_posts: tuple[TollPost, ...] = ()
     known_tolls: tuple[TollView, ...] = ()
+    wars: tuple[War, ...] = ()
+    war_reports: tuple[BattleReport, ...] = ()
+    drills: tuple[Drill, ...] = ()
     recent_events: tuple[DomainEvent, ...] = ()
 
 
@@ -281,6 +299,14 @@ def build_council_report(
         known_roads=known_roads(state, civilization_id),
         toll_posts=civilization.toll_posts,
         known_tolls=known_tolls(state, civilization_id),
+        wars=tuple(
+            war
+            for war in state.wars
+            if civilization_id in {war.aggressor_id, war.defender_id}
+            and war.known_to(civilization_id)
+        ),
+        war_reports=civilization.war_reports,
+        drills=civilization.drills,
         recent_events=visible_events,
     )
 
@@ -408,6 +434,19 @@ def _travelling_people(state: WorldState, civilization_id: EntityId) -> set[Enti
     return busy
 
 
+def at_war(state: WorldState, first: EntityId, second: EntityId) -> War | None:
+    return next((war for war in state.wars if war.active and war.involves(first, second)), None)
+
+
+def _drilling_people(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
+    return {
+        person_id
+        for drill in state.civilizations[civilization_id].drills
+        if drill.active
+        for person_id in drill.person_ids
+    }
+
+
 def _garrisoned_people(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
     return {
         person_id
@@ -430,7 +469,7 @@ def journey_supplies(
     free = trade_partners(state, civilization_id) | {civilization_id}
     toll_food = (
         0
-        if kind is JourneyKind.SHIPMENT
+        if kind in {JourneyKind.SHIPMENT, JourneyKind.CAMPAIGN}
         else sum(
             view.food_per_head * crew
             for view in known_tolls(state, civilization_id)
@@ -453,6 +492,62 @@ def journey_supplies(
         )
     taken[Resource.FOOD] = taken.get(Resource.FOOD, 0) + provisions
     return provisions, taken
+
+
+def _campaign_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved_cargo: dict[Resource, int],
+) -> CommandError | None:
+    """Validate a war party against what this civilization knows and holds."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    target = command.recipient_civilization_id
+    if command.war_objective is None or target is None or target == civilization_id:
+        return error("invalid_war_party", "a war party needs a foreign target and an objective")
+    if not any(contact.civilization_id == target for contact in civilization.contacts):
+        return error("unknown_contact", "a war party marches only on a known civilization")
+    route = command.route
+    if (
+        len(route) < 2
+        or route[0] not in {settlement.tile for settlement in civilization.settlements}
+        or any(tile not in civilization.known_tiles for tile in route)
+        or any(not state.world_map.contains(tile) for tile in route)
+        or any(first.distance(second) != 1 for first, second in pairwise(route))
+        or not passable(state.world_map, route[1:])
+    ):
+        return error(
+            "invalid_route", "a war party leaves one of its own settlements over known land"
+        )
+    people = civilization.population.people
+    if any(people[person_id].location != route[0] for person_id in command.traveller_ids):
+        return error("traveller_not_home", "the war party must set out together")
+    if not all(able_to_fight(people[person_id]) for person_id in command.traveller_ids):
+        return error("unfit_fighter", "fighters must be between 13 and 60 and not dying")
+    expectant = {birth.parent_ids[0] for birth in civilization.population.scheduled_births}
+    if expectant & set(command.traveller_ids):
+        return error("expectant_traveller", "a mother with a birth due cannot march")
+    if set(command.cargo) - {Resource.AXE} or command.cargo.get(Resource.AXE, 0) > len(
+        command.traveller_ids
+    ):
+        return error("invalid_cargo", "a war party carries at most one axe per fighter")
+    provisions, taken = journey_supplies(command, state, civilization_id)
+    if provisions + sum(command.cargo.values()) > CARGO_UNITS_PER_CARRIER * len(
+        command.traveller_ids
+    ):
+        return error("cargo_over_capacity", "each fighter can bear 50 units of food and arms")
+    for resource, quantity in taken.items():
+        if reserved_cargo.get(resource, 0) + quantity > civilization.inventory.quantities.get(
+            resource, 0
+        ):
+            if resource is Resource.FOOD:
+                return error("insufficient_provisions", "not enough food for the war party")
+            return error("insufficient_goods", f"not enough {resource} to arm the war party")
+    return None
 
 
 def _internal_journey_error(
@@ -552,6 +647,8 @@ def _journey_error(
 
     if kind in INTERNAL_KINDS:
         return _internal_journey_error(command, civilization_id, state, reserved_cargo)
+    if kind is JourneyKind.CAMPAIGN:
+        return _campaign_error(command, civilization_id, state, reserved_cargo)
     treaty = next(
         (item for item in state.active_treaties if item.treaty_id == command.treaty_id),
         None,
@@ -734,6 +831,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     }
     already_travelling = _travelling_people(state, envelope.civilization_id)
     garrisoned = _garrisoned_people(state, envelope.civilization_id)
+    drilling = _drilling_people(state, envelope.civilization_id)
     reserved_cargo: dict[Resource, int] = {}
     for command in envelope.commands:
         if command.command_id in seen:
@@ -880,13 +978,14 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 )
             if command.kind in JOURNEY_ORDERS:
                 traveller_ids = command.traveller_ids
-                foreign = JOURNEY_ORDERS[command.kind] not in INTERNAL_KINDS
+                kind = JOURNEY_ORDERS[command.kind]
+                foreign = kind not in INTERNAL_KINDS
                 if (
                     command.journey_id is None
-                    or (foreign and command.treaty_id is None)
+                    or (kind in TREATY_KINDS and command.treaty_id is None)
                     or (foreign and command.recipient_civilization_id is None)
                     or not traveller_ids
-                    or len(traveller_ids) > MAX_TRAVELLERS
+                    or (kind is not JourneyKind.CAMPAIGN and len(traveller_ids) > MAX_TRAVELLERS)
                     or len(set(traveller_ids)) != len(traveller_ids)
                     or not command.route
                 ):
@@ -953,7 +1052,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             elif command.kind in MESSAGE_ORDERS and command.ambassador_id is not None:
                 travellers = (command.ambassador_id,)
             home_duty: tuple[EntityId, ...] = ()
-            if command.kind is DirectOrderKind.START_PROJECT:
+            if command.kind in {DirectOrderKind.START_PROJECT, DirectOrderKind.DRILL}:
                 home_duty = command.worker_ids
             elif command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
@@ -961,7 +1060,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 home_duty = (command.teacher_id, command.apprentice_id)
             if travellers and command_error is None:
                 committed = (
-                    committed_travellers | committed_at_home | teaching_people | already_travelling
+                    committed_travellers
+                    | committed_at_home
+                    | teaching_people
+                    | already_travelling
+                    | drilling
                 )
                 if command.kind is not DirectOrderKind.RELOCATE_GROUP:
                     committed |= garrisoned
@@ -972,7 +1075,9 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         message="a traveller is already committed to another duty",
                     )
             if home_duty and command_error is None:
-                away = committed_travellers | already_travelling | garrisoned
+                away = committed_travellers | already_travelling | garrisoned | drilling
+                if command.kind is DirectOrderKind.DRILL:
+                    away |= committed_at_home | teaching_people
                 if any(person_id in away for person_id in home_duty):
                     command_error = CommandError(
                         command_id=command.command_id,
@@ -992,6 +1097,38 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             if command.kind in JOURNEY_ORDERS and command_error is None:
                 command_error = _journey_error(
                     command, envelope.civilization_id, state, reserved_cargo
+                )
+            if command.kind is DirectOrderKind.DRILL and command_error is None:
+                civilization = state.civilizations[envelope.civilization_id]
+                homes = {settlement.tile for settlement in civilization.settlements}
+                people = civilization.population.people
+                if not command.worker_ids or len(set(command.worker_ids)) != len(
+                    command.worker_ids
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_drill",
+                        message="a drill names one or more distinct people",
+                    )
+                elif not all(
+                    able_to_fight(people[person_id]) and people[person_id].location in homes
+                    for person_id in command.worker_ids
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_drill",
+                        message="only people fit to fight, at one of their settlements, drill",
+                    )
+            if (
+                command.kind is DirectOrderKind.DECLARE_WAR
+                and command_error is None
+                and command.recipient_civilization_id is not None
+                and at_war(state, envelope.civilization_id, command.recipient_civilization_id)
+            ):
+                command_error = CommandError(
+                    command_id=command.command_id,
+                    code="already_at_war",
+                    message="this civilization is already at war with the recipient",
                 )
             if command.kind is DirectOrderKind.SET_TOLL and command_error is None:
                 command_error = _toll_error(command, envelope.civilization_id, state, tolled)

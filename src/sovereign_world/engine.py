@@ -54,6 +54,8 @@ from sovereign_world.logistics import (
     TRAVEL_HAZARD_CAUSE,
     Journey,
     JourneyKind,
+    JourneyOutcome,
+    JourneyPhase,
     LogisticsNotice,
     NoticeKind,
     RoadBuilt,
@@ -77,6 +79,25 @@ from sovereign_world.territory import (
     advance_territory,
 )
 from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
+from sovereign_world.war import (
+    ARMS,
+    BATTLE_CAP,
+    BATTLE_SURVIVED_POINTS,
+    BATTLE_WON_POINTS,
+    DRILL_CAP,
+    DRILL_DAYS_PER_POINT,
+    Battle,
+    BattleReport,
+    Drill,
+    War,
+    WarObjective,
+    able_to_fight,
+    defence_bonus_bp,
+    estimate,
+    fighter,
+    morale_bp,
+    resolve_battle,
+)
 from sovereign_world.work import ConstructionProject, WorkKind, WorkOrder, execute_work_day
 
 
@@ -135,9 +156,7 @@ def _store_provisions(state: WorldState, civilization_id: EntityId, units: int) 
     if not units:
         return 0
     civilization = state.civilizations[civilization_id]
-    civilization.inventory, waste = civilization.inventory.store_with_waste(
-        {Resource.FOOD: units}
-    )
+    civilization.inventory, waste = civilization.inventory.store_with_waste({Resource.FOOD: units})
     return units - waste.get(Resource.FOOD, 0)
 
 
@@ -274,11 +293,24 @@ DISPATCH_EVENT = {
     JourneyKind.RELOCATION: "relocation_dispatched",
     JourneyKind.ROADWORK: "road_crew_dispatched",
     JourneyKind.DEPOSIT: "toll_deposit_dispatched",
+    JourneyKind.CAMPAIGN: "war_party_dispatched",
 }
 RETURNED_EVENT = {
     JourneyKind.ROADWORK: "road_crew_returned",
     JourneyKind.DEPOSIT: "toll_couriers_returned",
+    JourneyKind.CAMPAIGN: "war_party_returned",
 }
+PLUNDER_ORDER = (
+    Resource.FOOD,
+    Resource.METAL,
+    Resource.TOOL,
+    Resource.AXE,
+    Resource.ORE,
+    Resource.PLANK,
+    Resource.TIMBER,
+    Resource.STONE,
+)
+"""What raiders carry off first when they cannot carry everything."""
 
 
 def _leave_garrisons(
@@ -366,6 +398,7 @@ def _dispatch_journey(
         provisions_packed=provisions,
         provisions=provisions,
         departed_day=state.day,
+        objective=command.war_objective if kind is JourneyKind.CAMPAIGN else None,
         road_grade=command.road_grade if kind is JourneyKind.ROADWORK else None,
         materials=(
             {
@@ -521,6 +554,9 @@ def _advance_journeys(
         arrival_allowed=lambda journey: _arrival_allowed(state, journey),
         roads=grades_of(state.roads),
         tolls=_toll_rules(state),
+        halts=lambda journey, tile: (
+            journey.kind is JourneyKind.CAMPAIGN and _enemy_at(state, journey, tile) is not None
+        ),
     )
     state.journeys = result.journeys
     for civilization_id, people in result.people_by_civilization.items():
@@ -599,6 +635,8 @@ def _advance_journeys(
     for encounter in result.tolls:
         events.extend(_settle_toll(state, encounter))
     for journey in result.arrived:
+        if journey.kind is JourneyKind.CAMPAIGN:
+            continue
         if journey.kind is JourneyKind.DEPOSIT:
             events.extend(_deposit_arrival(state, journey))
             continue
@@ -738,6 +776,8 @@ def _advance_journeys(
         sender_id = journey.sender_civilization_id
         restored: dict[Resource, int] = {}
         brought_home = journey.cargo if journey.journey_id in cargo_home else journey.materials
+        if journey.kind is JourneyKind.CAMPAIGN:
+            brought_home = _war_party_home(state, journey)
         if journey.kind is JourneyKind.DEPOSIT and brought_home:
             # Couriers turned back on the way carry the chest back to their post.
             _fill_chest(state, sender_id, journey.route[0], brought_home)
@@ -882,9 +922,7 @@ def _toll_rules(state: WorldState) -> TollRules:
 
 
 def _post_at(state: WorldState, owner: EntityId, tile: HexCoord) -> TollPost | None:
-    return next(
-        (post for post in state.civilizations[owner].toll_posts if post.tile == tile), None
-    )
+    return next((post for post in state.civilizations[owner].toll_posts if post.tile == tile), None)
 
 
 def _replace_post(
@@ -1282,6 +1320,579 @@ def _joined_roads(state: WorldState) -> list[DomainEvent]:
     return events
 
 
+def _war_between(state: WorldState, first: EntityId, second: EntityId) -> War | None:
+    return next((war for war in state.wars if war.active and war.involves(first, second)), None)
+
+
+def _start_war(
+    state: WorldState, aggressor: EntityId, defender: EntityId, *, declared: bool
+) -> tuple[War, list[DomainEvent]]:
+    """Record a war and break every treaty between the two, as the aggressor's breach."""
+    war = War(
+        war_id=EntityId(
+            f"war:{aggressor.rsplit(':', 1)[-1]}:{defender.rsplit(':', 1)[-1]}:{state.day}"
+        ),
+        aggressor_id=aggressor,
+        defender_id=defender,
+        started_day=state.day,
+        declared=declared,
+    )
+    state.wars = tuple(sorted((*state.wars, war), key=lambda item: item.war_id))
+    events = [
+        _event(
+            state,
+            EventPhase.COMMAND,
+            "war_declared" if declared else "undeclared_attack",
+            str(aggressor),
+            str(war.war_id),
+            defender=str(defender),
+        )
+    ]
+    for treaty in state.active_treaties:
+        if treaty.in_force and {aggressor, defender} == {
+            treaty.proposer_civilization_id,
+            treaty.recipient_civilization_id,
+        }:
+            broken = _end_treaty(state, treaty.treaty_id, TreatyEndKind.BREACHED, aggressor)
+            if broken is not None:
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.COMMAND,
+                        "treaty_breached",
+                        str(aggressor),
+                        str(broken.treaty_id),
+                        injured=str(defender),
+                    )
+                )
+    return war, events
+
+
+def _learn_war(state: WorldState, war: War, civilization_id: EntityId) -> list[DomainEvent]:
+    """A defender learns of its war the first time the news or the enemy reaches it."""
+    if civilization_id != war.defender_id or war.defender_learned_day is not None:
+        return []
+    learned = war.model_copy(update={"defender_learned_day": state.day})
+    state.wars = tuple(learned if item.war_id == war.war_id else item for item in state.wars)
+    return [
+        _event(state, EventPhase.MOVEMENT, "war_learned", str(civilization_id), str(war.war_id))
+    ]
+
+
+def _on_non_fighting_journey(state: WorldState) -> set[EntityId]:
+    """Everyone travelling who does not fight where they stand: convoys, migrants, crews."""
+    return {
+        person_id
+        for journey in state.journeys
+        if journey.active and journey.kind is not JourneyKind.CAMPAIGN
+        for person_id in journey.traveller_ids
+    }
+
+
+def _enemy_at(state: WorldState, journey: Journey, tile: HexCoord) -> EntityId | None:
+    """The civilization a war party would fight on this tile, if any.
+
+    A party fights whoever it is at war with; heading out, it also falls on its target.
+    Its own target comes first, then the lowest civilization id.
+    """
+    sender = journey.sender_civilization_id
+    hostile: list[EntityId] = []
+    for civilization_id in sorted(state.civilizations):
+        if civilization_id == sender:
+            continue
+        at_war = _war_between(state, sender, civilization_id) is not None
+        targeted = (
+            civilization_id == journey.recipient_civilization_id
+            and journey.phase is JourneyPhase.OUTBOUND
+        )
+        if not (at_war or targeted):
+            continue
+        if any(
+            person.alive and person.location == tile
+            for person in state.civilizations[civilization_id].population.people.values()
+        ):
+            hostile.append(civilization_id)
+    if journey.recipient_civilization_id in hostile:
+        return journey.recipient_civilization_id
+    return hostile[0] if hostile else None
+
+
+def _defenders(
+    state: WorldState, civilization_id: EntityId, tile: HexCoord
+) -> tuple[list[EntityId], list[EntityId]]:
+    """Able people of a civilization who would fight on a tile: at home, and in war parties."""
+    busy = _on_non_fighting_journey(state)
+    marching = {
+        person_id
+        for journey in state.journeys
+        if journey.active and journey.kind is JourneyKind.CAMPAIGN
+        for person_id in journey.traveller_ids
+    }
+    people = state.civilizations[civilization_id].population.people
+    here = sorted(
+        person_id
+        for person_id, person in people.items()
+        if person.location == tile and able_to_fight(person) and person_id not in busy
+    )
+    return [item for item in here if item not in marching], [
+        item for item in here if item in marching
+    ]
+
+
+def _hurt(state: WorldState, battle: Battle) -> list[DomainEvent]:
+    """Apply wounds and deaths, then battle experience for everyone who lived."""
+    events: list[DomainEvent] = []
+    for casualty in battle.casualties:
+        person = state.civilizations[casualty.civilization_id].population.people[casualty.person_id]
+        if casualty.died:
+            person.health_bp = 0
+            person.alive = False
+            person.death_day = state.day
+            events.append(
+                _event(
+                    state,
+                    EventPhase.DEATH,
+                    "person_died",
+                    str(casualty.civilization_id),
+                    str(casualty.person_id),
+                    cause="battle",
+                )
+            )
+        else:
+            person.health_bp = max(person.health_bp - casualty.damage, 1)
+            events.append(
+                _event(
+                    state,
+                    EventPhase.DEATH,
+                    "person_wounded",
+                    str(casualty.civilization_id),
+                    str(casualty.person_id),
+                    damage=casualty.damage,
+                )
+            )
+    for side, civilization_id in (
+        (battle.attackers, battle.attacker_id),
+        (battle.defenders, battle.defender_id),
+    ):
+        gain = BATTLE_WON_POINTS if civilization_id == battle.winner_id else BATTLE_SURVIVED_POINTS
+        people = state.civilizations[civilization_id].population.people
+        for person_id in side:
+            person = people[person_id]
+            if person.alive:
+                current = person.skills.get(ARMS, 0)
+                person.skills = {
+                    **person.skills,
+                    ARMS: max(current, min(current + gain, BATTLE_CAP)),
+                }
+    return events
+
+
+def _battle_report(battle: Battle, civilization_id: EntityId) -> BattleReport:
+    """One side's account: its own losses by name, the enemy's by estimate."""
+    own_side = battle.attackers if civilization_id == battle.attacker_id else battle.defenders
+    enemy_side = battle.defenders if civilization_id == battle.attacker_id else battle.attackers
+    own = set(own_side)
+    won = civilization_id == battle.winner_id
+    enemy_casualties = [item for item in battle.casualties if item.person_id not in own]
+    return BattleReport(
+        battle_id=battle.battle_id,
+        day=battle.day,
+        tile=battle.tile,
+        enemy_id=battle.defender_id
+        if civilization_id == battle.attacker_id
+        else battle.attacker_id,
+        won=won,
+        own_fighters=len(own_side),
+        own_dead=tuple(
+            item.person_id for item in battle.casualties if item.person_id in own and item.died
+        ),
+        own_wounded=tuple(
+            item.person_id for item in battle.casualties if item.person_id in own and not item.died
+        ),
+        enemy_fighters_estimate=estimate(len(enemy_side)),
+        # The side that holds the field counts the enemy dead left on it.
+        enemy_dead_seen=sum(item.died for item in enemy_casualties) if won else 0,
+        enemy_losses_estimate=estimate(len(enemy_casualties)),
+    )
+
+
+def _file_report(state: WorldState, civilization_id: EntityId, report: BattleReport) -> None:
+    civilization = state.civilizations[civilization_id]
+    reports = {item.battle_id: item for item in civilization.war_reports}
+    reports[report.battle_id] = report
+    civilization.war_reports = tuple(reports[key] for key in sorted(reports))
+
+
+def _replace_journey(state: WorldState, journey: Journey) -> None:
+    state.journeys = tuple(
+        journey if item.journey_id == journey.journey_id else item for item in state.journeys
+    )
+
+
+def _fight(
+    state: WorldState, party: Journey, enemy: EntityId, rng: StableRng
+) -> tuple[Journey, list[DomainEvent]]:
+    """A war party falls on the enemy standing on its tile; the battle lasts one day."""
+    events: list[DomainEvent] = []
+    sender = party.sender_civilization_id
+    tile = party.route[party.route_index]
+    war = _war_between(state, sender, enemy)
+    if war is None:
+        war, started = _start_war(state, sender, enemy, declared=False)
+        events.extend(started)
+    events.extend(_learn_war(state, war, enemy))
+    events.extend(_learn_war(state, war, sender))
+    home_side, marching = _defenders(state, enemy, tile)
+    attackers_people = state.civilizations[sender].population.people
+    attacker_ids = [
+        person_id
+        for person_id in party.traveller_ids
+        if attackers_people[person_id].alive and able_to_fight(attackers_people[person_id])
+    ]
+    axes = party.cargo.get(Resource.AXE, 0)
+    attackers = [
+        fighter(attackers_people[person_id], armed=index < axes)
+        for index, person_id in enumerate(attacker_ids)
+    ]
+    enemy_people = state.civilizations[enemy].population.people
+    store_axes = state.civilizations[enemy].inventory.quantities.get(Resource.AXE, 0)
+    defending_parties = [
+        journey
+        for journey in state.journeys
+        if journey.active
+        and journey.kind is JourneyKind.CAMPAIGN
+        and journey.sender_civilization_id == enemy
+        and any(person_id in marching for person_id in journey.traveller_ids)
+    ]
+    party_axes = {
+        person_id: index < journey.cargo.get(Resource.AXE, 0)
+        for journey in defending_parties
+        for index, person_id in enumerate(
+            item for item in journey.traveller_ids if item in marching
+        )
+    }
+    defenders = [
+        fighter(enemy_people[person_id], armed=index < store_axes)
+        for index, person_id in enumerate(home_side)
+    ] + [fighter(enemy_people[person_id], armed=party_axes[person_id]) for person_id in marching]
+    enemy_homes = {settlement.tile for settlement in state.civilizations[enemy].settlements}
+    at_home = tile in enemy_homes
+    battle_id = EntityId(f"battle:{state.day:06d}:{party.journey_id}")
+    outcome = resolve_battle(
+        attackers,
+        defenders,
+        defence_bp=defence_bonus_bp(state.world_map.tile(tile).terrain, settlement=at_home),
+        attacker_morale_bp=morale_bp(attackers, at_home=False, supplied=True),
+        defender_morale_bp=(
+            morale_bp(defenders, at_home=True, supplied=True)
+            if at_home and home_side
+            else morale_bp(defenders, at_home=False, supplied=True)
+        ),
+        rng=rng,
+        stream=f"day:{state.day}:war:{battle_id}",
+    )
+    battle = Battle(
+        battle_id=battle_id,
+        day=state.day,
+        tile=tile,
+        attacker_id=sender,
+        defender_id=enemy,
+        attackers=tuple(attacker_ids),
+        defenders=tuple(sorted([*home_side, *marching])),
+        rounds=outcome.rounds,
+        winner_id=sender if outcome.attackers_won else enemy,
+        casualties=outcome.casualties,
+    )
+    state.battles = tuple(sorted((*state.battles, battle), key=lambda item: item.battle_id))
+    events.append(
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "battle_joined",
+            str(sender),
+            str(battle_id),
+            defender=str(enemy),
+            attackers=len(attacker_ids),
+            defenders=len(battle.defenders),
+            q=tile.q,
+            r=tile.r,
+        )
+    )
+    events.extend(_hurt(state, battle))
+    events.append(
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "battle_won",
+            str(battle.winner_id),
+            str(battle_id),
+            rounds=battle.rounds,
+            dead=sum(item.died for item in battle.casualties),
+            wounded=sum(not item.died for item in battle.casualties),
+        )
+    )
+    # Home defenders tell their council at once; war parties only when survivors return.
+    if home_side:
+        _file_report(state, enemy, _battle_report(battle, enemy))
+    for journey in defending_parties:
+        held = not outcome.attackers_won
+        journey = journey.model_copy(
+            update={
+                "battles": (*journey.battles, battle_id),
+                **(
+                    {}
+                    if held
+                    else {"phase": JourneyPhase.RETURNING, "outcome": JourneyOutcome.ROUTED}
+                ),
+            }
+        )
+        _replace_journey(state, journey)
+    party = party.model_copy(update={"battles": (*party.battles, battle_id)})
+    if not outcome.attackers_won:
+        party = party.model_copy(
+            update={"phase": JourneyPhase.RETURNING, "outcome": JourneyOutcome.ROUTED}
+        )
+        events.append(_event(state, EventPhase.MOVEMENT, "side_broke", str(sender), str(battle_id)))
+    else:
+        events.append(_event(state, EventPhase.MOVEMENT, "side_broke", str(enemy), str(battle_id)))
+    _replace_journey(state, party)
+    return party, events
+
+
+def _room(state: WorldState, party: Journey) -> int:
+    people = state.civilizations[party.sender_civilization_id].population.people
+    living = sum(people[person_id].alive for person_id in party.traveller_ids)
+    load = sum(party.cargo.values()) + party.provisions + sum(party.plunder.values())
+    return max(
+        min(CARGO_UNITS_PER_CARRIER * living, CARGO_UNITS_PER_CARRIER * len(party.traveller_ids))
+        - load,
+        0,
+    )
+
+
+def _plunder(
+    state: WorldState, party: Journey, enemy: EntityId
+) -> tuple[Journey, list[DomainEvent]]:
+    """Raiders standing in an enemy settlement carry off what they can bear."""
+    tile = party.route[party.route_index]
+    victim = state.civilizations[enemy]
+    if tile not in {settlement.tile for settlement in victim.settlements}:
+        return party, []
+    room = _room(state, party)
+    taken: dict[Resource, int] = {}
+    post = _post_at(state, enemy, tile)
+    if post is not None and post.chest:
+        chest = dict(post.chest)
+        for resource in PLUNDER_ORDER:
+            grab = min(chest.get(resource, 0), room)
+            if grab:
+                taken[resource] = taken.get(resource, 0) + grab
+                chest[resource] -= grab
+                room -= grab
+        _replace_post(
+            state,
+            post.model_copy(update={"chest": {key: left for key, left in chest.items() if left}}),
+            tile,
+            enemy,
+        )
+    from_store: dict[Resource, int] = {}
+    for resource in PLUNDER_ORDER:
+        grab = min(victim.inventory.quantities.get(resource, 0), room)
+        if grab:
+            from_store[resource] = grab
+            taken[resource] = taken.get(resource, 0) + grab
+            room -= grab
+    if from_store:
+        victim.inventory = victim.inventory.apply_delta(
+            InventoryDelta(changes={resource: -grab for resource, grab in from_store.items()})
+        )
+    plunder = dict(party.plunder)
+    for resource, grab in taken.items():
+        plunder[resource] = plunder.get(resource, 0) + grab
+    party = party.model_copy(update={"plunder": {key: plunder[key] for key in sorted(plunder)}})
+    _replace_journey(state, party)
+    return party, [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "settlement_raided",
+            str(party.sender_civilization_id),
+            str(party.journey_id),
+            victim=str(enemy),
+            units=sum(taken.values()),
+            q=tile.q,
+            r=tile.r,
+        )
+    ]
+
+
+def _ambush(state: WorldState, party: Journey) -> list[DomainEvent]:
+    """Enemy convoys and travellers caught on a war party's tile lose their goods and flee."""
+    tile = party.route[party.route_index]
+    sender = party.sender_civilization_id
+    events: list[DomainEvent] = []
+    for journey in sorted(state.journeys, key=lambda item: item.journey_id):
+        if (
+            not journey.active
+            or journey.kind is JourneyKind.CAMPAIGN
+            or journey.phase is not JourneyPhase.OUTBOUND
+            or journey.sender_civilization_id == sender
+        ):
+            continue
+        owner = journey.sender_civilization_id
+        people = state.civilizations[owner].population.people
+        if not any(
+            people[person_id].alive and people[person_id].location == tile
+            for person_id in journey.traveller_ids
+        ):
+            continue
+        war = _war_between(state, sender, owner)
+        targeted = owner == party.recipient_civilization_id and party.phase is JourneyPhase.OUTBOUND
+        if war is None and not targeted:
+            continue
+        if war is None:
+            war, started = _start_war(state, sender, owner, declared=False)
+            events.extend(started)
+        events.extend(_learn_war(state, war, owner))
+        seized: dict[Resource, int] = {}
+        update: dict[str, object] = {
+            "phase": JourneyPhase.RETURNING,
+            "outcome": JourneyOutcome.AMBUSHED,
+        }
+        if journey.carrying_cargo:
+            cargo = dict(journey.cargo)
+            room = _room(state, party)
+            for resource in PLUNDER_ORDER:
+                grab = min(cargo.get(resource, 0), room)
+                if grab:
+                    seized[resource] = grab
+                    cargo[resource] -= grab
+                    room -= grab
+            plunder = dict(party.plunder)
+            for resource, grab in seized.items():
+                plunder[resource] = plunder.get(resource, 0) + grab
+            party = party.model_copy(
+                update={"plunder": {key: plunder[key] for key in sorted(plunder)}}
+            )
+            _replace_journey(state, party)
+            left = {key: value for key, value in cargo.items() if value}
+            # What was not seized is carried home; if nothing is left, the record keeps the loss.
+            update["cargo"] = left or seized
+            update["carrying_cargo"] = bool(left)
+        _replace_journey(state, journey.model_copy(update=update))
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "convoy_ambushed",
+                str(sender),
+                str(journey.journey_id),
+                victim=str(owner),
+                units=sum(seized.values()),
+                q=tile.q,
+                r=tile.r,
+            )
+        )
+    return events
+
+
+def _resolve_war(state: WorldState, rng: StableRng) -> list[DomainEvent]:
+    """Each war party fights whoever stands against it, ambushes convoys, and at its target
+    fights for its objective; then it turns for home."""
+    events: list[DomainEvent] = []
+    for journey_id in sorted(
+        item.journey_id
+        for item in state.journeys
+        if item.active and item.kind is JourneyKind.CAMPAIGN
+    ):
+        party = next(item for item in state.journeys if item.journey_id == journey_id)
+        if not party.active:
+            continue
+        people = state.civilizations[party.sender_civilization_id].population.people
+        if not any(people[person_id].alive for person_id in party.traveller_ids):
+            continue
+        tile = party.route[party.route_index]
+        enemy = _enemy_at(state, party, tile)
+        if enemy is not None and _defenders(state, enemy, tile) != ([], []):
+            party, fought = _fight(state, party, enemy, rng)
+            events.extend(fought)
+        if party.phase is JourneyPhase.OUTBOUND:
+            events.extend(_ambush(state, party))
+            party = next(item for item in state.journeys if item.journey_id == journey_id)
+        at_target = party.route_index == len(party.route) - 1
+        if party.phase is JourneyPhase.OUTBOUND and at_target:
+            target = party.recipient_civilization_id
+            if _war_between(state, party.sender_civilization_id, target) is None:
+                war, started = _start_war(
+                    state, party.sender_civilization_id, target, declared=False
+                )
+                events.extend(started)
+                events.extend(_learn_war(state, war, target))
+            if party.objective is WarObjective.RAID:
+                party, raided = _plunder(state, party, target)
+                events.extend(raided)
+            party = party.model_copy(
+                update={"phase": JourneyPhase.RETURNING, "outcome": JourneyOutcome.DELIVERED}
+            )
+            _replace_journey(state, party)
+    return events
+
+
+def _war_party_home(state: WorldState, party: Journey) -> dict[Resource, int]:
+    """Survivors bring home their axes, their plunder, and news of their battles."""
+    sender = party.sender_civilization_id
+    people = state.civilizations[sender].population.people
+    survivors = sum(people[person_id].alive for person_id in party.traveller_ids)
+    goods = dict(party.plunder)
+    axes = min(party.cargo.get(Resource.AXE, 0), survivors)
+    if axes:
+        goods[Resource.AXE] = goods.get(Resource.AXE, 0) + axes
+    battles = {battle.battle_id: battle for battle in state.battles}
+    for battle_id in party.battles:
+        _file_report(state, sender, _battle_report(battles[battle_id], sender))
+    return goods
+
+
+def _advance_drills(state: WorldState) -> list[DomainEvent]:
+    """Drilling people at their settlements gain arms slowly, up to the drill cap."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        homes = {settlement.tile for settlement in civilization.settlements}
+        people = civilization.population.people
+        kept: list[Drill] = []
+        for drill in civilization.drills:
+            present = [
+                person_id
+                for person_id in drill.person_ids
+                if people[person_id].alive
+                and people[person_id].location in homes
+                and person_id not in away
+            ]
+            drill = drill.model_copy(update={"days_done": drill.days_done + 1})
+            if drill.days_done % DRILL_DAYS_PER_POINT == 0:
+                for person_id in present:
+                    person = people[person_id]
+                    current = person.skills.get(ARMS, 0)
+                    if current < DRILL_CAP:
+                        person.skills = {**person.skills, ARMS: current + 1}
+            if drill.active:
+                kept.append(drill)
+            else:
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.WORK,
+                        "drill_completed",
+                        str(civilization_id),
+                        str(drill.drill_id),
+                    )
+                )
+        civilization.drills = tuple(kept)
+    return events
+
+
 def _record_road(state: WorldState, built: RoadBuilt) -> DomainEvent:
     """Raise a tile's road by one grade; the crew that built it sees what it made."""
     existing = next((road for road in state.roads if road.tile == built.tile), None)
@@ -1301,9 +1912,7 @@ def _record_road(state: WorldState, built: RoadBuilt) -> DomainEvent:
     civilization = state.civilizations[built.civilization_id]
     journey = next(item for item in state.journeys if item.journey_id == built.journey_id)
     people = civilization.population.people
-    observer = min(
-        person_id for person_id in journey.traveller_ids if people[person_id].alive
-    )
+    observer = min(person_id for person_id in journey.traveller_ids if people[person_id].alive)
     observations = {item.tile: item for item in civilization.observations}
     observations[built.tile] = Observation(
         tile=built.tile,
@@ -1510,6 +2119,26 @@ def _run_councils(
                         )
             elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.SET_TOLL:
                 events.append(_set_toll(state, civilization_id, command))
+            elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.DRILL:
+                civilization = state.civilizations[civilization_id]
+                drill = Drill(
+                    drill_id=EntityId(f"drill:{civilization_id}:{state.day}:{command.command_id}"),
+                    person_ids=tuple(sorted(command.worker_ids)),
+                    started_day=state.day,
+                    days=command.drill_days,
+                )
+                civilization.drills = (*civilization.drills, drill)
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.WORK,
+                        "drill_started",
+                        str(civilization_id),
+                        str(drill.drill_id),
+                        people=len(drill.person_ids),
+                        days=drill.days,
+                    )
+                )
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.START_TEACHING
@@ -1521,13 +2150,16 @@ def _run_councils(
                 civilization = state.civilizations[civilization_id]
                 civilization.teaching_assignments = tuple(
                     sorted(
-                        (*civilization.teaching_assignments, TeachingAssignment(
-                            assignment_id=command.assignment_id,
-                            teacher_id=command.teacher_id,
-                            apprentice_id=command.apprentice_id,
-                            capability=command.capability,
-                            started_day=state.day,
-                        )),
+                        (
+                            *civilization.teaching_assignments,
+                            TeachingAssignment(
+                                assignment_id=command.assignment_id,
+                                teacher_id=command.teacher_id,
+                                apprentice_id=command.apprentice_id,
+                                capability=command.capability,
+                                started_day=state.day,
+                            ),
+                        ),
                         key=lambda assignment: assignment.assignment_id,
                     )
                 )
@@ -1611,6 +2243,14 @@ def _run_councils(
                 and command.recipient_civilization_id is not None
                 and command.route
             ):
+                declared: EntityId | None = None
+                if command.kind is DirectOrderKind.DECLARE_WAR:
+                    # The war begins as the herald sets out; the enemy learns when he arrives.
+                    war, started = _start_war(
+                        state, civilization_id, command.recipient_civilization_id, declared=True
+                    )
+                    declared = war.war_id
+                    events.extend(started)
                 state.diplomatic_missions = tuple(
                     sorted(
                         (
@@ -1648,6 +2288,7 @@ def _run_councils(
                                     if command.kind is DirectOrderKind.CANCEL_TREATY
                                     else None
                                 ),
+                                declaration_of=declared,
                             ),
                         ),
                         key=lambda message: message.message_id,
@@ -1665,9 +2306,7 @@ def _run_councils(
                                 TreatyOffer(
                                     offer_id=command.treaty_id,
                                     proposer_civilization_id=civilization_id,
-                                    recipient_civilization_id=(
-                                        command.recipient_civilization_id
-                                    ),
+                                    recipient_civilization_id=(command.recipient_civilization_id),
                                     kind=command.treaty_kind,
                                     proposed_day=state.day,
                                 ),
@@ -1817,9 +2456,9 @@ def advance_day(
                     sorted(
                         (
                             *(
-                            item
-                            for item in civilization.contacts
-                            if item.civilization_id != foreign_id
+                                item
+                                for item in civilization.contacts
+                                if item.civilization_id != foreign_id
                             ),
                             contact,
                         ),
@@ -1880,6 +2519,14 @@ def advance_day(
                     str(message.treaty_offer.offer_id),
                 )
             )
+        if message.declaration_of is not None:
+            declared_war = next(
+                (war for war in candidate.wars if war.war_id == message.declaration_of), None
+            )
+            if declared_war is not None:
+                events.extend(
+                    _learn_war(candidate, declared_war, message.recipient_civilization_id)
+                )
         if message.cancellation_of is not None:
             notified = next(
                 (
@@ -1926,8 +2573,7 @@ def advance_day(
                 and offer.proposer_civilization_id == message.recipient_civilization_id
                 and offer.recipient_civilization_id == message.sender_civilization_id
                 and not any(
-                    treaty.treaty_id == offer.offer_id
-                    for treaty in candidate.active_treaties
+                    treaty.treaty_id == offer.offer_id for treaty in candidate.active_treaties
                 )
             ):
                 candidate.active_treaties = tuple(
@@ -1970,12 +2616,12 @@ def advance_day(
             _event(candidate, EventPhase.MOVEMENT, "message_delayed", None, str(message_id))
         )
     for message_id in diplomacy_result.lost_ids:
-        events.append(
-            _event(candidate, EventPhase.MOVEMENT, "message_lost", None, str(message_id))
-        )
+        events.append(_event(candidate, EventPhase.MOVEMENT, "message_lost", None, str(message_id)))
 
     journey_events, fed_on_the_road = _advance_journeys(candidate, rng)
     events.extend(journey_events)
+    events.extend(_resolve_war(candidate, rng))
+    events.extend(_advance_drills(candidate))
     events.extend(_advance_tolls(candidate))
 
     for civilization_id in sorted(candidate.civilizations):
@@ -1990,10 +2636,9 @@ def advance_day(
         stationed = {
             person_id for garrison in civilization.garrisons for person_id in garrison.member_ids
         }
+        drilling = {person_id for drill in civilization.drills for person_id in drill.person_ids}
         home_living = tuple(
-            person_id
-            for person_id in civilization.population.living_ids
-            if person_id not in away
+            person_id for person_id in civilization.population.living_ids if person_id not in away
         )
         living_count = len(home_living)
         decrees = candidate.active_decrees.get(civilization_id, {})
@@ -2008,7 +2653,9 @@ def advance_day(
                 + (2 if candidate.world_map.tile(coord).has_water else 0)
                 for coord in civilization.known_tiles
             )
-            produced = min(living_count, farm_capacity, target_food - current_food, capacity)
+            # People at drill eat but do not work the fields.
+            workers = sum(person_id not in drilling for person_id in home_living)
+            produced = min(workers, farm_capacity, target_food - current_food, capacity)
             if produced:
                 civilization.inventory = civilization.inventory.apply_delta(
                     InventoryDelta(changes={Resource.FOOD: produced})
@@ -2067,7 +2714,9 @@ def advance_day(
             {
                 person_id: person
                 for person_id, person in civilization.population.people.items()
-                if person_id not in away and person_id not in stationed
+                if person_id not in away
+                and person_id not in stationed
+                and person_id not in drilling
             },
             civilization.inventory,
             civilization.projects,
@@ -2075,9 +2724,7 @@ def advance_day(
         civilization.inventory = work_result.inventory
         civilization.projects = work_result.projects
         for order_id in work_result.completed_order_ids:
-            events.append(
-                _event(candidate, EventPhase.WORK, "work_completed", str(order_id))
-            )
+            events.append(_event(candidate, EventPhase.WORK, "work_completed", str(order_id)))
 
         knowledge_result = advance_knowledge_day(
             KnowledgeState(
@@ -2115,9 +2762,7 @@ def advance_day(
 
         current_living = max(
             1,
-            sum(
-                person_id not in away for person_id in civilization.population.living_ids
-            ),
+            sum(person_id not in away for person_id in civilization.population.living_ids),
         )
         food_days = civilization.inventory.quantities.get(Resource.FOOD, 0) // current_living
         growth_policy = candidate.active_decrees.get(civilization_id, {}).get(
