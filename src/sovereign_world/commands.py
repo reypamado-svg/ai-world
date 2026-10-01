@@ -35,6 +35,15 @@ from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
 from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
+from sovereign_world.institutions import (
+    INSTITUTIONS,
+    MAX_STAFF,
+    SCHOOL_APPRENTICES,
+    Institution,
+    InstitutionKind,
+    serving_tiles,
+    staff_of,
+)
 from sovereign_world.languages import native, speaks
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
@@ -159,6 +168,8 @@ class DirectOrderKind(StrEnum):
     SALVAGE = "salvage"
     SEND_SPY = "send_spy"
     SEND_COURIER = "send_courier"
+    FOUND_INSTITUTION = "found_institution"
+    STAFF_INSTITUTION = "staff_institution"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -268,6 +279,10 @@ class DirectOrder(BaseModel):
     """Prisoners this civilization holds at its settlements, to be let go."""
     admit: bool = False
     watch_days: int = Field(default=0, ge=0, le=MAX_WATCH_DAYS)
+    institution_kind: InstitutionKind | None = None
+    """The institution its founders raise and then keep."""
+    institution_id: EntityId | None = None
+    """The institution whose staff an order replaces."""
     """How long spies watch the settlement at the end of their route."""
     """The answer to a petition: take the petitioners in, or send them home."""
     """A war party stops on each enemy road tile it passes and pulls it down a grade."""
@@ -362,6 +377,8 @@ class CouncilReport(BaseModel):
     """People of other civilizations waiting at this one's gates to be taken in."""
     ruins: tuple[Ruin, ...] = ()
     """Ruins on land this civilization knows."""
+    institutions: tuple[Institution, ...] = ()
+    """This civilization's institutions, built or going up, and their staff."""
     spy_missions: tuple[Journey, ...] = ()
     """This civilization's spies and couriers still out."""
     spy_reports: tuple[SpyReport, ...] = ()
@@ -445,6 +462,7 @@ def build_council_report(
             and journey.sender_civilization_id == civilization_id
         ),
         spy_reports=civilization.spy_reports,
+        institutions=civilization.institutions,
         caught_spies=civilization.caught_spies,
         endings=state.endings,
         petitions=tuple(
@@ -710,6 +728,7 @@ def _drilling_people(state: WorldState, civilization_id: EntityId) -> set[Entity
             if assignment.active
             for person_id in assignment.scholar_ids
         }
+        | staff_of(civilization)
     )
 
 
@@ -1043,6 +1062,79 @@ def _spy_error(
             message=f"at most {MAX_SPIES} go spying together",
         )
     return _petition_error(command, civilization_id, state, reserved_cargo)
+
+
+def _found_institution_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved: Reserved,
+    founding: set[tuple[EntityId, InstitutionKind]],
+) -> CommandError | None:
+    """Founders raise an institution where they stand, then keep it."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    kind = command.institution_kind
+    if kind is None or not 1 <= len(command.worker_ids) <= MAX_STAFF:
+        return error(
+            "invalid_institution", f"an institution names its kind and 1 to {MAX_STAFF} founders"
+        )
+    if len(set(command.worker_ids)) != len(command.worker_ids):
+        return error("invalid_institution", "each founder is named once")
+    people = civilization.population.people
+    places = {people[person_id].location for person_id in command.worker_ids}
+    site = settlement_at(civilization, next(iter(places))) if len(places) == 1 else None
+    if site is None:
+        return error("invalid_institution", "founders work together at one of their settlements")
+    spec = INSTITUTIONS[kind]
+    known = {record.capability for record in civilization.capabilities}
+    if not spec.needs & known:
+        needs = " or ".join(sorted(item.value for item in spec.needs))
+        return error("missing_capability", f"a {kind.value} needs {needs}")
+    if (site.settlement_id, kind) in founding or any(
+        item.kind is kind and item.settlement_id == site.settlement_id
+        for item in civilization.institutions
+    ):
+        return error("invalid_institution", f"the settlement already has a {kind.value}")
+    for resource, quantity in spec.materials.items():
+        if _short(civilization, site.tile, reserved, resource, quantity):
+            return error("insufficient_materials", f"not enough {resource} for the {kind.value}")
+    founding.add((site.settlement_id, kind))
+    _reserve(civilization, site.tile, reserved, spec.materials)
+    return None
+
+
+def _staff_institution_error(
+    command: DirectOrder, civilization_id: EntityId, state: WorldState, restaffed: set[EntityId]
+) -> CommandError | None:
+    """New staff for an institution: up to four people standing at it, or none."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    institution = next(
+        (
+            item
+            for item in civilization.institutions
+            if item.institution_id == command.institution_id
+        ),
+        None,
+    )
+    if institution is None or institution.institution_id in restaffed:
+        return error("invalid_institution", "staff are named for one of its institutions, once")
+    if len(command.worker_ids) > MAX_STAFF or len(set(command.worker_ids)) != len(
+        command.worker_ids
+    ):
+        return error("invalid_institution", f"an institution keeps up to {MAX_STAFF} staff")
+    people = civilization.population.people
+    if any(people[person_id].location != institution.tile for person_id in command.worker_ids):
+        return error("invalid_institution", "staff stand at the institution they keep")
+    restaffed.add(institution.institution_id)
+    return None
 
 
 def _courier_error(
@@ -1571,6 +1663,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     seen_treaties: set[EntityId] = set()
     seen_journeys: set[EntityId] = set()
     couriered: set[EntityId] = set()
+    founding: set[tuple[EntityId, InstitutionKind]] = set()
+    restaffed: set[EntityId] = set()
+    teaching_load: dict[EntityId, int] = {}
+    for assignment in state.civilizations[envelope.civilization_id].teaching_assignments:
+        teaching_load[assignment.teacher_id] = teaching_load.get(assignment.teacher_id, 0) + 1
     ending_treaties: set[EntityId] = set()
     committed_travellers: set[EntityId] = set()
     committed_at_home: set[EntityId] = set()
@@ -1848,6 +1945,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 DirectOrderKind.BUILD_WALLS,
                 DirectOrderKind.BUILD_TOWERS,
                 DirectOrderKind.REPAIR_WALLS,
+                DirectOrderKind.FOUND_INSTITUTION,
+                DirectOrderKind.STAFF_INSTITUTION,
             }:
                 home_duty = command.worker_ids
             elif command.kind is DirectOrderKind.START_TEACHING and command_error is None:
@@ -1880,8 +1979,20 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     DirectOrderKind.BUILD_WALLS,
                     DirectOrderKind.BUILD_TOWERS,
                     DirectOrderKind.REPAIR_WALLS,
+                    DirectOrderKind.FOUND_INSTITUTION,
+                    DirectOrderKind.STAFF_INSTITUTION,
                 }:
                     away |= committed_at_home | teaching_people
+                if command.kind is DirectOrderKind.STAFF_INSTITUTION:
+                    # The institution's own staff may be kept on.
+                    away -= {
+                        person_id
+                        for institution in state.civilizations[
+                            envelope.civilization_id
+                        ].institutions
+                        if institution.institution_id == command.institution_id
+                        for person_id in institution.staff_ids
+                    }
                 if any(person_id in away for person_id in home_duty):
                     command_error = CommandError(
                         command_id=command.command_id,
@@ -2023,6 +2134,14 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 command_error = _walls_error(
                     command, envelope.civilization_id, state, reserved_cargo, walling
                 )
+            if command.kind is DirectOrderKind.FOUND_INSTITUTION and command_error is None:
+                command_error = _found_institution_error(
+                    command, envelope.civilization_id, state, reserved_cargo, founding
+                )
+            if command.kind is DirectOrderKind.STAFF_INSTITUTION and command_error is None:
+                command_error = _staff_institution_error(
+                    command, envelope.civilization_id, state, restaffed
+                )
             if command.kind is DirectOrderKind.BUILD_STOREHOUSE and command_error is None:
                 command_error = _storehouse_error(
                     command, envelope.civilization_id, state, reserved_cargo, upgrading
@@ -2052,6 +2171,20 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="unqualified_teacher",
                         message="teacher does not possess the requested capability",
                     )
+                schools = serving_tiles(
+                    state.civilizations[envelope.civilization_id],
+                    InstitutionKind.SCHOOL,
+                    already_travelling,
+                )
+                limit = SCHOOL_APPRENTICES if teacher.location in schools else 1
+                if command_error is None and teaching_load.get(command.teacher_id, 0) >= limit:
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="teacher_busy",
+                        message="a teacher takes one apprentice at a time, or two at a school",
+                    )
+                if command_error is None:
+                    teaching_load[command.teacher_id] = teaching_load.get(command.teacher_id, 0) + 1
             if command.kind is DirectOrderKind.START_EXPEDITION and command_error is None:
                 locations = {
                     state.civilizations[envelope.civilization_id]

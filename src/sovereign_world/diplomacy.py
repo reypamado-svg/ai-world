@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
+from sovereign_world.institutions import SERVICE_FIDELITY
 from sovereign_world.languages import fidelity, render
 from sovereign_world.people import Person
 from sovereign_world.resources import Resource
@@ -233,9 +234,14 @@ class DiplomacyDayResult:
     lost_ids: tuple[EntityId, ...]
 
 
-def _delivered_words(message: DiplomaticMessage, envoy: Person, rng: StableRng, day: int) -> str:
-    """The envoy retells the message in the recipient's language; what they cannot say is lost."""
-    percent = fidelity(envoy, message.recipient_civilization_id)
+def _delivered_words(
+    message: DiplomaticMessage, envoy: Person, rng: StableRng, day: int, bonus: int = 0
+) -> str:
+    """The envoy retells the message in the recipient's language; what they cannot say is lost.
+
+    A sender with a diplomatic service briefs its envoys, and they lose less.
+    """
+    percent = min(100, fidelity(envoy, message.recipient_civilization_id) + bonus)
     roll = rng.stream(f"day:{day}:diplomacy:delivery:{message.message_id}")
     return render(message.source_text, percent, roll)
 
@@ -248,6 +254,7 @@ def advance_diplomacy_day(
     rng: StableRng,
     world_map: WorldMap,
     roads: Roads | None = None,
+    briefed: frozenset[EntityId] = frozenset(),
 ) -> DiplomacyDayResult:
     """Advance each ambassador along its known route without revealing foreign state.
 
@@ -310,7 +317,13 @@ def advance_diplomacy_day(
                 "travel_progress": 0,
                 "status": MissionStatus.DELIVERED,
                 "delivered_day": day,
-                "delivered_text": _delivered_words(mission, ambassador, rng, day),
+                "delivered_text": _delivered_words(
+                    mission,
+                    ambassador,
+                    rng,
+                    day,
+                    SERVICE_FIDELITY if mission.sender_civilization_id in briefed else 0,
+                ),
             }
         )
         updated.append(completed)

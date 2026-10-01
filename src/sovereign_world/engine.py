@@ -83,6 +83,16 @@ from sovereign_world.exploration import (
 )
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
+from sovereign_world.institutions import (
+    HEALING_FACTOR,
+    INSTITUTIONS,
+    SCHOOL_TEACHING_DAYS,
+    WORKSHOP_DAY,
+    Institution,
+    InstitutionKind,
+    serving_tiles,
+    staff_of,
+)
 from sovereign_world.languages import LEARNING_INTERVAL, learn, native
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
@@ -694,6 +704,14 @@ def _release_duties(
         assignment
         for assignment in civilization.teaching_assignments
         if assignment.teacher_id not in leaving and assignment.apprentice_id not in leaving
+    )
+    civilization.institutions = tuple(
+        institution.model_copy(
+            update={
+                "staff_ids": tuple(item for item in institution.staff_ids if item not in leaving)
+            }
+        )
+        for institution in civilization.institutions
     )
     _leave_garrisons(state, civilization_id, leaving)
 
@@ -3970,6 +3988,7 @@ def _advance_storehouses(state: WorldState) -> list[DomainEvent]:
                 for person_id in living
             )
             before = job.built()
+            present += _workshop_bonus(state, civilization_id, job.tile, present, away)
             job = job.model_copy(update={"person_days_done": job.person_days_done + present})
             after = job.built()
             if after is not None and after != before:
@@ -3996,6 +4015,190 @@ def _advance_storehouses(state: WorldState) -> list[DomainEvent]:
                 continue
             kept.append(job)
         civilization.storehouse_jobs = tuple(kept)
+    return events
+
+
+def _workshop_bonus(
+    state: WorldState,
+    civilization_id: EntityId,
+    tile: HexCoord,
+    present: int,
+    away: set[EntityId],
+) -> int:
+    """Every fourth day, each worker at a settlement with an open workshop does a day extra."""
+    if not present or state.day % WORKSHOP_DAY:
+        return 0
+    civilization = state.civilizations[civilization_id]
+    site = supplying(civilization, tile)
+    tiles = serving_tiles(civilization, InstitutionKind.WORKSHOP, away)
+    return present if site is not None and site.tile in tiles else 0
+
+
+def _keep_archive(state: WorldState, civilization_id: EntityId, away: set[EntityId]) -> None:
+    """While an archive is open, everything its civilization knows is written down there."""
+    civilization = state.civilizations[civilization_id]
+    archived = bool(serving_tiles(civilization, InstitutionKind.ARCHIVE, away))
+    civilization.capabilities = tuple(
+        record
+        if record.retained_record == archived
+        else record.model_copy(update={"retained_record": archived})
+        for record in civilization.capabilities
+    )
+
+
+def _study_languages(state: WorldState) -> None:
+    """The staff of an open diplomatic service study the tongue of every civilization known."""
+    away = _away(state)
+    for civilization in state.civilizations.values():
+        if not serving_tiles(civilization, InstitutionKind.DIPLOMATIC_SERVICE, away):
+            continue
+        tongues = sorted({contact.civilization_id for contact in civilization.contacts})
+        people = civilization.population.people
+        for institution in civilization.institutions:
+            if institution.kind is not InstitutionKind.DIPLOMATIC_SERVICE or not institution.built:
+                continue
+            for person_id in institution.staff_ids:
+                person = people.get(person_id)
+                if person is None or not person.alive or person.location != institution.tile:
+                    continue
+                person.languages = {
+                    **person.languages,
+                    **{
+                        tongue: min(100, person.languages.get(tongue, 0) + 1)
+                        for tongue in tongues
+                        if tongue != native(person)
+                    },
+                }
+
+
+def _found_institution(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> DomainEvent:
+    """Take the building's materials now; the founders raise it, then keep it."""
+    assert command.institution_kind is not None
+    civilization = state.civilizations[civilization_id]
+    tile = civilization.population.people[command.worker_ids[0]].location
+    site = settlement_at(civilization, tile)
+    assert site is not None
+    kind = command.institution_kind
+    institution_id = EntityId(f"institution:{site.settlement_id}:{kind.value}")
+    materials = INSTITUTIONS[kind].materials
+    if not has(civilization, tile, materials):
+        return _event(
+            state, EventPhase.PROJECT, "institution_unfunded", str(civilization_id), institution_id
+        )
+    take(civilization, tile, materials)
+    civilization.institutions = tuple(
+        sorted(
+            (
+                *civilization.institutions,
+                Institution(
+                    institution_id=institution_id,
+                    kind=kind,
+                    settlement_id=site.settlement_id,
+                    tile=site.tile,
+                    staff_ids=tuple(sorted(command.worker_ids)),
+                    founded_day=state.day,
+                ),
+            ),
+            key=lambda item: item.institution_id,
+        )
+    )
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "institution_founded",
+        str(civilization_id),
+        institution_id,
+        institution=kind.value,
+    )
+
+
+def _staff_institution(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> DomainEvent:
+    civilization = state.civilizations[civilization_id]
+    civilization.institutions = tuple(
+        item.model_copy(update={"staff_ids": tuple(sorted(command.worker_ids))})
+        if item.institution_id == command.institution_id
+        else item
+        for item in civilization.institutions
+    )
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "institution_staffed",
+        str(civilization_id),
+        str(command.institution_id),
+        staff=len(command.worker_ids),
+    )
+
+
+def _advance_institutions(state: WorldState) -> list[DomainEvent]:
+    """Founders raise their building; an institution lost with its settlement is gone."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        people = civilization.population.people
+        own = {settlement.settlement_id for settlement in civilization.settlements}
+        kept: list[Institution] = []
+        for institution in civilization.institutions:
+            if institution.settlement_id not in own:
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.PROJECT,
+                        "institution_lost",
+                        str(civilization_id),
+                        str(institution.institution_id),
+                        institution=institution.kind.value,
+                    )
+                )
+                continue
+            staff = tuple(
+                person_id
+                for person_id in institution.staff_ids
+                if person_id in people and people[person_id].alive
+            )
+            if staff != institution.staff_ids:
+                institution = institution.model_copy(update={"staff_ids": staff})
+            if not institution.built:
+                if not staff:
+                    # With every founder gone, the materials go back into the store.
+                    put(civilization, institution.tile, INSTITUTIONS[institution.kind].materials)
+                    events.append(
+                        _event(
+                            state,
+                            EventPhase.PROJECT,
+                            "institution_abandoned",
+                            str(civilization_id),
+                            str(institution.institution_id),
+                        )
+                    )
+                    continue
+                present = sum(
+                    people[person_id].location == institution.tile and person_id not in away
+                    for person_id in staff
+                )
+                present += _workshop_bonus(state, civilization_id, institution.tile, present, away)
+                institution = institution.model_copy(
+                    update={"person_days_done": institution.person_days_done + present}
+                )
+                if institution.built:
+                    institution = institution.model_copy(update={"opened_day": state.day})
+                    events.append(
+                        _event(
+                            state,
+                            EventPhase.PROJECT,
+                            "institution_opened",
+                            str(civilization_id),
+                            str(institution.institution_id),
+                            institution=institution.kind.value,
+                        )
+                    )
+            kept.append(institution)
+        civilization.institutions = tuple(kept)
     return events
 
 
@@ -4082,6 +4285,7 @@ def _advance_walls(state: WorldState) -> list[DomainEvent]:
                 for person_id in living
             )
             before_grade, before_towers = job.built(), job.towers_built()
+            present += _workshop_bonus(state, civilization_id, job.tile, present, away)
             job = job.model_copy(update={"person_days_done": job.person_days_done + present})
             after_grade, after_towers = job.built(), job.towers_built()
             walls = _walls_at(state, civilization_id, job.tile)
@@ -4193,6 +4397,7 @@ def _advance_crafting(state: WorldState) -> list[DomainEvent]:
                 and person_id not in away
                 for person_id in job.worker_ids
             )
+            present += _workshop_bonus(state, civilization_id, job.workshop, present, away)
             job = job.model_copy(update={"person_days_done": job.person_days_done + present})
             if not job.done:
                 kept.append(job)
@@ -4620,6 +4825,16 @@ def _run_councils(
                 events.append(_start_walls(state, civilization_id, command))
             elif isinstance(command, DirectOrder) and command.kind in CAMP_ORDERS:
                 events.extend(_siege_order(state, civilization_id, command))
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.FOUND_INSTITUTION
+            ):
+                events.append(_found_institution(state, civilization_id, command))
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.STAFF_INSTITUTION
+            ):
+                events.append(_staff_institution(state, civilization_id, command))
             elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.SEND_COURIER:
                 events.append(_send_courier(state, civilization_id, command))
             elif (
@@ -4697,6 +4912,14 @@ def _run_councils(
                                 apprentice_id=command.apprentice_id,
                                 capability=command.capability,
                                 started_day=state.day,
+                                required_days=(
+                                    SCHOOL_TEACHING_DAYS
+                                    if civilization.population.people[command.teacher_id].location
+                                    in serving_tiles(
+                                        civilization, InstitutionKind.SCHOOL, _away(state)
+                                    )
+                                    else 30
+                                ),
                             ),
                         ),
                         key=lambda assignment: assignment.assignment_id,
@@ -5032,6 +5255,11 @@ def advance_day(
         rng=rng,
         world_map=candidate.world_map,
         roads=grades_of(candidate.roads),
+        briefed=frozenset(
+            civilization_id
+            for civilization_id, civilization in candidate.civilizations.items()
+            if serving_tiles(civilization, InstitutionKind.DIPLOMATIC_SERVICE, _away(candidate))
+        ),
     )
     candidate.diplomatic_missions = diplomacy_result.missions
     for civilization_id, people in diplomacy_result.people_by_civilization.items():
@@ -5187,9 +5415,11 @@ def advance_day(
     events.extend(_advance_crafting(candidate))
     events.extend(_advance_storehouses(candidate))
     events.extend(_advance_walls(candidate))
+    events.extend(_advance_institutions(candidate))
     events.extend(_advance_research(candidate))
     events.extend(_advance_tolls(candidate))
 
+    institution_away = _away(candidate)
     for civilization_id in sorted(candidate.civilizations):
         civilization = candidate.civilizations[civilization_id]
         if civilization.eliminated_day is not None:
@@ -5215,6 +5445,7 @@ def advance_day(
                 for assignment in civilization.research
                 for person_id in assignment.scholar_ids
             }
+            | staff_of(civilization)
         )
         # Captives are fed by whoever holds them, not by their own civilization.
         home_living = tuple(
@@ -5342,6 +5573,7 @@ def advance_day(
         for order_id in work_result.completed_order_ids:
             events.append(_event(candidate, EventPhase.WORK, "work_completed", str(order_id)))
 
+        _keep_archive(candidate, civilization_id, institution_away)
         knowledge_result = advance_knowledge_day(
             KnowledgeState(
                 records=civilization.capabilities,
@@ -5393,6 +5625,7 @@ def advance_day(
             shelter_slots=current_living + 64 if growth_policy > 0 else 0,
         )
         civilization.population = population_result.population
+        _keep_archive(candidate, civilization_id, institution_away)
         mortality_knowledge_result = advance_knowledge_day(
             KnowledgeState(
                 records=civilization.capabilities,
@@ -5473,10 +5706,12 @@ def advance_day(
                     )
                 )
         # Recovery follows the death roll, so the day food returns is still a dangerous one.
+        healing = serving_tiles(civilization, InstitutionKind.HEALERS_HOUSE, institution_away)
         for person_id in sorted(fed_today):
             eater = civilization.population.people.get(person_id) or held.get(person_id)
             if eater is not None and eater.alive:
-                recover(eater)
+                for _ in range(HEALING_FACTOR if eater.location in healing else 1):
+                    recover(eater)
 
     events.extend(_advance_civilizations(candidate))
     events.extend(_advance_territory(candidate))
@@ -5487,6 +5722,7 @@ def advance_day(
             for civilization in candidate.civilizations.values()
             for person in civilization.population.people.values()
         )
+        _study_languages(candidate)
 
     candidate.day += 1
     validate_world(candidate)

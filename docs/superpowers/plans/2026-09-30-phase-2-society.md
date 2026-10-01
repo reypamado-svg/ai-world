@@ -105,3 +105,29 @@ S1 languages, then S2 espionage, which needs S1 for its capture chances and esti
   `spy_missions` lists the parties still out. Spies who come home gain a point of
   spycraft.
 - A war party does not ambush spies on watch; they pass for locals or keep out of sight.
+
+## S3 as built
+
+- `found_institution` names a kind and one to four founders standing at one of the
+  civilization's settlements. The civilization must know what the practice rests on, and
+  each settlement has at most one of each kind. The building's materials leave the store
+  at once; the founders raise it, then stay on as its staff. Staff eat but do no other
+  work, travel, drill or teach.
+- `staff_institution` replaces an institution's staff with up to four people standing at
+  it, or with no one.
+- An institution is open while its building stands and one of its staff is there, free
+  and not away. It is lost with its settlement; if every founder dies before the building
+  is finished, the materials go back into the store.
+
+| Institution | Needs | Materials | Person-days | Effect while open |
+|---|---|---|---|---|
+| Archive | writing | 30 timber, 30 stone | 20 | every capability the civilization knows is kept, even after its last practitioner dies |
+| School | writing | 40 timber | 20 | teaching there takes 15 days instead of 30, and a teacher may take two apprentices |
+| Healers' house | herbal care | 30 timber | 15 | fed people at the settlement recover twice as fast |
+| Workshop | timbercraft or stoneworking | 30 timber, 20 stone | 20 | every fourth day, crafters and builders of storehouses, walls and institutions at the settlement each do a day extra (25% faster) |
+| Diplomatic service | writing | 30 timber | 15 | the civilization's messages keep 20 points more of their words, and its staff gain a point every 5 days in the language of each civilization it knows |
+
+- Teaching now has a limit everywhere: one apprentice per teacher at a time, two at a
+  school.
+- Not yet: ordinary construction projects (shelters and granaries) get no workshop bonus,
+  because their labour is counted in the shared work step.
