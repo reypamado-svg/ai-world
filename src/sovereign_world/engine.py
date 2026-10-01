@@ -74,6 +74,7 @@ from sovereign_world.exploration import (
 )
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
+from sovereign_world.languages import LEARNING_INTERVAL, learn, native
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
     INTERNAL_KINDS,
@@ -597,6 +598,7 @@ def _change_allegiance(
         destination_people[person_id] = person.model_copy(
             update={
                 "civilization_id": destination_id,
+                "native_language": native(person),
                 "skills": {
                     skill: value - held.get(skill, 0) for skill, value in person.skills.items()
                 },
@@ -5171,6 +5173,12 @@ def advance_day(
     events.extend(_advance_civilizations(candidate))
     events.extend(_advance_territory(candidate))
     events.extend(_joined_roads(candidate))
+    if candidate.day % LEARNING_INTERVAL == 0:
+        learn(
+            person
+            for civilization in candidate.civilizations.values()
+            for person in civilization.population.people.values()
+        )
 
     candidate.day += 1
     validate_world(candidate)

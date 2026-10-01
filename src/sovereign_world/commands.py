@@ -34,6 +34,7 @@ from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
 from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
+from sovereign_world.languages import native, speaks
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
     INTERNAL_KINDS,
@@ -354,6 +355,8 @@ class CouncilReport(BaseModel):
     """People of other civilizations waiting at this one's gates to be taken in."""
     ruins: tuple[Ruin, ...] = ()
     """Ruins on land this civilization knows."""
+    speakers: dict[EntityId, tuple[EntityId, ...]] = Field(default_factory=dict)
+    """For each language, this civilization's free people who speak it, natively or fluently."""
     endings: tuple[Ending, ...] = ()
     """The endings of the world so far: the last civilization standing, or none."""
     held_captive: tuple[EntityId, ...] = ()
@@ -366,6 +369,19 @@ class CouncilReport(BaseModel):
     research: tuple[ResearchAssignment, ...] = ()
     research_points: dict[CapabilityId, int] = Field(default_factory=dict)
     recent_events: tuple[DomainEvent, ...] = ()
+
+
+def _speakers(civilization: CivilizationState) -> dict[EntityId, tuple[EntityId, ...]]:
+    found: dict[EntityId, list[EntityId]] = {}
+    for person_id, person in sorted(civilization.population.people.items()):
+        if not person.alive or person.captive_of is not None:
+            continue
+        tongues = {native(person)} | {
+            language for language in person.languages if speaks(person, language)
+        }
+        for language in tongues:
+            found.setdefault(language, []).append(person_id)
+    return {language: tuple(found[language]) for language in sorted(found)}
 
 
 def build_council_report(
@@ -407,6 +423,7 @@ def build_council_report(
             )
         ),
         ruins=tuple(ruin for ruin in state.ruins if ruin.tile in set(civilization.known_tiles)),
+        speakers=_speakers(civilization),
         endings=state.endings,
         petitions=tuple(
             journey

@@ -63,6 +63,10 @@ class Person(BaseModel):
     """The captor's settlement holding them; none while they march with a war party."""
     allegiances: tuple[AllegianceChange, ...] = ()
     """Every change of civilization in this person's life, oldest first."""
+    native_language: EntityId | None = None
+    """The language this person grew up with; none means that of their civilization."""
+    languages: dict[EntityId, int] = Field(default_factory=dict)
+    """Fluency, 0 to 100, in each language learned besides their native one."""
     held_skills: dict[str, int] = Field(default_factory=dict)
     """Skill held back while a newcomer settles in; restored on `settled_day`."""
     settled_day: int | None = None
