@@ -46,6 +46,9 @@ def prompt_hash(system: str, user: str) -> str:
 class GatewaySovereign:
     """Plays a civilization's councils with a model, and records every turn."""
 
+    crisis_councils = True
+    """A model-played sovereign is also called to council when a crisis strikes."""
+
     def __init__(
         self,
         provider: ModelProvider,
@@ -132,6 +135,7 @@ class GatewaySovereign:
             errors=tuple(errors),
             outcome=outcome,
             envelope=envelope,
+            crisis_councils=self.crisis_councils,
         )
         self._records.append(record)
         self._history.append(record)
@@ -144,6 +148,7 @@ class RecordingSovereign:
     def __init__(self, inner: Sovereign, name: str = "scripted") -> None:
         self.inner = inner
         self.name = name
+        self.crisis_councils = bool(getattr(inner, "crisis_councils", False))
         self._records: list[CouncilRecord] = []
 
     def drain_records(self) -> tuple[CouncilRecord, ...]:
@@ -163,6 +168,7 @@ class RecordingSovereign:
                 prompt_hash="",
                 outcome=CouncilOutcome.ACCEPTED,
                 envelope=envelope,
+                crisis_councils=self.crisis_councils,
             )
         )
         return envelope

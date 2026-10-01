@@ -8,8 +8,10 @@ from dataclasses import dataclass
 
 from sovereign_world.engine import advance_day
 from sovereign_world.gateway.records import RecordedSovereign, recorded_councils
+from sovereign_world.ids import EntityId
 from sovereign_world.persistence import WorldStore
 from sovereign_world.rng import StableRng
+from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, state_hash
 
 
@@ -34,7 +36,11 @@ def _recorded_state(payload: dict[str, object]) -> WorldState:
 def replay_run(store: WorldStore, target_day: int | None = None) -> WorldState:
     records = store.read_records()
     if target_day is None:
-        target_day = max((int(record.payload["day"]) for record in records), default=0)
+        latest = max((int(record.payload["day"]) for record in records), default=None)
+        if latest is None:
+            # Nothing journaled yet: the run starts at its first checkpoint, day 0 or its fork.
+            return store.load_checkpoint()
+        target_day = latest
     if target_day == 0:
         return store.load_checkpoint(at_or_before=0)
     for record in reversed(records):
@@ -49,8 +55,11 @@ def replay_run(store: WorldStore, target_day: int | None = None) -> WorldState:
 
 def verify_run(store: WorldStore) -> VerificationResult:
     records = store.read_records()
-    last_day = 0
-    last_hash = state_hash(store.load_checkpoint(at_or_before=0))
+    days = [int(record.payload["day"]) for record in records if record.type == "transition"]
+    # A forked run begins at its fork, not at day zero.
+    start = store.load_checkpoint(at_or_before=days[0] - 1) if days else store.load_checkpoint()
+    last_day = start.day
+    last_hash = state_hash(start)
     for record in records:
         if record.type != "transition":
             continue
@@ -75,11 +84,15 @@ def rederive_run(store: WorldStore) -> VerificationResult:
     """
     records = store.read_records()
     councils = recorded_councils(store)
-    state = store.load_checkpoint(at_or_before=0)
-    recorded = RecordedSovereign(councils)
-    sovereigns = {
-        civilization_id: recorded for civilization_id in {c.civilization_id for c in councils}
-    }
+    days = [int(record.payload["day"]) for record in records if record.type == "transition"]
+    # A forked run begins at its fork, not at day zero.
+    state = store.load_checkpoint(at_or_before=min(days, default=1) - 1)
+    sovereigns: dict[EntityId, Sovereign] = {}
+    for civilization_id in sorted({council.civilization_id for council in councils}):
+        own = [council for council in councils if council.civilization_id == civilization_id]
+        sovereigns[civilization_id] = RecordedSovereign(
+            own, crisis_councils=any(council.crisis_councils for council in own)
+        )
     rng = StableRng(state.config.seed)
     for record in records:
         if record.type != "transition":

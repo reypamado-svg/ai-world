@@ -43,6 +43,8 @@ class CouncilRecord(BaseModel):
     errors: tuple[str, ...] = ()
     outcome: CouncilOutcome
     envelope: CommandEnvelope
+    crisis_councils: bool = False
+    """Whether this sovereign also holds councils when a crisis strikes."""
 
     @property
     def issued(self) -> bool:
@@ -52,7 +54,8 @@ class CouncilRecord(BaseModel):
 class RecordedSovereign:
     """Gives each council the envelope recorded for it, and never calls a model."""
 
-    def __init__(self, records: Iterable[CouncilRecord]) -> None:
+    def __init__(self, records: Iterable[CouncilRecord], *, crisis_councils: bool = False) -> None:
+        self.crisis_councils = crisis_councils
         self._envelopes = {
             (record.civilization_id, record.day): record.envelope for record in records
         }
