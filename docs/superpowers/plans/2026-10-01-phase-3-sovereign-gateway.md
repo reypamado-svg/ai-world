@@ -198,3 +198,23 @@ Nothing stores envelopes, raw replies or rationale, and `RunManifest` has no sov
   - keeps its own council history for the transcript;
   - `remember(records)` takes it up again from a journal when a run is resumed;
   - only the civilization's own councils are ever shown.
+
+## G3 as built
+
+- **`gateway/anthropic_provider.py` (official `anthropic` SDK):**
+  - Default model `claude-opus-5-5`, with adaptive thinking and the effort level set explicitly (`high` by default; the run settings can change it).
+  - No tools are offered.
+  - **Refusals:** server-side refusal fallback is on by default (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`). The API then retries a declined request on a fallback model chosen for the kind of refusal. A refusal that still stands becomes `ProviderRefused`.
+  - **Errors:** timeouts become `ProviderTimeout`; connection and API errors become `ProviderUnavailable`.
+  - **Truncated replies:** a reply cut off at `max_tokens` reaches the gateway as text and goes through repair.
+- **`gateway/openai_provider.py` (official `openai` SDK):**
+  - There is no default model; the run settings must name one.
+  - Uses JSON object mode, with no tools.
+  - A refusal, an empty reply or an API error maps to the same provider errors as above.
+- **Why not structured output:** the command schema has open-ended maps (for example, a caravan's cargo), which structured output cannot express. Both adapters therefore ask for plain JSON, and the gateway's own checking and one repair do the rest.
+- **Credentials:** read only by the SDKs from `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`, and never written anywhere.
+- **Packaging:** `pyproject.toml` gains `anthropic`, `openai` and `local` extras (included in `dev`) and a `live` marker.
+- **Tests:**
+  - `tests/conftest.py` skips live tests unless they are selected with `-m live`.
+  - Each live test also needs its key; the OpenAI one also needs `SOVEREIGN_OPENAI_MODEL`.
+  - Every other test uses stand-in clients and needs no network.
