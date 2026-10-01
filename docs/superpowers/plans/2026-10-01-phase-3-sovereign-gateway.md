@@ -281,3 +281,51 @@ A crisis council is held outside the monthly round.
 - **Who gets them:** only sovereigns that take them, which every model-played sovereign does. Scripted ones, including the baseline, keep the monthly round, so their worlds unfold as before.
 - **Records:** `council_held` events say whether a council was a crisis council. Each council record notes whether its sovereign takes crisis councils, so rederive calls the same councils.
 - **Missed news:** news that arrives within a week of the last crisis council waits for the next monthly council.
+
+## G6 as built
+
+`tests/acceptance/test_phase_three_exit.py` uses scripted providers, so it runs exactly and offline.
+
+### Provider failures
+
+These failures are tested at a month's council:
+- a reply malformed twice;
+- a timeout;
+- a refusal;
+- an outage;
+- a dropped second computer;
+- an oversized reply;
+- a crash.
+
+In each case:
+- the world reaches the same day;
+- its final state hash equals that of a run in which the sovereign simply gave no new orders;
+- the founding decree still stands;
+- the council's record shows the failure and its error.
+
+Two more cases:
+- a reply that arrives after the turn's time is not acted on;
+- a repeated command ID is refused while the rest of the envelope goes ahead.
+
+### Hostile messages
+
+A rival's fluent envoy delivers a prompt-injection message. It contains fake section tags, a "SYSTEM" voice, a forged civilization ID and a forged order. The receiving model obeys it, ordering a food shipment carried by the rival's people and the release of "prisoners" it does not hold.
+
+- The words reach the council only inside its memories. They are never in the charter, and they never close or open a section.
+- The forged envelope fields cannot exist, because the model writes only commands and a rationale.
+- The forbidden orders are refused by the ordinary validation. No journey or release happens, and every rival person stays where they were.
+- The only thing the obedient model can change is what any sovereign may change: its own decrees.
+
+### Isolation
+
+Two model-played civilizations each receive only their own reports. Neither prompt contains the other's people. An API key in the environment appears in no prompt and nowhere in the journal.
+
+### Recording and replay
+
+Raw replies are kept, including a first reply that needed repair, together with the prompt hash. Every scenario rederives from its recorded councils with no model called, and also replays and reruns to the same hash.
+
+### Hidden knowledge
+
+Every council report in these scenarios passes Phase 2's hidden-knowledge check, crisis councils included. The scenario runner now captures crisis-council reports and journals council records.
+
+**Phase 3 is complete.** A FastAPI wrapper around the in-process gateway is left for later, as decided.
