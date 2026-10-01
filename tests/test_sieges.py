@@ -6,14 +6,16 @@ from sovereign_world.commands import (
     build_council_report,
     validate_envelope,
 )
-from sovereign_world.engine import TransitionResult, advance_day
+from sovereign_world.engine import TransitionResult, _learn_by_sight, advance_day
+from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.logistics import JourneyOutcome, JourneyPhase
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.state import WorldState, validate_world
+from sovereign_world.territory import Settlement
 from sovereign_world.walls import WALL_GRADES, WallGrade, Walls
-from sovereign_world.war import SiegeEnd, WarObjective
+from sovereign_world.war import Siege, SiegeEnd, WarObjective
 
 
 def _world():
@@ -265,3 +267,36 @@ def test_relief_breaks_the_camp() -> None:
     [broken] = [item for item in state.journeys if item.journey_id == camp.journey_id]
     assert broken.outcome is JourneyOutcome.ROUTED and not broken.encamped
     validate_world(state)
+
+
+def test_a_defender_learns_of_a_siege_only_once_the_camp_is_in_sight() -> None:
+    state, home, rival, _ = _world()
+    capital = state.civilizations[rival].settlements[0]
+    far = HexCoord(capital.tile.q + 6, capital.tile.r)
+    colony = Settlement(
+        settlement_id=EntityId("settlement:0000000002-0009"),
+        civilization_id=rival,
+        tile=far,
+        founded_day=0,
+    )
+    state.civilizations[rival].settlements = (*state.civilizations[rival].settlements, colony)
+    siege = Siege(
+        siege_id=EntityId("siege:far"),
+        journey_id=EntityId("journey:far"),
+        besieger_id=home,
+        defender_id=rival,
+        settlement_id=colony.settlement_id,
+        settlement_tile=far,
+        camp=HexCoord(far.q + 1, far.r),
+        started_day=0,
+    )
+    state.sieges = (siege,)
+    _learn_by_sight(state)
+    assert build_council_report(state, rival).sieges == (), "no one is there to see it"
+    assert build_council_report(state, home).sieges == state.sieges
+
+    resident = state.civilizations[rival].population.living_ids[0]
+    state.civilizations[rival].population.people[resident].location = far
+    _learn_by_sight(state)
+    [seen] = build_council_report(state, rival).sieges
+    assert seen.defender_learned_day == state.day

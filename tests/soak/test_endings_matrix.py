@@ -3,8 +3,8 @@ leaving ruins, and the last civilization standing is recorded."""
 
 import pytest
 from logistics_helpers import treaty_world
+from scenario_helpers import Welcoming
 
-from sovereign_world.commands import CommandEnvelope, CouncilReport, DirectOrder, DirectOrderKind
 from sovereign_world.endings import EndingKind
 from sovereign_world.engine import advance_day
 from sovereign_world.ids import EntityId
@@ -12,27 +12,6 @@ from sovereign_world.rng import StableRng
 from sovereign_world.state import WorldState, state_hash
 
 DAYS = 330
-
-
-class Welcoming:
-    """Take in anyone who asks."""
-
-    def decide(self, report: CouncilReport) -> CommandEnvelope:
-        return CommandEnvelope(
-            schema_version=1,
-            civilization_id=report.civilization_id,
-            council_day=report.day,
-            correlation_id=report.report_id,
-            commands=tuple(
-                DirectOrder(
-                    command_id=f"admit:{index}",
-                    kind=DirectOrderKind.ANSWER_PETITION,
-                    journey_id=journey.journey_id,
-                    admit=True,
-                )
-                for index, journey in enumerate(report.petitions)
-            ),
-        )
 
 
 def _prepare(seed: int) -> tuple[WorldState, EntityId, EntityId]:

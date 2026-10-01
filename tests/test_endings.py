@@ -1,15 +1,14 @@
 from logistics_helpers import OneShotSovereign, clear_journey_id, envelope, treaty_world
+from scenario_helpers import Welcoming
 
 from sovereign_world.commands import (
-    CommandEnvelope,
-    CouncilReport,
     DirectOrder,
     DirectOrderKind,
     build_council_report,
     validate_envelope,
 )
 from sovereign_world.endings import BREAKUP_GRACE_DAYS, EndingKind
-from sovereign_world.engine import TransitionResult, advance_day
+from sovereign_world.engine import TransitionResult, _learn_by_sight, advance_day
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.resources import Resource
@@ -58,27 +57,6 @@ def _field(state: WorldState, civilization_id: EntityId) -> HexCoord:
         for tile in sorted(state.world_map.neighbors(capital))
         if state.world_map.tile(tile).terrain.value != "water"
     )
-
-
-class Welcoming:
-    """Take in anyone who asks."""
-
-    def decide(self, report: CouncilReport) -> CommandEnvelope:
-        return CommandEnvelope(
-            schema_version=1,
-            civilization_id=report.civilization_id,
-            council_day=report.day,
-            correlation_id=report.report_id,
-            commands=tuple(
-                DirectOrder(
-                    command_id=f"admit:{index}",
-                    kind=DirectOrderKind.ANSWER_PETITION,
-                    journey_id=journey.journey_id,
-                    admit=True,
-                )
-                for index, journey in enumerate(report.petitions)
-            ),
-        )
 
 
 def test_a_civilization_with_no_one_at_home_is_homeless_until_someone_returns() -> None:
@@ -148,7 +126,16 @@ def test_a_civilization_with_no_one_left_is_eliminated_and_leaves_ruins() -> Non
     assert len(ruin.storehouses) == 5
     assert not any(treaty.in_force for treaty in state.active_treaties)
     assert capital.tile not in state.territory.owner_of()
-    assert build_council_report(state, home).ruins == (ruin,)
+    assert build_council_report(state, home).ruins == (), "too far off to have been seen"
+    scout = state.civilizations[home].population.people[
+        state.civilizations[home].population.living_ids[0]
+    ]
+    scout.location = route[-2]
+    _learn_by_sight(state)
+    scout.location = route[0]
+    [view] = build_council_report(state, home).ruins
+    assert view.ruin == ruin and view.as_of_day == state.day
+    assert rival in state.civilizations[home].fallen, "a ruin tells of a civilization's end"
     raid = DirectOrder(
         command_id="raid",
         kind=DirectOrderKind.SEND_WAR_PARTY,
@@ -248,3 +235,22 @@ def test_the_last_civilization_and_then_none_are_each_recorded_once() -> None:
     ]
     assert len(_events(results, "no_civilization")) == 1, "the world keeps turning, once"
     validate_world(state)
+
+
+def test_the_last_civilization_knows_it_is_last_only_once_it_knows_every_other_fell() -> None:
+    state, home, _, _ = treaty_world(distance=4)
+    others = [item for item in sorted(state.civilizations) if item != home]
+    for civilization_id in others:
+        _kill(state, civilization_id)
+    state, _ = _run(state, 2)
+    assert state.endings, "the world has its ending"
+    assert build_council_report(state, home).endings == (), "but home has not seen it"
+
+    fallen = dict(state.civilizations[home].fallen)
+    for index, civilization_id in enumerate(others):
+        fallen.setdefault(civilization_id, state.day + index)
+    state.civilizations[home].fallen = fallen
+    [ending] = build_council_report(state, home).endings
+    assert ending.kind is EndingKind.LAST_CIVILIZATION and ending.survivor_id == home
+    assert ending.day == max(fallen.values())
+    assert build_council_report(state, others[0]).endings == ()

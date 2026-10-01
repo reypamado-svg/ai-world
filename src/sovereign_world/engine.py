@@ -44,6 +44,7 @@ from sovereign_world.commands import (
     journey_supplies,
     known_roads,
     known_tolls,
+    sight_of,
     trade_partners,
     validate_envelope,
     war_party_carry,
@@ -65,6 +66,7 @@ from sovereign_world.endings import (
     Ending,
     EndingKind,
     Ruin,
+    RuinView,
 )
 from sovereign_world.espionage import (
     COURIER_CAUGHT_BP,
@@ -162,6 +164,7 @@ from sovereign_world.territory import (
     Garrison,
     Settlement,
     advance_territory,
+    visible_tiles,
 )
 from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
 from sovereign_world.travel import travel_days, way_to
@@ -247,16 +250,35 @@ def _end_treaty(
     treaty_id: EntityId,
     kind: TreatyEndKind,
     by: EntityId,
+    *,
+    told: bool = False,
 ) -> ActiveTreaty | None:
-    """End a treaty still in force; an already-ended treaty keeps its first ending."""
+    """End a treaty still in force; an already-ended treaty keeps its first ending.
+
+    The other party knows at once only when `told`; otherwise it learns later.
+    """
     treaty = next((item for item in state.active_treaties if item.treaty_id == treaty_id), None)
     if treaty is None or not treaty.in_force:
         return None
     ended = treaty.ended(state.day, kind, by)
+    if told:
+        ended = ended.model_copy(update={"notice_day": state.day})
     state.active_treaties = tuple(
         ended if item.treaty_id == treaty_id else item for item in state.active_treaties
     )
     return ended
+
+
+def _tell_treaty_ends(state: WorldState, learner: EntityId, other: EntityId) -> None:
+    """The learner hears that treaties the other party ended with it are over."""
+    state.active_treaties = tuple(
+        treaty.model_copy(update={"notice_day": state.day})
+        if treaty.ended_by == other
+        and treaty.notice_day is None
+        and {learner, other} == {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+        else treaty
+        for treaty in state.active_treaties
+    )
 
 
 def _store_provisions(
@@ -1144,6 +1166,8 @@ def _advance_journeys(
             )
         )
     for journey in result.refused:
+        # Turning a party away at the gate shows that the treaty it came under is over.
+        _tell_treaty_ends(state, journey.recipient_civilization_id, journey.sender_civilization_id)
         recipient_id = journey.recipient_civilization_id
         sender_people = state.civilizations[journey.sender_civilization_id].population.people
         turned_away = tuple(
@@ -1180,6 +1204,9 @@ def _advance_journeys(
     cargo_home = {journey.journey_id for journey in result.cargo_returned}
     for journey in result.returned:
         sender_id = journey.sender_civilization_id
+        if journey.outcome is JourneyOutcome.REFUSED:
+            # A party sent home from the other's gate brings word the treaty is over.
+            _tell_treaty_ends(state, sender_id, journey.recipient_civilization_id)
         restored: dict[Resource, int] = {}
         brought_home = journey.cargo if journey.journey_id in cargo_home else journey.materials
         if journey.kind is JourneyKind.CAMPAIGN:
@@ -1816,6 +1843,8 @@ def _learn_war(state: WorldState, war: War, civilization_id: EntityId) -> list[D
         return []
     learned = war.model_copy(update={"defender_learned_day": state.day})
     state.wars = tuple(learned if item.war_id == war.war_id else item for item in state.wars)
+    # War is news enough that every treaty the aggressor broke with it is over.
+    _tell_treaty_ends(state, civilization_id, war.aggressor_id)
     return [
         _event(state, EventPhase.MOVEMENT, "war_learned", str(civilization_id), str(war.war_id))
     ]
@@ -1958,6 +1987,7 @@ def _battle_report(battle: Battle, civilization_id: EntityId) -> BattleReport:
         # The side that holds the field counts the enemy dead left on it.
         enemy_dead_seen=sum(item.died for item in enemy_casualties) if won else 0,
         enemy_losses_estimate=estimate(len(enemy_casualties)),
+        own_captured=tuple(person_id for person_id in battle.captured if person_id in own),
     )
 
 
@@ -1966,6 +1996,10 @@ def _file_report(state: WorldState, civilization_id: EntityId, report: BattleRep
     reports = {item.battle_id: item for item in civilization.war_reports}
     reports[report.battle_id] = report
     civilization.war_reports = tuple(reports[key] for key in sorted(reports))
+    # The council now knows which of its people were taken, and holds them as captives.
+    civilization.known_captives = tuple(
+        sorted({*civilization.known_captives, *report.own_captured})
+    )
 
 
 def _replace_journey(state: WorldState, journey: Journey) -> None:
@@ -2852,7 +2886,7 @@ def _check_tribute(state: WorldState) -> list[DomainEvent]:
         if not treaty.tribute_overdue(state.day):
             continue
         payer = treaty.terms.tribute_payer
-        ended = _end_treaty(state, treaty.treaty_id, TreatyEndKind.BREACHED, payer)
+        ended = _end_treaty(state, treaty.treaty_id, TreatyEndKind.BREACHED, payer, told=True)
         if ended is not None:
             events.append(
                 _event(
@@ -4050,6 +4084,92 @@ def _keep_archive(state: WorldState, civilization_id: EntityId, away: set[Entity
         else record.model_copy(update={"retained_record": archived})
         for record in civilization.capabilities
     )
+
+
+def _learn_fallen(state: WorldState, learner: EntityId, fallen_id: EntityId) -> list[DomainEvent]:
+    """The learner comes to know a civilization has died out, and its treaties with it."""
+    civilization = state.civilizations[learner]
+    if fallen_id == learner or fallen_id in civilization.fallen:
+        return []
+    if state.civilizations[fallen_id].eliminated_day is None:
+        return []
+    civilization.fallen = {**civilization.fallen, fallen_id: state.day}
+    _tell_treaty_ends(state, learner, fallen_id)
+    return [_event(state, EventPhase.MOVEMENT, "fall_learned", str(learner), str(fallen_id))]
+
+
+def _learn_by_sight(state: WorldState) -> list[DomainEvent]:
+    """What each civilization comes to know today by seeing it, or by its people's return.
+
+    It reaches the council from the next sitting on.
+    """
+    events: list[DomainEvent] = []
+    sight = {
+        civilization_id: sight_of(state, civilization_id)
+        for civilization_id in sorted(state.civilizations)
+    }
+    # A defender learns of a siege, and an owner of an occupation, once it is in sight;
+    # from then on it follows it to its end, since the camp is at its gates.
+    state.sieges = tuple(
+        siege.model_copy(update={"defender_learned_day": state.day})
+        if siege.defender_learned_day is None
+        and siege.active
+        and (
+            siege.camp in sight[siege.defender_id]
+            or siege.settlement_tile in sight[siege.defender_id]
+        )
+        else siege
+        for siege in state.sieges
+    )
+    state.occupations = tuple(
+        occupation.model_copy(update={"owner_learned_day": state.day})
+        if occupation.owner_learned_day is None
+        and occupation.active
+        and occupation.tile in sight[occupation.owner_id]
+        else occupation
+        for occupation in state.occupations
+    )
+    ruins = {ruin.tile: ruin for ruin in state.ruins}
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        if civilization.eliminated_day is not None:
+            continue
+        people = civilization.population.people
+        # Ruins in sight of its settlements, or of its own people wherever they stand.
+        seen = sight[civilization_id] | visible_tiles(
+            state.world_map,
+            (
+                person.location
+                for person in people.values()
+                if person.alive and person.captive_of is None
+            ),
+        )
+        intel = {view.ruin.tile: view for view in civilization.ruin_intel}
+        for tile in sorted(seen & set(ruins)):
+            intel[tile] = RuinView(ruin=ruins[tile], as_of_day=state.day)
+            events.extend(_learn_fallen(state, civilization_id, ruins[tile].former_civilization_id))
+        civilization.ruin_intel = tuple(intel[tile] for tile in sorted(intel))
+        # Those who joined a civilization on the day it died out know it is gone.
+        for change in (change for person in people.values() for change in person.allegiances):
+            origin = state.civilizations.get(change.from_civilization_id)
+            if (
+                origin is not None
+                and change.to_civilization_id == civilization_id
+                and change.day == origin.eliminated_day
+            ):
+                events.extend(_learn_fallen(state, civilization_id, origin.civilization_id))
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        people = civilization.population.people
+        homes = {settlement.tile for settlement in civilization.settlements}
+        # A captive the council knew of is off its list once home and free, or gone from it.
+        civilization.known_captives = tuple(
+            person_id
+            for person_id in civilization.known_captives
+            if person_id in people
+            and not (people[person_id].captive_of is None and people[person_id].location in homes)
+        )
+    return events
 
 
 def _assimilate(state: WorldState) -> list[DomainEvent]:
@@ -5294,6 +5414,10 @@ def advance_day(
         civilization = candidate.civilizations[civilization_id]
         civilization.population = civilization.population.model_copy(update={"people": people})
     for message in diplomacy_result.delivered:
+        # Any word from a party that broke a treaty makes plain the treaty is over.
+        _tell_treaty_ends(
+            candidate, message.recipient_civilization_id, message.sender_civilization_id
+        )
         recipient = candidate.civilizations[message.recipient_civilization_id]
         recipient.received_messages = tuple(
             sorted((*recipient.received_messages, message), key=lambda item: item.message_id)
@@ -5342,6 +5466,7 @@ def advance_day(
                     message.cancellation_of,
                     TreatyEndKind.CANCELLED,
                     message.sender_civilization_id,
+                    told=True,
                 )
                 if notified is not None
                 and {message.sender_civilization_id, message.recipient_civilization_id}
@@ -5753,6 +5878,7 @@ def advance_day(
         _study_languages(candidate)
     if candidate.day % ASSIMILATION_INTERVAL == 0:
         events.extend(_assimilate(candidate))
+    events.extend(_learn_by_sight(candidate))
 
     candidate.day += 1
     validate_world(candidate)

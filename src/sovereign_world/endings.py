@@ -34,6 +34,15 @@ class Ruin(BaseModel):
     walls: Walls | None = None
 
 
+class RuinView(BaseModel):
+    """A ruin as a civilization last saw it, and when."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ruin: Ruin
+    as_of_day: int = Field(ge=0)
+
+
 class EndingKind(StrEnum):
     LAST_CIVILIZATION = "last_civilization"
     NO_CIVILIZATION = "no_civilization"

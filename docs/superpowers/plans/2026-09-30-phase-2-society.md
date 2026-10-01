@@ -146,3 +146,62 @@ S1 languages, then S2 espionage, which needs S1 for its capture chances and esti
 - Council reports show how blended the society is: `cultures` and `ancestries` (counts of
   living free people) and how many are still `assimilating`.
 - Assimilation is a record only: nobody is held back for being unassimilated.
+
+## S5 as built
+
+### No hidden knowledge
+
+A council report now shows only what its civilization has seen or been told. The engine
+records the day each civilization learns something, mostly in a daily sweep at the end of
+the day (`_learn_by_sight`), so it reaches the next council.
+
+| Fact | Learned when |
+|---|---|
+| Its own people taken prisoner (`known_captives`, `held_captive`) | its battle report says so: at once for defenders at home, when survivors return for a war party. Spies caught abroad are never reported. Until then the missing count as away. |
+| A siege of one of its settlements (`defender_learned_day`) | the camp or the settlement is in sight of one of its inhabited settlements |
+| An occupation of one of its settlements (`owner_learned_day`) | the settlement is in sight of one of its inhabited settlements |
+| A treaty ended by the other party (`notice_day`) | at once for a delivered cancellation or a tribute default; otherwise when it learns of a war with the breaker, receives any message from it, turns away one of its parties or has one of its own turned away, or learns the breaker has fallen. Until then the treaty looks in force. |
+| A ruin (`ruin_intel`, `RuinView`) | it is in sight of one of its settlements or of any of its free people; remembered as last seen |
+| Another civilization's end (`fallen`) | it sees one of its ruins, or takes in its last people the day it dies out |
+| The world's ending | the survivor knows it is the last once it knows every other civilization has fallen, dated the day it learned |
+
+### Proof
+
+- `tests/noninterference.py` builds a copy of the world in which everything one
+  civilization cannot know is changed or gone. That includes other civilizations' stores,
+  works, skills, languages, records, messages, journeys and battles, and every unlearned
+  siege, occupation, ruin, war, capture, treaty ending and world ending. Every report must
+  come out identical from the copy.
+- `tests/test_noninterference.py` shows each hidden fact really differs in the copy while
+  the report does not, and that a report does change with its own civilization's facts.
+
+### Scenarios (`tests/acceptance/test_phase_two_exit.py`)
+
+Each scenario is journaled, replayed (`replay_run`, `verify_run`), rerun from scratch to
+the same hash, and every council report it produced passes the leak test.
+
+1. Isolated development: four civilizations each build on their own, with no contact.
+2. First contact: an expedition sights the rival's settlement; the contact appears at the
+   next council, and only for the explorer's civilization.
+3. Treaty: an offer is accepted, then broken; the wronged party sees it standing until word
+   reaches it.
+4. Trade: a caravan delivers its goods; only the receiver gets the receipt notice.
+5. War: a declaration and two raids; the defender knows nothing until the news arrives.
+6. Surrender (soak): a peace that cedes a colony with its people.
+7. Assimilation: newcomers become their new civilization's people; the report's blend
+   changes.
+8. and 9. Extinction and final survivor (soak): the rival breaks up and is eliminated; the
+   survivor learns of every fall and only then sees that it is the last.
+
+`tests/scenario_helpers.py` runs scenarios and holds the shared scripted sovereigns
+(`Welcoming`, `Victor`, `Vanquished`).
+
+### Known limitations, left for later
+
+- A caught spy's journey drops out of `spy_missions`, which hints that something went wrong.
+- Order validation can still reveal hidden facts through its error codes (a captive who
+  cannot be ordered, a treaty that has silently ended).
+- Explorers' findings count from the day they are made, not the day the explorers return.
+- A civilization sees live whether its own people away from home are alive or dead.
+
+**Phase 2 is complete.**

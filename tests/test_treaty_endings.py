@@ -21,7 +21,12 @@ from sovereign_world.diplomacy import (
     TreatyEndKind,
     TreatyKind,
 )
-from sovereign_world.engine import TransitionResult, advance_day
+from sovereign_world.engine import (
+    TransitionResult,
+    _end_treaty,
+    _tell_treaty_ends,
+    advance_day,
+)
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.logistics import JourneyOutcome, JourneyPhase, NoticeKind
@@ -376,3 +381,19 @@ def test_both_parties_may_still_trade_while_a_notice_travels() -> None:
 
     rejected = [event.payload.get("code") for event in _events(results, "command_rejected")]
     assert rejected == ["no_active_treaty"], "the shipment came after the notice arrived"
+
+
+def test_the_wronged_party_sees_a_repudiated_treaty_standing_until_word_reaches_it() -> None:
+    state, home, rival, _ = treaty_world()
+    [treaty] = state.active_treaties
+    _end_treaty(state, treaty.treaty_id, TreatyEndKind.BREACHED, home)
+
+    [breaker_view] = build_council_report(state, home).treaties
+    [wronged_view] = build_council_report(state, rival).treaties
+    assert not breaker_view.in_force and breaker_view.notice_day is None
+    assert wronged_view.in_force, "the rival has not been told"
+
+    state.day += 3
+    _tell_treaty_ends(state, rival, home)
+    [learned] = build_council_report(state, rival).treaties
+    assert learned.end_kind is TreatyEndKind.BREACHED and learned.notice_day == state.day

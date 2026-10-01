@@ -128,6 +128,8 @@ class ActiveTreaty(BaseModel):
     terms: PeaceTerms | None = None
     tribute_received: dict[Resource, int] = Field(default_factory=dict)
     """Tribute goods that have reached the payee so far."""
+    notice_day: int | None = Field(default=None, ge=0)
+    """The day the other party learned the treaty had ended; the party ending it knows."""
 
     @property
     def truce_until(self) -> int | None:
@@ -162,6 +164,10 @@ class ActiveTreaty(BaseModel):
             self.recipient_civilization_id,
         }:
             raise ValueError("only a party can end a treaty")
+        if self.notice_day is not None and (
+            self.ended_day is None or self.notice_day < self.ended_day
+        ):
+            raise ValueError("the other party learns of an ending only once it has happened")
         return self
 
     @property
@@ -177,6 +183,16 @@ class ActiveTreaty(BaseModel):
 
     def ended(self, day: int, kind: TreatyEndKind, by: EntityId) -> ActiveTreaty:
         return self.model_copy(update={"ended_day": day, "end_kind": kind, "ended_by": by})
+
+    def as_known_to(self, civilization_id: EntityId) -> ActiveTreaty:
+        """The treaty as one party knows it: the other side, until told, thinks it stands."""
+        if self.ended_by is None:
+            return self
+        if self.ended_by == civilization_id:
+            return self.model_copy(update={"notice_day": None})
+        if self.notice_day is not None:
+            return self
+        return self.model_copy(update={"ended_day": None, "end_kind": None, "ended_by": None})
 
 
 class DiplomaticMessage(BaseModel):

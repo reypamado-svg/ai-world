@@ -2,9 +2,8 @@
 
 import pytest
 from logistics_helpers import treaty_world
+from scenario_helpers import Vanquished, Victor
 
-from sovereign_world.commands import CommandEnvelope, CouncilReport, DirectOrder, DirectOrderKind
-from sovereign_world.diplomacy import PeaceTerms, TreatyKind
 from sovereign_world.engine import advance_day
 from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
@@ -12,91 +11,8 @@ from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.state import WorldState, state_hash
 from sovereign_world.territory import Settlement
-from sovereign_world.war import WarObjective
 
 DAYS = 150
-PEACE = EntityId("treaty:peace")
-
-
-class Victor:
-    """Raid at the first council, then accept whatever peace is offered."""
-
-    def __init__(self, enemy: EntityId, route: tuple[HexCoord, ...]) -> None:
-        self.enemy = enemy
-        self.route = route
-
-    def decide(self, report: CouncilReport) -> CommandEnvelope:
-        orders: list[DirectOrder] = []
-        if report.day == 0:
-            orders.append(
-                DirectOrder(
-                    command_id="raid",
-                    kind=DirectOrderKind.SEND_WAR_PARTY,
-                    journey_id=EntityId(f"journey:{report.civilization_id}:raid"),
-                    recipient_civilization_id=self.enemy,
-                    traveller_ids=report.person_ids[:10],
-                    route=self.route,
-                    war_objective=WarObjective.RAID,
-                )
-            )
-        offered = any(
-            message.treaty_offer is not None and message.treaty_offer.offer_id == PEACE
-            for message in report.received_messages
-        )
-        if offered and not any(item.treaty_id == PEACE for item in report.treaties):
-            orders.append(
-                DirectOrder(
-                    command_id=f"accept:{report.day}",
-                    kind=DirectOrderKind.ACCEPT_TREATY,
-                    treaty_id=PEACE,
-                    message_id=EntityId(f"message:{report.civilization_id}:accept:{report.day}"),
-                    ambassador_id=report.person_ids[-1],
-                    recipient_civilization_id=self.enemy,
-                    message_text="Accepted.",
-                    route=self.route,
-                )
-            )
-        return _envelope(report, orders)
-
-
-class Vanquished:
-    """Sue for peace at the second council, giving up the colony."""
-
-    def __init__(self, enemy: EntityId, route: tuple[HexCoord, ...], colony: EntityId) -> None:
-        self.enemy = enemy
-        self.route = route
-        self.colony = colony
-
-    def decide(self, report: CouncilReport) -> CommandEnvelope:
-        orders = (
-            [
-                DirectOrder(
-                    command_id="sue",
-                    kind=DirectOrderKind.OFFER_TREATY,
-                    treaty_id=PEACE,
-                    treaty_kind=TreatyKind.PEACE,
-                    peace_terms=PeaceTerms(truce_days=90, ceded_settlement=self.colony),
-                    message_id=EntityId(f"message:{report.civilization_id}:peace"),
-                    ambassador_id=report.person_ids[0],
-                    recipient_civilization_id=self.enemy,
-                    message_text="Take the colony, and leave us in peace.",
-                    route=self.route,
-                )
-            ]
-            if report.day == 30
-            else []
-        )
-        return _envelope(report, orders)
-
-
-def _envelope(report: CouncilReport, orders: list[DirectOrder]) -> CommandEnvelope:
-    return CommandEnvelope(
-        schema_version=1,
-        civilization_id=report.civilization_id,
-        council_day=report.day,
-        correlation_id=report.report_id,
-        commands=tuple(orders),
-    )
 
 
 def _prepare(seed: int) -> tuple[WorldState, EntityId, EntityId, tuple[HexCoord, ...], EntityId]:
