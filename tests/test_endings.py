@@ -1,8 +1,7 @@
 from logistics_helpers import OneShotSovereign, clear_journey_id, envelope, treaty_world
+from scenario_helpers import Welcoming
 
 from sovereign_world.commands import (
-    CommandEnvelope,
-    CouncilReport,
     DirectOrder,
     DirectOrderKind,
     build_council_report,
@@ -58,27 +57,6 @@ def _field(state: WorldState, civilization_id: EntityId) -> HexCoord:
         for tile in sorted(state.world_map.neighbors(capital))
         if state.world_map.tile(tile).terrain.value != "water"
     )
-
-
-class Welcoming:
-    """Take in anyone who asks."""
-
-    def decide(self, report: CouncilReport) -> CommandEnvelope:
-        return CommandEnvelope(
-            schema_version=1,
-            civilization_id=report.civilization_id,
-            council_day=report.day,
-            correlation_id=report.report_id,
-            commands=tuple(
-                DirectOrder(
-                    command_id=f"admit:{index}",
-                    kind=DirectOrderKind.ANSWER_PETITION,
-                    journey_id=journey.journey_id,
-                    admit=True,
-                )
-                for index, journey in enumerate(report.petitions)
-            ),
-        )
 
 
 def test_a_civilization_with_no_one_at_home_is_homeless_until_someone_returns() -> None:
