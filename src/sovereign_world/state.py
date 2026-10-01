@@ -70,6 +70,8 @@ class CivilizationState(BaseModel):
     homeless_since: int | None = None
     """The day this civilization was left without a working settlement."""
     eliminated_day: int | None = None
+    last_crisis_council: int | None = None
+    """The day of its last crisis council; crisis councils come at most once a week."""
     """The day its last member died or left; it then keeps only its history."""
     wall_jobs: tuple[WallJob, ...] = ()
     work_orders: tuple[WorkOrder, ...] = ()
