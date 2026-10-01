@@ -218,3 +218,14 @@ Nothing stores envelopes, raw replies or rationale, and `RunManifest` has no sov
   - `tests/conftest.py` skips live tests unless they are selected with `-m live`.
   - Each live test also needs its key; the OpenAI one also needs `SOVEREIGN_OPENAI_MODEL`.
   - Every other test uses stand-in clients and needs no network.
+
+## G4 as built
+
+- **`gateway/compatible_provider.py`, `CompatibleProvider`:** one adapter for both local sovereigns. It speaks the OpenAI-style `/chat/completions` format that Ollama, LM Studio, llama.cpp and vLLM serve, and calls them with `httpx`, offering no tools.
+- **Where a model may be reached:**
+  - HTTPS anywhere;
+  - plain HTTP only to this computer (loopback or `localhost`), or to a private address the run settings explicitly allow.
+- **Second computer:** it requires a token (`require_token`). The token is read from a named environment variable at each turn. It is sent only in the `Authorization` header and never appears in errors, records or the journal. Without it, no call is made.
+- **Retries:** a busy server (429 or 5xx) is tried once more. The gateway's own repair adds at most one more call, so a turn makes at most four HTTP requests.
+- **Failures:** timeouts, disconnects, refusals, error statuses, bodies over 256 KB, non-JSON and unfamiliar formats all become provider errors. The gateway turns these into a council with no new commands.
+- **Format leniency:** answers given as a list of text parts are joined; when there are several choices, the first is used.
