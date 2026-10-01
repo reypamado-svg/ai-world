@@ -157,3 +157,29 @@ Nothing stores envelopes, raw replies or rationale, and `RunManifest` has no sov
 - Run the slice's unit tests. Then clear the `tests` and `tests/*/__pycache__` directories and run the full regular suite, followed by the soak suite, one at a time in the background.
 - No network in tests. Live tests are opt-in (`-m live`) and run only when keys are supplied.
 - Each slice ends with a commit on its own `codex/` branch and a pull request.
+
+## G1 as built
+
+- **`gateway/provider.py`:**
+  - `ModelProvider` (`complete(ModelRequest) -> ModelReply`);
+  - errors `ProviderTimeout`, `ProviderUnavailable` and `ProviderRefused`;
+  - `ScriptedProvider`, which answers from a script of texts, errors or functions.
+- **`gateway/envelope.py`:**
+  - the model writes a `SovereignReply` (commands and rationale, with extra fields forbidden). The gateway fills in the civilization, council day and correlation ID, so a model cannot forge them;
+  - replies over 64,000 bytes are refused unread;
+  - JSON is found inside fences or surrounding words;
+  - more than 8 commands fails the schema.
+- **`gateway/prompt.py` (`council-1`):**
+  - the charter (identity, rules, reply schema) goes in the system part;
+  - the council report goes in the user part, with every `<` and `>` escaped, so foreign text cannot close or open the tags around it. G2 replaces this with the four memory layers.
+- **`gateway/sovereign.py`, `GatewaySovereign`:**
+  - one call, then one repair call quoting the problem;
+  - timeouts, refusals, outages, crashes and replies that come after the turn's time all end in an empty envelope, so standing decrees and works carry on;
+  - it never raises into the engine.
+- **`RecordingSovereign`** records scripted sovereigns' councils the same way.
+- **`gateway/records.py`:**
+  - a `CouncilRecord` for each turn holds the prompt version and hash, every raw reply, any errors, the outcome and the envelope;
+  - `journal_councils` appends them as `council` journal records;
+  - `RecordedSovereign` serves recorded envelopes.
+- **`replay.rederive_run`** reruns a journaled world from day 0 with only the recorded councils and checks every day's state hash, with no model calls.
+- **Engine:** each council now ends with a `council_held` event (commands, accepted, rejected).

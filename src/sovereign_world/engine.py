@@ -5265,6 +5265,17 @@ def _run_councils(
                     code=validation_error.code,
                 )
             )
+        events.append(
+            _event(
+                state,
+                EventPhase.COMMAND,
+                "council_held",
+                str(civilization_id),
+                commands=len(envelope.commands),
+                accepted=len(validation.accepted),
+                rejected=len(validation.errors),
+            )
+        )
     return events
 
 

@@ -6,7 +6,10 @@ import gzip
 from base64 import b64decode
 from dataclasses import dataclass
 
+from sovereign_world.engine import advance_day
+from sovereign_world.gateway.records import RecordedSovereign, recorded_councils
 from sovereign_world.persistence import WorldStore
+from sovereign_world.rng import StableRng
 from sovereign_world.state import WorldState, state_hash
 
 
@@ -60,5 +63,35 @@ def verify_run(store: WorldStore) -> VerificationResult:
     return VerificationResult(
         verified_through_day=last_day,
         state_hash=last_hash,
+        records=len(records),
+    )
+
+
+def rederive_run(store: WorldStore) -> VerificationResult:
+    """Run the world again from its first day with the recorded councils, calling no model.
+
+    Every day's state must hash the same as the journal's: the recorded replies, the seed
+    and the configuration alone reproduce the run.
+    """
+    records = store.read_records()
+    councils = recorded_councils(store)
+    state = store.load_checkpoint(at_or_before=0)
+    recorded = RecordedSovereign(councils)
+    sovereigns = {
+        civilization_id: recorded for civilization_id in {c.civilization_id for c in councils}
+    }
+    rng = StableRng(state.config.seed)
+    for record in records:
+        if record.type != "transition":
+            continue
+        state = advance_day(state, rng, sovereigns=sovereigns).state
+        if (
+            int(record.payload["day"]) != state.day
+            or state_hash(state) != record.payload["state_hash"]
+        ):
+            raise RuntimeError(f"rederived state differs from the journal at day {state.day}")
+    return VerificationResult(
+        verified_through_day=state.day,
+        state_hash=state_hash(state),
         records=len(records),
     )
