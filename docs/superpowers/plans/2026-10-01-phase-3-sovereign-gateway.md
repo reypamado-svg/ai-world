@@ -157,3 +157,175 @@ Nothing stores envelopes, raw replies or rationale, and `RunManifest` has no sov
 - Run the slice's unit tests. Then clear the `tests` and `tests/*/__pycache__` directories and run the full regular suite, followed by the soak suite, one at a time in the background.
 - No network in tests. Live tests are opt-in (`-m live`) and run only when keys are supplied.
 - Each slice ends with a commit on its own `codex/` branch and a pull request.
+
+## G1 as built
+
+- **`gateway/provider.py`:**
+  - `ModelProvider` (`complete(ModelRequest) -> ModelReply`);
+  - errors `ProviderTimeout`, `ProviderUnavailable` and `ProviderRefused`;
+  - `ScriptedProvider`, which answers from a script of texts, errors or functions.
+- **`gateway/envelope.py`:**
+  - the model writes a `SovereignReply` (commands and rationale, with extra fields forbidden). The gateway fills in the civilization, council day and correlation ID, so a model cannot forge them;
+  - replies over 64,000 bytes are refused unread;
+  - JSON is found inside fences or surrounding words;
+  - more than 8 commands fails the schema.
+- **`gateway/prompt.py` (`council-1`):**
+  - the charter (identity, rules, reply schema) goes in the system part;
+  - the council report goes in the user part, with every `<` and `>` escaped, so foreign text cannot close or open the tags around it. G2 replaces this with the four memory layers.
+- **`gateway/sovereign.py`, `GatewaySovereign`:**
+  - one call, then one repair call quoting the problem;
+  - timeouts, refusals, outages, crashes and replies that come after the turn's time all end in an empty envelope, so standing decrees and works carry on;
+  - it never raises into the engine.
+- **`RecordingSovereign`** records scripted sovereigns' councils the same way.
+- **`gateway/records.py`:**
+  - a `CouncilRecord` for each turn holds the prompt version and hash, every raw reply, any errors, the outcome and the envelope;
+  - `journal_councils` appends them as `council` journal records;
+  - `RecordedSovereign` serves recorded envelopes.
+- **`replay.rederive_run`** reruns a journaled world from day 0 with only the recorded councils and checks every day's state hash, with no model calls.
+- **Engine:** each council now ends with a `council_held` event (commands, accepted, rejected).
+
+## G2 as built
+
+- **`gateway/memory.py`** rebuilds a sovereign's memory for every council; there is no running chat.
+  - **State summary:** the council report without its growing history lists (messages, journey notices, battle reports, spy findings and caught spies), and without `known_tiles`, which `known_terrain` repeats. When it runs over its budget, the map fields are cut back farthest-from-home first.
+  - **Retrieved memories:** every message, battle, journey, spy finding and caught spy the report holds, dated. Those about today's focus come first: enemies, treaty partners, petitioners and besiegers. After that, the newest come first. They are shown oldest-first, within the budget.
+  - **Transcript:** the sovereign's own last councils, each with its outcome, orders and rationale (cut to 600 characters).
+- **`Budgets`** sets each layer's character budget, the number of transcript turns, the output-token limit and the turn's time limit. One `Budgets` is shared by every sovereign in a run; G5 freezes it in the manifest.
+- **`gateway/prompt.py` (`council-2`):**
+  - the charter goes in the system part;
+  - the user part holds `<state>`, `<memories>` and `<recent_councils>`, each with `<` and `>` escaped, so no text can close or open a section.
+- **`GatewaySovereign`:**
+  - keeps its own council history for the transcript;
+  - `remember(records)` takes it up again from a journal when a run is resumed;
+  - only the civilization's own councils are ever shown.
+
+## G3 as built
+
+- **`gateway/anthropic_provider.py` (official `anthropic` SDK):**
+  - Default model `claude-opus-5-5`, with adaptive thinking and the effort level set explicitly (`high` by default; the run settings can change it).
+  - No tools are offered.
+  - **Refusals:** server-side refusal fallback is on by default (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`). The API then retries a declined request on a fallback model chosen for the kind of refusal. A refusal that still stands becomes `ProviderRefused`.
+  - **Errors:** timeouts become `ProviderTimeout`; connection and API errors become `ProviderUnavailable`.
+  - **Truncated replies:** a reply cut off at `max_tokens` reaches the gateway as text and goes through repair.
+- **`gateway/openai_provider.py` (official `openai` SDK):**
+  - There is no default model; the run settings must name one.
+  - Uses JSON object mode, with no tools.
+  - A refusal, an empty reply or an API error maps to the same provider errors as above.
+- **Why not structured output:** the command schema has open-ended maps (for example, a caravan's cargo), which structured output cannot express. Both adapters therefore ask for plain JSON, and the gateway's own checking and one repair do the rest.
+- **Credentials:** read only by the SDKs from `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`, and never written anywhere.
+- **Packaging:** `pyproject.toml` gains `anthropic`, `openai` and `local` extras (included in `dev`) and a `live` marker.
+- **Tests:**
+  - `tests/conftest.py` skips live tests unless they are selected with `-m live`.
+  - Each live test also needs its key; the OpenAI one also needs `SOVEREIGN_OPENAI_MODEL`.
+  - Every other test uses stand-in clients and needs no network.
+
+## G4 as built
+
+- **`gateway/compatible_provider.py`, `CompatibleProvider`:** one adapter for both local sovereigns. It speaks the OpenAI-style `/chat/completions` format that Ollama, LM Studio, llama.cpp and vLLM serve, and calls them with `httpx`, offering no tools.
+- **Where a model may be reached:**
+  - HTTPS anywhere;
+  - plain HTTP only to this computer (loopback or `localhost`), or to a private address the run settings explicitly allow.
+- **Second computer:** it requires a token (`require_token`). The token is read from a named environment variable at each turn. It is sent only in the `Authorization` header and never appears in errors, records or the journal. Without it, no call is made.
+- **Retries:** a busy server (429 or 5xx) is tried once more. The gateway's own repair adds at most one more call, so a turn makes at most four HTTP requests.
+- **Failures:** timeouts, disconnects, refusals, error statuses, bodies over 256 KB, non-JSON and unfamiliar formats all become provider errors. The gateway turns these into a council with no new commands.
+- **Format leniency:** answers given as a list of text parts are joined; when there are several choices, the first is used.
+
+## G5 as built
+
+### Manifest
+
+`config.py` adds to `RunManifest`:
+
+- **`sovereigns`**: a `SovereignConfig` for each civilization id. Each one holds:
+  - the provider: `baseline`, `anthropic`, `openai` or `compatible`;
+  - the model;
+  - Claude's effort and whether refusal fallback is on;
+  - for local models, the base URL, the name of the token's environment variable, and the private-address and token rules;
+  - retries;
+  - the prompt version.
+
+  Credentials are never stored, only the name of the variable that holds a token.
+- **`budgets`**: one `BudgetConfig` for all sovereigns.
+- **Forks**: `parent_run_id` and `forked_at_day`.
+
+Settings left at their defaults are left out of `content_hash`, so manifests written before Phase 3 keep their hash.
+
+### Building the sovereigns
+
+`gateway/factory.py`, `build_sovereigns`, turns the manifest into a sovereign for each civilization.
+
+- Civilizations without an entry play the baseline policy. It is wrapped so its councils are recorded too.
+- Model-played civilizations get a `GatewaySovereign` with the run's budgets, and take up their past councils from the journal.
+- A prompt version other than this engine's is refused, with a request to fork the run.
+- Each provider's SDK is loaded only when it is used.
+
+### Command line
+
+- **`init --sovereigns settings.toml`** freezes `[budgets]` and `[sovereigns."civilization:…"]`. It rejects unknown sections and unknown civilizations.
+- **`run`** plays every council through the run's sovereigns and appends each one to the journal.
+- **`verify`** also rederives the run from its recorded councils, calling no model, and fails if any day's hash differs.
+- **`fork SOURCE DEST --day N --sovereigns settings.toml`** starts a new, separately identified run from day N of another. The new run records its parent and the fork day, and its first checkpoint is the fork day.
+- `replay_run` and `verify_run` now start from a run's first checkpoint, not always from day 0. That is what lets a fork be replayed and verified.
+
+### Crisis councils
+
+A crisis council is held outside the monthly round.
+
+- **What triggers one:** something the civilization learned yesterday:
+  - an attack on it (a war it learned of);
+  - a first contact;
+  - a treaty offer delivered to it;
+  - a siege or occupation of one of its settlements it now sees.
+- **Limits:** at most one crisis council in 7 days (`last_crisis_council`).
+- **What the council sees:** `CouncilReport.crisis` lists the reasons on every report.
+- **Who gets them:** only sovereigns that take them, which every model-played sovereign does. Scripted ones, including the baseline, keep the monthly round, so their worlds unfold as before.
+- **Records:** `council_held` events say whether a council was a crisis council. Each council record notes whether its sovereign takes crisis councils, so rederive calls the same councils.
+- **Missed news:** news that arrives within a week of the last crisis council waits for the next monthly council.
+
+## G6 as built
+
+`tests/acceptance/test_phase_three_exit.py` uses scripted providers, so it runs exactly and offline.
+
+### Provider failures
+
+These failures are tested at a month's council:
+- a reply malformed twice;
+- a timeout;
+- a refusal;
+- an outage;
+- a dropped second computer;
+- an oversized reply;
+- a crash.
+
+In each case:
+- the world reaches the same day;
+- its final state hash equals that of a run in which the sovereign simply gave no new orders;
+- the founding decree still stands;
+- the council's record shows the failure and its error.
+
+Two more cases:
+- a reply that arrives after the turn's time is not acted on;
+- a repeated command ID is refused while the rest of the envelope goes ahead.
+
+### Hostile messages
+
+A rival's fluent envoy delivers a prompt-injection message. It contains fake section tags, a "SYSTEM" voice, a forged civilization ID and a forged order. The receiving model obeys it, ordering a food shipment carried by the rival's people and the release of "prisoners" it does not hold.
+
+- The words reach the council only inside its memories. They are never in the charter, and they never close or open a section.
+- The forged envelope fields cannot exist, because the model writes only commands and a rationale.
+- The forbidden orders are refused by the ordinary validation. No journey or release happens, and every rival person stays where they were.
+- The only thing the obedient model can change is what any sovereign may change: its own decrees.
+
+### Isolation
+
+Two model-played civilizations each receive only their own reports. Neither prompt contains the other's people. An API key in the environment appears in no prompt and nowhere in the journal.
+
+### Recording and replay
+
+Raw replies are kept, including a first reply that needed repair, together with the prompt hash. Every scenario rederives from its recorded councils with no model called, and also replays and reruns to the same hash.
+
+### Hidden knowledge
+
+Every council report in these scenarios passes Phase 2's hidden-knowledge check, crisis councils included. The scenario runner now captures crisis-council reports and journals council records.
+
+**Phase 3 is complete.** A FastAPI wrapper around the in-process gateway is left for later, as decided.

@@ -41,6 +41,7 @@ from sovereign_world.commands import (
     DirectOrderKind,
     ProjectKind,
     build_council_report,
+    crisis_council_due,
     journey_supplies,
     known_roads,
     known_tolls,
@@ -4878,8 +4879,7 @@ def _run_councils(
     sovereigns: Mapping[EntityId, Sovereign],
 ) -> list[DomainEvent]:
     events: list[DomainEvent] = []
-    if state.day % state.config.council_interval_days != 0:
-        return events
+    monthly = state.day % state.config.council_interval_days == 0
     for civilization_id in sorted(sovereigns):
         if (
             civilization_id not in state.civilizations
@@ -4887,6 +4887,16 @@ def _run_councils(
         ):
             continue
         sovereign = sovereigns[civilization_id]
+        # Sovereigns that take them are also called to council by a crisis.
+        crisis = (
+            not monthly
+            and getattr(sovereign, "crisis_councils", False)
+            and crisis_council_due(state, civilization_id)
+        )
+        if not (monthly or crisis):
+            continue
+        if crisis:
+            state.civilizations[civilization_id].last_crisis_council = state.day
         try:
             envelope = sovereign.decide(build_council_report(state, civilization_id))
         except Exception as exception:
@@ -5265,6 +5275,18 @@ def _run_councils(
                     code=validation_error.code,
                 )
             )
+        events.append(
+            _event(
+                state,
+                EventPhase.COMMAND,
+                "council_held",
+                str(civilization_id),
+                commands=len(envelope.commands),
+                accepted=len(validation.accepted),
+                rejected=len(validation.errors),
+                crisis=crisis,
+            )
+        )
     return events
 
 

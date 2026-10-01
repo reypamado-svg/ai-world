@@ -6,7 +6,12 @@ import gzip
 from base64 import b64decode
 from dataclasses import dataclass
 
+from sovereign_world.engine import advance_day
+from sovereign_world.gateway.records import RecordedSovereign, recorded_councils
+from sovereign_world.ids import EntityId
 from sovereign_world.persistence import WorldStore
+from sovereign_world.rng import StableRng
+from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, state_hash
 
 
@@ -31,7 +36,11 @@ def _recorded_state(payload: dict[str, object]) -> WorldState:
 def replay_run(store: WorldStore, target_day: int | None = None) -> WorldState:
     records = store.read_records()
     if target_day is None:
-        target_day = max((int(record.payload["day"]) for record in records), default=0)
+        latest = max((int(record.payload["day"]) for record in records), default=None)
+        if latest is None:
+            # Nothing journaled yet: the run starts at its first checkpoint, day 0 or its fork.
+            return store.load_checkpoint()
+        target_day = latest
     if target_day == 0:
         return store.load_checkpoint(at_or_before=0)
     for record in reversed(records):
@@ -46,8 +55,11 @@ def replay_run(store: WorldStore, target_day: int | None = None) -> WorldState:
 
 def verify_run(store: WorldStore) -> VerificationResult:
     records = store.read_records()
-    last_day = 0
-    last_hash = state_hash(store.load_checkpoint(at_or_before=0))
+    days = [int(record.payload["day"]) for record in records if record.type == "transition"]
+    # A forked run begins at its fork, not at day zero.
+    start = store.load_checkpoint(at_or_before=days[0] - 1) if days else store.load_checkpoint()
+    last_day = start.day
+    last_hash = state_hash(start)
     for record in records:
         if record.type != "transition":
             continue
@@ -60,5 +72,39 @@ def verify_run(store: WorldStore) -> VerificationResult:
     return VerificationResult(
         verified_through_day=last_day,
         state_hash=last_hash,
+        records=len(records),
+    )
+
+
+def rederive_run(store: WorldStore) -> VerificationResult:
+    """Run the world again from its first day with the recorded councils, calling no model.
+
+    Every day's state must hash the same as the journal's: the recorded replies, the seed
+    and the configuration alone reproduce the run.
+    """
+    records = store.read_records()
+    councils = recorded_councils(store)
+    days = [int(record.payload["day"]) for record in records if record.type == "transition"]
+    # A forked run begins at its fork, not at day zero.
+    state = store.load_checkpoint(at_or_before=min(days, default=1) - 1)
+    sovereigns: dict[EntityId, Sovereign] = {}
+    for civilization_id in sorted({council.civilization_id for council in councils}):
+        own = [council for council in councils if council.civilization_id == civilization_id]
+        sovereigns[civilization_id] = RecordedSovereign(
+            own, crisis_councils=any(council.crisis_councils for council in own)
+        )
+    rng = StableRng(state.config.seed)
+    for record in records:
+        if record.type != "transition":
+            continue
+        state = advance_day(state, rng, sovereigns=sovereigns).state
+        if (
+            int(record.payload["day"]) != state.day
+            or state_hash(state) != record.payload["state_hash"]
+        ):
+            raise RuntimeError(f"rederived state differs from the journal at day {state.day}")
+    return VerificationResult(
+        verified_through_day=state.day,
+        state_hash=state_hash(state),
         records=len(records),
     )

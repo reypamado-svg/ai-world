@@ -13,11 +13,13 @@ from sovereign_world.commands import (
     DirectOrder,
     DirectOrderKind,
     build_council_report,
+    crisis_council_due,
 )
 from sovereign_world.config import RunManifest
 from sovereign_world.diplomacy import PeaceTerms, TreatyKind
 from sovereign_world.engine import advance_day
 from sovereign_world.events import DomainEvent
+from sovereign_world.gateway.records import journal_councils
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.persistence import WorldStore
@@ -70,18 +72,32 @@ def _simulate(
     events: list[DomainEvent] = []
     councils: list[Council] = []
     for _ in range(days):
-        if store is not None and state.day % state.config.council_interval_days == 0:
-            # Every living civilization's report as its council would read it this morning.
+        monthly = state.day % state.config.council_interval_days == 0
+        sitting = [
+            civilization_id
+            for civilization_id in sorted(state.civilizations)
+            if state.civilizations[civilization_id].eliminated_day is None
+            and (
+                monthly
+                or (
+                    getattr(sovereigns.get(civilization_id), "crisis_councils", False)
+                    and crisis_council_due(state, civilization_id)
+                )
+            )
+        ]
+        if store is not None and sitting:
+            # Each report as its council reads it this morning: every living civilization's
+            # on a monthly day, and those called by a crisis on other days.
             snapshot = state.model_copy(deep=True)
             councils.extend(
                 Council(snapshot, civilization_id, build_council_report(snapshot, civilization_id))
-                for civilization_id in sorted(snapshot.civilizations)
-                if snapshot.civilizations[civilization_id].eliminated_day is None
+                for civilization_id in sitting
             )
         transition = advance_day(state, rng, sovereigns=sovereigns)
         state = transition.state
         if store is not None:
             store.append_transition(state, transition.events)
+            journal_councils(store, sovereigns.values())
         events.extend(transition.events.events)
     return state, events, councils
 

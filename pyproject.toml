@@ -14,7 +14,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+anthropic = ["anthropic>=1.11,<2"]
+openai = ["openai>=3.22,<4"]
+local = ["httpx>=0.28,<1"]
 dev = [
+  "anthropic>=1.11,<2",
+  "openai>=3.22,<4",
+  "httpx>=0.28,<1",
   "hypothesis>=6.120,<7",
   "mypy>=1.14,<2",
   "pytest>=8.3,<9",
@@ -31,7 +37,10 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = "--strict-markers --basetemp=work/pytest-temp"
-markers = ["soak: long-running deterministic seed matrix"]
+markers = [
+  "soak: long-running deterministic seed matrix",
+  "live: calls a real model provider; needs its key, skipped unless selected",
+]
 
 [tool.ruff]
 target-version = "py312"
