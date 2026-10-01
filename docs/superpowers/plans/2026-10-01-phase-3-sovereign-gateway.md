@@ -183,3 +183,18 @@ Nothing stores envelopes, raw replies or rationale, and `RunManifest` has no sov
   - `RecordedSovereign` serves recorded envelopes.
 - **`replay.rederive_run`** reruns a journaled world from day 0 with only the recorded councils and checks every day's state hash, with no model calls.
 - **Engine:** each council now ends with a `council_held` event (commands, accepted, rejected).
+
+## G2 as built
+
+- **`gateway/memory.py`** rebuilds a sovereign's memory for every council; there is no running chat.
+  - **State summary:** the council report without its growing history lists (messages, journey notices, battle reports, spy findings and caught spies), and without `known_tiles`, which `known_terrain` repeats. When it runs over its budget, the map fields are cut back farthest-from-home first.
+  - **Retrieved memories:** every message, battle, journey, spy finding and caught spy the report holds, dated. Those about today's focus come first: enemies, treaty partners, petitioners and besiegers. After that, the newest come first. They are shown oldest-first, within the budget.
+  - **Transcript:** the sovereign's own last councils, each with its outcome, orders and rationale (cut to 600 characters).
+- **`Budgets`** sets each layer's character budget, the number of transcript turns, the output-token limit and the turn's time limit. One `Budgets` is shared by every sovereign in a run; G5 freezes it in the manifest.
+- **`gateway/prompt.py` (`council-2`):**
+  - the charter goes in the system part;
+  - the user part holds `<state>`, `<memories>` and `<recent_councils>`, each with `<` and `>` escaped, so no text can close or open a section.
+- **`GatewaySovereign`:**
+  - keeps its own council history for the transcript;
+  - `remember(records)` takes it up again from a journal when a run is resumed;
+  - only the civilization's own councils are ever shown.
