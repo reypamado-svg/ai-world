@@ -40,7 +40,7 @@ python3 -m http.server 8765 -d observer
 ```sh
 cd observer
 npm install            # playwright 1.56.1 (uses the installed Chromium) and pixi.js for vendoring
-node --test tests/*.test.mjs   # depth-ordering visual tests (R3)
+node --test --test-concurrency=1 tests/*.test.mjs   # browser tests, one file at a time
 node tests/capture.mjs captures --depth --clip   # review screenshots, depth sheet, MP4 clip
 ```
 

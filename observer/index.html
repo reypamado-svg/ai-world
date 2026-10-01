@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI World — Observer prototype</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <div id="topbar">
+      <div class="brand">AI World <span class="sub" id="world-label">Observer prototype</span></div>
+      <span
+        class="chip warn"
+        id="source-chip"
+        title="Terrain comes from the engine's own world generation; nothing has been simulated."
+        >ENGINE TERRAIN · DAY 0</span
+      >
+      <span class="chip warn" title="The village, its buildings and citizens are invented sample data."
+        >SAMPLE VILLAGE</span
+      >
+      <span class="chip warn" title="Procedurally painted placeholder art.">PROTOTYPE ARTWORK</span>
+      <span class="chip" title="This prototype is not connected to a live run.">Status: prototype (no live run)</span>
+      <span class="chip persp" title="Only the observer perspective exists in this prototype."
+        >Perspective: Observer</span
+      >
+      <div class="spacer"></div>
+    </div>
+    <div id="stage"></div>
+    <aside id="inspector" hidden></aside>
+    <canvas id="minimap" width="240" height="150" title="Minimap — click to move the camera"></canvas>
+    <div id="controls">
+      <button id="btn-zoom-in" title="Zoom in">+</button>
+      <button id="btn-zoom-out" title="Zoom out">−</button>
+      <button id="btn-world" title="Return to world view">⌂</button>
+    </div>
+    <div id="footer">
+      <span id="perf"></span>
+      <span id="pick-note"></span>
+      <span class="note"
+        >Terrain: engine world generation (presentation scale 64 m per tile). Village and citizens: SAMPLE. Movement:
+        visual approximation.</span
+      >
+    </div>
+    <div id="loading">
+      <div class="box">
+        <div class="title">Opening the world…</div>
+        <div id="loading-status">Starting</div>
+      </div>
+    </div>
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

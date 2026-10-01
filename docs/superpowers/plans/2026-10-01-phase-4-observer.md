@@ -153,7 +153,7 @@ except advancing or restoring already committed history."
 
 1. Python: `ruff check src tests`, `ruff format` on changed files only, `MYPYPATH=src mypy -p sovereign_world`.
 2. Python tests: the full `pytest -m "not soak"` suite, never run alongside another suite.
-3. Browser: `node --test tests/*.test.mjs` in `observer/`, plus screenshots and the capture script.
+3. Browser: `node --test --test-concurrency=1 tests/*.test.mjs` in `observer/`, plus screenshots and the capture script.
 4. Browser and Python throughput are reported separately. Container numbers come from software
    rendering and are labelled not representative.
 5. Ask before opening any pull request.

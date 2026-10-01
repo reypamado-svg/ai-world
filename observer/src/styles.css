@@ -281,3 +281,16 @@ button.on {
     display: none;
   }
 }
+#minimap {
+  position: fixed;
+  left: 14px;
+  bottom: 44px;
+  width: 240px;
+  height: 150px;
+  z-index: 6;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #12161a;
+  cursor: crosshair;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
