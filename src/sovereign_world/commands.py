@@ -392,6 +392,9 @@ class CouncilReport(BaseModel):
     """Findings its spies and couriers have brought home."""
     caught_spies: tuple[CaughtSpy, ...] = ()
     """Foreign spies and couriers it has caught, and who sent them."""
+    crisis: tuple[str, ...] = ()
+    """What struck yesterday, if anything: a war learned of, a first contact, a treaty offer
+    received, a siege or occupation seen."""
     speakers: dict[EntityId, tuple[EntityId, ...]] = Field(default_factory=dict)
     """For each language, this civilization's free people who speak it, natively or fluently."""
     endings: tuple[Ending, ...] = ()
@@ -425,6 +428,48 @@ def _blend(civilization: CivilizationState) -> dict[str, Any]:
         "ancestries": dict(sorted(ancestries.items())),
         "assimilating": assimilating,
     }
+
+
+CRISIS_GAP_DAYS = 7
+"""A civilization holds at most one crisis council in this many days."""
+
+
+def crisis_reasons(state: WorldState, civilization_id: EntityId) -> tuple[str, ...]:
+    """What this civilization learned yesterday that calls for its council at once."""
+    yesterday = state.day - 1
+    civilization = state.civilizations[civilization_id]
+    found = {
+        "war": any(
+            war.defender_id == civilization_id and war.defender_learned_day == yesterday
+            for war in state.wars
+        ),
+        "first_contact": any(
+            contact.first_contact_day == yesterday for contact in civilization.contacts
+        ),
+        "treaty_offer": any(
+            message.treaty_offer is not None and message.delivered_day == yesterday
+            for message in civilization.received_messages
+        ),
+        "siege": any(
+            siege.defender_id == civilization_id and siege.defender_learned_day == yesterday
+            for siege in state.sieges
+        ),
+        "occupation": any(
+            occupation.owner_id == civilization_id and occupation.owner_learned_day == yesterday
+            for occupation in state.occupations
+        ),
+    }
+    return tuple(reason for reason, struck in found.items() if struck)
+
+
+def crisis_council_due(state: WorldState, civilization_id: EntityId) -> bool:
+    """A council outside the monthly round, called by yesterday's news."""
+    if state.day == 0 or state.day % state.config.council_interval_days == 0:
+        return False
+    last = state.civilizations[civilization_id].last_crisis_council
+    if last is not None and state.day - last < CRISIS_GAP_DAYS:
+        return False
+    return bool(crisis_reasons(state, civilization_id))
 
 
 def _speakers(civilization: CivilizationState) -> dict[EntityId, tuple[EntityId, ...]]:
@@ -482,6 +527,7 @@ def build_council_report(
         ),
         ruins=known_ruins(state, civilization_id),
         speakers=_speakers(civilization),
+        crisis=crisis_reasons(state, civilization_id),
         spy_missions=tuple(
             journey
             for journey in state.journeys
