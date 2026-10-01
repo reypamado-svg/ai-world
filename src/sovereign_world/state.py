@@ -23,7 +23,7 @@ from sovereign_world.diplomacy import (
     MissionStatus,
     TreatyOffer,
 )
-from sovereign_world.endings import Ending, Ruin
+from sovereign_world.endings import Ending, Ruin, RuinView
 from sovereign_world.espionage import CaughtSpy, SpyReport
 from sovereign_world.exploration import Expedition, ExpeditionStatus, Observation
 from sovereign_world.hexmap import HexCoord, WorldMap
@@ -86,6 +86,13 @@ class CivilizationState(BaseModel):
     """Findings its spies and couriers have brought home."""
     caught_spies: tuple[CaughtSpy, ...] = ()
     institutions: tuple[Institution, ...] = ()
+    ruin_intel: tuple[RuinView, ...] = ()
+    """Ruins its people have seen, as they last saw them; by tile."""
+    fallen: dict[EntityId, int] = Field(default_factory=dict)
+    """Civilizations it knows have died out, and the day it learned each."""
+    known_captives: tuple[EntityId, ...] = ()
+    """Its own people it knows are held prisoner: told by a battle report, until they are
+    home and free again."""
     """Archives, schools, healers' houses, workshops and diplomatic services."""
     """Foreign spies and couriers it has caught, and who sent them."""
     settlements: tuple[Settlement, ...] = ()
@@ -272,6 +279,18 @@ def validate_world(state: WorldState) -> None:
         )
         if capabilities != sorted_capabilities:
             raise ValueError("civilization capabilities must be unique and sorted")
+        tiles = [view.ruin.tile for view in civilization.ruin_intel]
+        if tiles != sorted(set(tiles)):
+            raise ValueError("ruin intel is one view per tile, by tile")
+        if set(civilization.fallen) - (set(state.civilizations) - {civilization_id}):
+            raise ValueError("a civilization learns only of other civilizations falling")
+        if civilization.known_captives != tuple(sorted(set(civilization.known_captives))):
+            raise ValueError("known captives are unique and sorted")
+        if any(
+            person_id not in civilization.population.people
+            for person_id in civilization.known_captives
+        ):
+            raise ValueError("a civilization knows only of its own people held captive")
         kept_by: dict[EntityId, EntityId] = {}
         for institution in civilization.institutions:
             for person_id in institution.staff_ids:

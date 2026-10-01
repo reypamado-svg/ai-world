@@ -230,3 +230,36 @@ def test_captives_escape_at_a_council(certain_capture, monkeypatch) -> None:
     escaped = _events(results, "captive_freed")
     assert {event.subject_id for event in escaped} == set(battle.captured)
     assert all(event.payload["reason"] == "escaped" and event.day == 30 for event in escaped)
+
+
+def test_a_civilization_learns_its_raiders_were_taken_only_when_survivors_return(
+    certain_capture,
+) -> None:
+    state, home, rival, route = _world()
+    order = _raid(state, home, rival, route, fighters=6)
+    rng = StableRng(state.config.seed)
+    sovereigns = {home: OneShotSovereign(order)}
+    returned = False
+    seen_hidden = False
+    for _ in range(20):
+        result = advance_day(state, rng, sovereigns=sovereigns)
+        state = result.state
+        returned = returned or any(
+            event.kind == "war_party_returned" for event in result.events.events
+        )
+        if not state.battles:
+            continue
+        [battle] = state.battles
+        report = build_council_report(state, home)
+        if not returned:
+            seen_hidden = True
+            assert report.held_captive == ()
+            assert set(battle.captured) <= set(report.person_ids), (
+                "taken, as far as home knows, is away"
+            )
+        else:
+            assert report.held_captive == battle.captured
+            assert not set(battle.captured) & set(report.person_ids)
+            break
+    assert seen_hidden and returned
+    validate_world(state)

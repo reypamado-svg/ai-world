@@ -121,6 +121,8 @@ class Siege(BaseModel):
     started_day: int = Field(ge=0)
     ended_day: int | None = Field(default=None, ge=0)
     end: SiegeEnd | None = None
+    defender_learned_day: int | None = Field(default=None, ge=0)
+    """The day the defender saw the camp; until then it does not know it is besieged."""
 
     @model_validator(mode="after")
     def consistent(self) -> Siege:
@@ -172,6 +174,8 @@ class Occupation(BaseModel):
     started_day: int = Field(ge=0)
     ended_day: int | None = Field(default=None, ge=0)
     end: OccupationEnd | None = None
+    owner_learned_day: int | None = Field(default=None, ge=0)
+    """The day the owner saw its settlement held; until then it does not know."""
 
     @model_validator(mode="after")
     def consistent(self) -> Occupation:
@@ -246,6 +250,8 @@ class BattleReport(BaseModel):
     enemy_fighters_estimate: int = Field(ge=0)
     enemy_dead_seen: int = Field(ge=0)
     enemy_losses_estimate: int = Field(ge=0)
+    own_captured: tuple[EntityId, ...] = ()
+    """Its own fighters seen taken prisoner."""
 
 
 def able_to_fight(person: Person) -> bool:

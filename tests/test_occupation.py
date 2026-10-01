@@ -6,7 +6,7 @@ from sovereign_world.commands import (
     build_council_report,
     validate_envelope,
 )
-from sovereign_world.engine import TransitionResult, advance_day
+from sovereign_world.engine import TransitionResult, _learn_by_sight, advance_day
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.logistics import JourneyOutcome
@@ -15,7 +15,8 @@ from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadGrade
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.stores import StorehouseGrade
-from sovereign_world.war import OccupationEnd, WarObjective
+from sovereign_world.territory import Settlement
+from sovereign_world.war import Occupation, OccupationEnd, WarObjective
 
 
 def _world():
@@ -251,3 +252,36 @@ def test_road_wreckers_pull_down_each_enemy_road_they_cross() -> None:
     assert all(grades[tile] is RoadGrade.GRADED for tile in enemy_road), "gravel falls to graded"
     assert all(grades[tile] is RoadGrade.GRAVEL for tile in route[1:-1] if tile not in enemy_road)
     assert len({event.day for event in wrecked}) == len(enemy_road), "a day on each tile"
+
+
+def test_an_owner_learns_its_settlement_is_held_only_once_it_is_in_sight() -> None:
+    state, home, rival, _ = treaty_world(distance=4)
+    capital = state.civilizations[rival].settlements[0]
+    far = HexCoord(capital.tile.q + 6, capital.tile.r)
+    colony = Settlement(
+        settlement_id=EntityId("settlement:0000000002-0009"),
+        civilization_id=rival,
+        tile=far,
+        founded_day=0,
+    )
+    state.civilizations[rival].settlements = (*state.civilizations[rival].settlements, colony)
+    state.occupations = (
+        Occupation(
+            occupation_id=EntityId("occupation:far"),
+            journey_id=EntityId("journey:far"),
+            occupier_id=home,
+            owner_id=rival,
+            settlement_id=colony.settlement_id,
+            tile=far,
+            started_day=0,
+        ),
+    )
+    _learn_by_sight(state)
+    assert build_council_report(state, rival).occupations == ()
+    assert len(build_council_report(state, home).occupations) == 1
+
+    resident = state.civilizations[rival].population.living_ids[0]
+    state.civilizations[rival].population.people[resident].location = far
+    _learn_by_sight(state)
+    [seen] = build_council_report(state, rival).occupations
+    assert seen.owner_learned_day == state.day

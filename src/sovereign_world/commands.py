@@ -30,7 +30,7 @@ from sovereign_world.diplomacy import (
     PeaceTerms,
     TreatyKind,
 )
-from sovereign_world.endings import Ending, Ruin
+from sovereign_world.endings import Ending, EndingKind, RuinView
 from sovereign_world.espionage import MAX_SPIES, MAX_WATCH_DAYS, CaughtSpy, SpyReport
 from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
@@ -376,7 +376,7 @@ class CouncilReport(BaseModel):
     """Foreign prisoners this civilization holds, at home or marching with its war parties."""
     petitions: tuple[Journey, ...] = ()
     """People of other civilizations waiting at this one's gates to be taken in."""
-    ruins: tuple[Ruin, ...] = ()
+    ruins: tuple[RuinView, ...] = ()
     """Ruins on land this civilization knows."""
     institutions: tuple[Institution, ...] = ()
     """This civilization's institutions, built or going up, and their staff."""
@@ -397,7 +397,7 @@ class CouncilReport(BaseModel):
     endings: tuple[Ending, ...] = ()
     """The endings of the world so far: the last civilization standing, or none."""
     held_captive: tuple[EntityId, ...] = ()
-    """This civilization's own people held prisoner by others."""
+    """Its own people it has been told are held prisoner by others."""
     occupations: tuple[Occupation, ...] = ()
     """Settlements this civilization holds, or has lost to occupiers."""
     war_reports: tuple[BattleReport, ...] = ()
@@ -412,8 +412,9 @@ def _blend(civilization: CivilizationState) -> dict[str, Any]:
     cultures: dict[EntityId, int] = {}
     ancestries: dict[EntityId, int] = {}
     assimilating = 0
-    for person in civilization.population.people.values():
-        if not person.alive or person.captive_of is not None:
+    known_captives = set(civilization.known_captives)
+    for person_id, person in civilization.population.people.items():
+        if not person.alive or person_id in known_captives:
             continue
         cultures[culture(person)] = cultures.get(culture(person), 0) + 1
         for origin in ancestry(person):
@@ -428,8 +429,9 @@ def _blend(civilization: CivilizationState) -> dict[str, Any]:
 
 def _speakers(civilization: CivilizationState) -> dict[EntityId, tuple[EntityId, ...]]:
     found: dict[EntityId, list[EntityId]] = {}
+    known_captives = set(civilization.known_captives)
     for person_id, person in sorted(civilization.population.people.items()):
-        if not person.alive or person.captive_of is not None:
+        if not person.alive or person_id in known_captives:
             continue
         tongues = {native(person)} | {
             language for language in person.languages if speaks(person, language)
@@ -461,6 +463,7 @@ def build_council_report(
             and journey.outcome in {JourneyOutcome.FAILED, JourneyOutcome.REFUSED}
         )
     }
+    known_captives = set(civilization.known_captives)
     visible_events = tuple(
         event
         for event in recent_events
@@ -474,10 +477,10 @@ def build_council_report(
             sorted(
                 person_id
                 for person_id, person in civilization.population.people.items()
-                if person_id not in emigrants and person.captive_of is None
+                if person_id not in emigrants and person_id not in known_captives
             )
         ),
-        ruins=tuple(ruin for ruin in state.ruins if ruin.tile in set(civilization.known_tiles)),
+        ruins=known_ruins(state, civilization_id),
         speakers=_speakers(civilization),
         spy_missions=tuple(
             journey
@@ -490,7 +493,7 @@ def build_council_report(
         institutions=civilization.institutions,
         **_blend(civilization),
         caught_spies=civilization.caught_spies,
-        endings=state.endings,
+        endings=_known_endings(state, civilization_id),
         petitions=tuple(
             journey
             for journey in state.journeys
@@ -504,13 +507,7 @@ def build_council_report(
                 if person.alive and person.captive_of == civilization_id
             )
         ),
-        held_captive=tuple(
-            sorted(
-                person_id
-                for person_id, person in civilization.population.people.items()
-                if person.alive and person.captive_of is not None
-            )
-        ),
+        held_captive=civilization.known_captives,
         start_center=civilization.start_center,
         known_tiles=tuple(sorted(civilization.known_tiles)),
         known_terrain=tuple(
@@ -535,7 +532,7 @@ def build_council_report(
         contacts=civilization.contacts,
         received_messages=civilization.received_messages,
         treaties=tuple(
-            treaty
+            treaty.as_known_to(civilization_id)
             for treaty in state.active_treaties
             if civilization_id
             in {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
@@ -557,12 +554,14 @@ def build_council_report(
         occupations=tuple(
             occupation
             for occupation in state.occupations
-            if civilization_id in {occupation.occupier_id, occupation.owner_id}
+            if civilization_id == occupation.occupier_id
+            or (civilization_id == occupation.owner_id and occupation.owner_learned_day is not None)
         ),
         sieges=tuple(
             siege
             for siege in state.sieges
-            if civilization_id in {siege.besieger_id, siege.defender_id}
+            if civilization_id == siege.besieger_id
+            or (civilization_id == siege.defender_id and siege.defender_learned_day is not None)
         ),
         wars=tuple(
             war
@@ -579,7 +578,7 @@ def build_council_report(
     )
 
 
-def _in_sight(state: WorldState, civilization_id: EntityId) -> frozenset[HexCoord]:
+def sight_of(state: WorldState, civilization_id: EntityId) -> frozenset[HexCoord]:
     """Tiles seen today from this civilization's inhabited settlements."""
     civilization = state.civilizations[civilization_id]
     return visible_tiles(
@@ -621,18 +620,47 @@ def known_roads(state: WorldState, civilization_id: EntityId) -> tuple[RoadView,
                 as_of_day=observation.observed_day,
             )
     roads = {road.tile: road.grade for road in state.roads}
-    for tile in _in_sight(state, civilization_id):
+    for tile in sight_of(state, civilization_id):
         views.pop(tile, None)
         if tile in roads:
             views[tile] = RoadView(tile=tile, grade=roads[tile], as_of_day=state.day)
     return tuple(views[tile] for tile in sorted(views))
 
 
+def known_ruins(state: WorldState, civilization_id: EntityId) -> tuple[RuinView, ...]:
+    """Ruins its people have seen, and ruins in sight of its settlements today."""
+    civilization = state.civilizations[civilization_id]
+    views = {view.ruin.tile: view for view in civilization.ruin_intel}
+    in_sight = sight_of(state, civilization_id)
+    for tile in in_sight:
+        views.pop(tile, None)
+    for ruin in state.ruins:
+        if ruin.tile in in_sight:
+            views[ruin.tile] = RuinView(ruin=ruin, as_of_day=state.day)
+    return tuple(views[tile] for tile in sorted(views))
+
+
+def _known_endings(state: WorldState, civilization_id: EntityId) -> tuple[Ending, ...]:
+    """The last civilization knows it is the last once it knows every other has fallen."""
+    civilization = state.civilizations[civilization_id]
+    others = set(state.civilizations) - {civilization_id}
+    if not others or not others <= set(civilization.fallen):
+        return ()
+    return (
+        Ending(
+            kind=EndingKind.LAST_CIVILIZATION,
+            day=max(civilization.fallen[other] for other in others),
+            survivor_id=civilization_id,
+            population=len(civilization.population.living_ids),
+        ),
+    )
+
+
 def known_tolls(state: WorldState, civilization_id: EntityId) -> tuple[TollView, ...]:
     """Its own tolls, tolls in sight of its settlements today, and tolls met or mapped."""
     civilization = state.civilizations[civilization_id]
     views = {view.tile: view for view in civilization.toll_intel}
-    in_sight = _in_sight(state, civilization_id)
+    in_sight = sight_of(state, civilization_id)
     for tile in in_sight:
         views.pop(tile, None)
     for other in state.civilizations.values():
@@ -657,7 +685,7 @@ def _observed_control(state: WorldState, civilization_id: EntityId) -> tuple[Con
     """Ownership seen from settlements today, or recorded by explorers when they passed."""
     civilization = state.civilizations[civilization_id]
     owners = state.territory.owner_of()
-    in_sight = _in_sight(state, civilization_id)
+    in_sight = sight_of(state, civilization_id)
     views = {
         observation.tile: ControlView(
             tile=observation.tile,
