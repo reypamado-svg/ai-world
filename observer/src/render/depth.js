@@ -102,14 +102,15 @@ export function depthSort(items, cell = 128, { centreOnly = false } = {}) {
         const j = bucket[q];
         const lo = i < j ? i : j;
         const hi = i < j ? j : i;
-        const key = lo * n + hi;
-        if (seen.has(key)) continue;
-        seen.add(key);
         const a = base[lo];
         const b = base[hi];
         // Two citizens: centre depth already orders them; skipping the pair
-        // keeps crowds cheap to sort.
-        if (centreOnly || (a.small && b.small) || !overlaps(a, b)) continue;
+        // (before any bookkeeping) keeps crowds cheap to sort.
+        if (centreOnly || (a.small && b.small)) continue;
+        const key = lo * n + hi;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!overlaps(a, b)) continue;
         const rel = relation(a, b);
         if (rel === 1) {
           after[hi].push(lo); // b must be drawn before a

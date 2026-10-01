@@ -50,10 +50,25 @@ export class VillageLayer {
 
   /** R9 counts; in the regional band visible people are drawn as dots (simplified). */
   counts() {
-    const c = this.renderer.counts();
-    const simpleDrawn = this.renderer.drawOrder.filter((o) => o.kind === 'person' && o.simple).length;
-    const full = this.actors > 0.5 ? c.visible - simpleDrawn : 0;
-    return { ...c, visibleFull: full, visibleSimplified: c.visible - full };
+    const r = this.renderer;
+    const c = r.counts();
+    // Visible: outdoor people inside the view, drawn either as full sprites
+    // (settlement band) or simplified (still frames or group dots).
+    let visible = 0;
+    let full = 0;
+    const v = this.lastLocal;
+    const shown = r.root.visible && (this.actors > 0.01 || (1 - this.actors) * this.regional > 0.02);
+    if (v && shown) {
+      const all = r.caravan ? [...r.people, r.caravan.driver] : r.people;
+      for (const o of all) {
+        if (o.hidden) continue;
+        const p = project(o.x, o.y);
+        if (p.x < v.x0 || p.x > v.x1 || p.y < v.y0 || p.y > v.y1) continue;
+        visible += 1;
+        if (this.actors > 0.5 && o.drawn && !o.simple) full += 1;
+      }
+    }
+    return { ...c, visible, visibleFull: full, visibleSimplified: visible - full };
   }
 
   get offset() {
@@ -66,10 +81,12 @@ export class VillageLayer {
     const off = r.offset;
     const focus = unproject((view.x0 + view.x1) / 2 - off.x, (view.y0 + view.y1) / 2 - off.y);
     r.setCrowd(crowdBudget, focus);
-    r.update(t);
     const regional = smooth(0.04, 0.08, zoom);
     const actors = smooth(0.4, 0.6, zoom);
     this.actors = actors;
+    this.regional = regional;
+    r.drawActors = actors > 0.01 && regional > 0.01;
+    r.update(t);
     r.root.visible = regional > 0.01;
     r.root.alpha = regional;
     for (const o of r.objects) {
@@ -79,6 +96,8 @@ export class VillageLayer {
       }
     }
     const local = { x0: view.x0 - off.x, y0: view.y0 - off.y, x1: view.x1 - off.x, y1: view.y1 - off.y };
+    this.lastLocal = local;
+    if (!r.root.visible) r.drawOrder = [];
     const visible = r.root.visible ? r.cullAndSort(local) : [];
     r.decorate({ selected: actors > 0.5 ? selected : null, zoom, showFootprints, visible });
     this._dots(zoom, 1 - actors, regional);

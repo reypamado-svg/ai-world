@@ -269,6 +269,16 @@ export class SceneRenderer {
         continue;
       }
       o.hidden = false;
+      if (this.drawActors === false) {
+        // Not drawn in this band (people are dots): keep the position, skip the sprite.
+        o.x = s.x;
+        o.y = s.y;
+        o.drawn = false;
+        o.sprite.visible = false;
+        o.shadow.visible = false;
+        continue;
+      }
+      o.drawn = true;
       const key = o.simple
         ? this._textureKey(o.person, { ...s, anim: o.person.envoy ? s.anim : 'idle', phase: 0, moving: false })
         : this._textureKey(o.person, s);
@@ -285,6 +295,25 @@ export class SceneRenderer {
       return;
     }
     const dir = s.flip ? 1 : -1; // along x: flip means moving +x
+    if (this.drawActors === false) {
+      for (const o of [c.ox, c.wagon]) {
+        o.hidden = false;
+        o.drawn = false;
+        o.sprite.visible = false;
+        o.shadow.visible = false;
+        o.state = s;
+      }
+      const d = c.driver;
+      d.hidden = false;
+      d.drawn = false;
+      d.sprite.visible = false;
+      d.shadow.visible = false;
+      d.x = s.x - dir * 0.6;
+      d.y = s.y - 1.45;
+      d.state = { ...s, anim: s.moving ? 'walk' : 'idle' };
+      return;
+    }
+    for (const o of [c.ox, c.wagon, c.driver]) o.drawn = true;
     const step = s.moving ? Math.floor((s.phase * 1.35) / 0.35) : 0;
     this._place(c.ox, s.x, s.y, `ox.${s.facing}.${s.moving ? Math.floor(s.phase * 8) % 8 : 0}`, s.flip, [1.1, 0.45]);
     c.ox.state = s;
@@ -326,7 +355,7 @@ export class SceneRenderer {
   cullAndSort(view) {
     const visible = [];
     for (const o of this.objects) {
-      if (o.hidden) continue;
+      if (o.hidden || o.drawn === false) continue;
       const r = o.rect;
       const inView = r.x1 > view.x0 && r.x0 < view.x1 && r.y1 > view.y0 && r.y0 < view.y1;
       o.sprite.visible = inView;
