@@ -11,3 +11,8 @@ __pycache__/
 dist/
 build/
 work/
+
+# Observer (browser) tooling
+observer/node_modules/
+observer/test-results/
+observer/captures/

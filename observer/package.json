@@ -1,0 +1,14 @@
+{
+  "name": "ai-world-observer",
+  "private": true,
+  "type": "module",
+  "description": "Browser observer for AI World. No build step: the browser loads src/ as ES modules.",
+  "scripts": {
+    "serve": "node tests/serve.mjs 8765",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1",
+    "pixi.js": "8.21.0"
+  }
+}
