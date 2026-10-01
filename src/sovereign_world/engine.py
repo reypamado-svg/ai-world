@@ -48,6 +48,7 @@ from sovereign_world.commands import (
     validate_envelope,
     war_party_carry,
 )
+from sovereign_world.culture import ASSIMILATION_INTERVAL, ancestry, assimilate, culture
 from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
@@ -622,6 +623,11 @@ def _change_allegiance(
             update={
                 "civilization_id": destination_id,
                 "native_language": native(person),
+                # A newcomer keeps their culture until they assimilate; one coming home
+                # is simply home again.
+                "culture": None if culture(person) == destination_id else culture(person),
+                "assimilation": 0,
+                "ancestry": ancestry(person),
                 "skills": {
                     skill: value - held.get(skill, 0) for skill, value in person.skills.items()
                 },
@@ -4046,6 +4052,28 @@ def _keep_archive(state: WorldState, civilization_id: EntityId, away: set[Entity
     )
 
 
+def _assimilate(state: WorldState) -> list[DomainEvent]:
+    """A month among their new people brings each newcomer closer to them."""
+    events: list[DomainEvent] = []
+    for civilization_id in sorted(state.civilizations):
+        people = state.civilizations[civilization_id].population.people
+        for person_id in sorted(people):
+            person = people[person_id]
+            origin = person.culture
+            if assimilate(person):
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.MOVEMENT,
+                        "person_assimilated",
+                        str(civilization_id),
+                        str(person_id),
+                        culture=str(origin),
+                    )
+                )
+    return events
+
+
 def _study_languages(state: WorldState) -> None:
     """The staff of an open diplomatic service study the tongue of every civilization known."""
     away = _away(state)
@@ -5723,6 +5751,8 @@ def advance_day(
             for person in civilization.population.people.values()
         )
         _study_languages(candidate)
+    if candidate.day % ASSIMILATION_INTERVAL == 0:
+        events.extend(_assimilate(candidate))
 
     candidate.day += 1
     validate_world(candidate)

@@ -131,3 +131,18 @@ S1 languages, then S2 espionage, which needs S1 for its capture chances and esti
   school.
 - Not yet: ordinary construction projects (shelters and granaries) get no workshop bonus,
   because their labour is counted in the shared work step.
+
+## S4 as built
+
+- `culture.py`: each person lives by a `culture`, which is their civilization's until they
+  move to another. Their `ancestry`, the cultures their forebears came from, is kept for
+  life.
+- A newcomer keeps their culture and starts at 0 `assimilation`. Every 30 days they gain 3
+  points, or 6 if they speak their new civilization's language. At 100 they are its people:
+  their culture becomes its culture. That takes about three years, or a year and a half in
+  the language. Someone who returns to the civilization of their culture is simply home.
+- Children take the culture of the civilization they are born into, the joined ancestry of
+  both parents, and, when their mother is a newcomer, her language at 50 fluency.
+- Council reports show how blended the society is: `cultures` and `ancestries` (counts of
+  living free people) and how many are still `assimilating`.
+- Assimilation is a record only: nobody is held back for being unassimilated.
