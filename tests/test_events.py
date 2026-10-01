@@ -26,12 +26,7 @@ def test_event_batch_assigns_documented_stable_order() -> None:
 
 
 def test_event_json_is_canonical_for_payload_insertion_order() -> None:
-    first = _event(EventPhase.WORK, "person:1").model_copy(
-        update={"payload": {"b": 2, "a": 1}}
-    )
-    second = _event(EventPhase.WORK, "person:1").model_copy(
-        update={"payload": {"a": 1, "b": 2}}
-    )
+    first = _event(EventPhase.WORK, "person:1").model_copy(update={"payload": {"b": 2, "a": 1}})
+    second = _event(EventPhase.WORK, "person:1").model_copy(update={"payload": {"a": 1, "b": 2}})
 
     assert first.canonical_json() == second.canonical_json()
-

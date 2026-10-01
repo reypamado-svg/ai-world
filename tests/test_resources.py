@@ -44,4 +44,3 @@ def test_overflow_can_be_collected_as_explicit_waste() -> None:
 
     assert result.total_units == 5
     assert waste == {Resource.WATER: 2}
-

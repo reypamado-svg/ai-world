@@ -68,9 +68,7 @@ def knows(records: tuple[CapabilityRecord, ...], capability: CapabilityId) -> bo
     return any(record.capability is capability for record in records)
 
 
-def research_error(
-    topic: CapabilityId, records: tuple[CapabilityRecord, ...]
-) -> str | None:
+def research_error(topic: CapabilityId, records: tuple[CapabilityRecord, ...]) -> str | None:
     """Why this civilization cannot research the topic now, if it cannot."""
     if topic not in TOPICS:
         return "not a research topic"

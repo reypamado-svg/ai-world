@@ -94,6 +94,24 @@ from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView, grades_of
 from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, validate_world
+from sovereign_world.stores import (
+    STOREHOUSE_GRADES,
+    Storehouse,
+    StorehouseGrade,
+    StorehouseJob,
+    enlarge,
+    has,
+    holdings,
+    put,
+    set_store,
+    settlement_at,
+    step_materials,
+    store,
+    store_at,
+    store_id_at,
+    supplying,
+    take,
+)
 from sovereign_world.territory import (
     SETTLEMENT_SPACING,
     Claim,
@@ -175,12 +193,13 @@ def _end_treaty(
     return ended
 
 
-def _store_provisions(state: WorldState, civilization_id: EntityId, units: int) -> int:
-    """Put a party's leftover food into a storehouse; return what fitted."""
+def _store_provisions(
+    state: WorldState, civilization_id: EntityId, tile: HexCoord, units: int
+) -> int:
+    """Put a party's leftover food into the store it reached; return what fitted."""
     if not units:
         return 0
-    civilization = state.civilizations[civilization_id]
-    civilization.inventory, waste = civilization.inventory.store_with_waste({Resource.FOOD: units})
+    waste = put(state.civilizations[civilization_id], tile, {Resource.FOOD: units})
     return units - waste.get(Resource.FOOD, 0)
 
 
@@ -224,7 +243,21 @@ def _settle_arrival(state: WorldState, journey: Journey, provisions: int) -> lis
         if person_id in civilization.population.people
         and civilization.population.people[person_id].alive
     )
-    stored = _store_provisions(state, civilization_id, provisions)
+    if journey.kind is JourneyKind.SETTLEMENT:
+        settlement = Settlement(
+            settlement_id=EntityId(
+                f"settlement:{civilization_id.rsplit(':', 1)[-1]}-"
+                f"{len(civilization.settlements) + 1:04d}"
+            ),
+            civilization_id=civilization_id,
+            tile=destination,
+            founded_day=state.day,
+        )
+        civilization.settlements = tuple(
+            sorted((*civilization.settlements, settlement), key=lambda item: item.settlement_id)
+        )
+    # Settlers' leftover food is their new settlement's first store.
+    stored = _store_provisions(state, civilization_id, destination, provisions)
     _add_notice(
         state,
         civilization_id,
@@ -239,18 +272,6 @@ def _settle_arrival(state: WorldState, journey: Journey, provisions: int) -> lis
     )
     location = {"q": destination.q, "r": destination.r}
     if journey.kind is JourneyKind.SETTLEMENT:
-        settlement = Settlement(
-            settlement_id=EntityId(
-                f"settlement:{civilization_id.rsplit(':', 1)[-1]}-"
-                f"{len(civilization.settlements) + 1:04d}"
-            ),
-            civilization_id=civilization_id,
-            tile=destination,
-            founded_day=state.day,
-        )
-        civilization.settlements = tuple(
-            sorted((*civilization.settlements, settlement), key=lambda item: item.settlement_id)
-        )
         return [
             _event(
                 state,
@@ -318,11 +339,13 @@ DISPATCH_EVENT = {
     JourneyKind.ROADWORK: "road_crew_dispatched",
     JourneyKind.DEPOSIT: "toll_deposit_dispatched",
     JourneyKind.CAMPAIGN: "war_party_dispatched",
+    JourneyKind.HAUL: "haul_dispatched",
 }
 RETURNED_EVENT = {
     JourneyKind.ROADWORK: "road_crew_returned",
     JourneyKind.DEPOSIT: "toll_couriers_returned",
     JourneyKind.CAMPAIGN: "war_party_returned",
+    JourneyKind.HAUL: "haulers_returned",
 }
 PLUNDER_ORDER = (
     Resource.FOOD,
@@ -376,10 +399,7 @@ def _dispatch_journey(
     civilization = state.civilizations[civilization_id]
     cargo = dict(sorted(command.cargo.items()))
     provisions, taken = journey_supplies(command, state, civilization_id)
-    if any(
-        civilization.inventory.quantities.get(resource, 0) < quantity
-        for resource, quantity in taken.items()
-    ):
+    if not has(civilization, command.route[0], taken):
         unfunded = {
             JourneyKind.SHIPMENT: NoticeKind.SHIPMENT_UNFUNDED,
             JourneyKind.MIGRATION: NoticeKind.MIGRATION_UNFUNDED,
@@ -406,9 +426,7 @@ def _dispatch_journey(
                 str(command.journey_id),
             )
         ]
-    civilization.inventory = civilization.inventory.apply_delta(
-        InventoryDelta(changes={resource: -quantity for resource, quantity in taken.items()})
-    )
+    take(civilization, command.route[0], taken)
     journey = Journey(
         journey_id=command.journey_id,
         kind=kind,
@@ -418,7 +436,7 @@ def _dispatch_journey(
         traveller_ids=tuple(sorted(command.traveller_ids)),
         route=command.route,
         cargo=cargo,
-        carrying_cargo=kind is JourneyKind.SHIPMENT,
+        carrying_cargo=kind in {JourneyKind.SHIPMENT, JourneyKind.HAUL},
         provisions_packed=provisions,
         provisions=provisions,
         departed_day=state.day,
@@ -669,6 +687,9 @@ def _advance_journeys(
         if journey.kind is JourneyKind.DEPOSIT:
             events.extend(_deposit_arrival(state, journey))
             continue
+        if journey.kind is JourneyKind.HAUL:
+            events.extend(_haul_arrival(state, journey))
+            continue
         if journey.kind in INTERNAL_KINDS:
             events.extend(
                 _settle_arrival(state, journey, result.handed_over.get(journey.journey_id, 0))
@@ -687,7 +708,7 @@ def _advance_journeys(
         )
         recipient = state.civilizations[recipient_id]
         if journey.kind is JourneyKind.SHIPMENT:
-            recipient.inventory, waste = recipient.inventory.store_with_waste(journey.cargo)
+            waste = put(recipient, journey.route[-1], journey.cargo)
             accepted = {
                 resource: quantity - waste.get(resource, 0)
                 for resource, quantity in journey.cargo.items()
@@ -718,7 +739,7 @@ def _advance_journeys(
             continue
         arrivals = _transfer_migrants(state, journey)
         provisions = _store_provisions(
-            state, recipient_id, result.handed_over.get(journey.journey_id, 0)
+            state, recipient_id, journey.route[-1], result.handed_over.get(journey.journey_id, 0)
         )
         _add_notice(
             state,
@@ -813,15 +834,14 @@ def _advance_journeys(
             restored = dict(brought_home)
             brought_home = {}
         if brought_home:
-            sender = state.civilizations[sender_id]
-            sender.inventory, waste = sender.inventory.store_with_waste(brought_home)
+            waste = put(state.civilizations[sender_id], journey.route[0], brought_home)
             restored = {
                 resource: quantity - waste.get(resource, 0)
                 for resource, quantity in brought_home.items()
                 if quantity - waste.get(resource, 0) > 0
             }
         provisions = _store_provisions(
-            state, sender_id, result.handed_over.get(journey.journey_id, 0)
+            state, sender_id, journey.route[0], result.handed_over.get(journey.journey_id, 0)
         )
         if provisions:
             restored[Resource.FOOD] = restored.get(Resource.FOOD, 0) + provisions
@@ -967,11 +987,10 @@ def _replace_post(
 def _fill_chest(
     state: WorldState, owner: EntityId, tile: HexCoord, goods: Mapping[Resource, int]
 ) -> None:
-    """Put takings in a post's chest, or straight into the store at the capital's gate."""
+    """Put takings in a post's chest, or straight into the store of a settlement's gate."""
     post = _post_at(state, owner, tile)
     if post is None or post.at_storehouse:
-        civilization = state.civilizations[owner]
-        civilization.inventory, _ = civilization.inventory.store_with_waste(dict(goods))
+        put(state.civilizations[owner], tile, goods)
         return
     chest = dict(post.chest)
     for resource, quantity in goods.items():
@@ -1083,8 +1102,7 @@ def _settle_toll(state: WorldState, encounter: TollEncounter) -> list[DomainEven
 def _deposit_arrival(state: WorldState, journey: Journey) -> list[DomainEvent]:
     """Couriers reach the storehouse: the chest's contents are stored only now."""
     owner = journey.sender_civilization_id
-    civilization = state.civilizations[owner]
-    civilization.inventory, waste = civilization.inventory.store_with_waste(journey.cargo)
+    waste = put(state.civilizations[owner], journey.route[-1], journey.cargo)
     stored = {
         resource: quantity - waste.get(resource, 0)
         for resource, quantity in journey.cargo.items()
@@ -1098,6 +1116,31 @@ def _deposit_arrival(state: WorldState, journey: Journey) -> list[DomainEvent]:
             state,
             EventPhase.MOVEMENT,
             "toll_deposited",
+            str(owner),
+            str(journey.journey_id),
+            units=sum(stored.values()),
+            wasted=sum(waste.values()),
+        )
+    ]
+
+
+def _haul_arrival(state: WorldState, journey: Journey) -> list[DomainEvent]:
+    """Carriers reach the other settlement: the goods go into its store, and they turn home."""
+    owner = journey.sender_civilization_id
+    waste = put(state.civilizations[owner], journey.route[-1], journey.cargo)
+    stored = {
+        resource: quantity - waste.get(resource, 0)
+        for resource, quantity in journey.cargo.items()
+        if quantity - waste.get(resource, 0) > 0
+    }
+    _add_notice(
+        state, owner, notice(state.day, NoticeKind.GOODS_HAULED, journey, owner, cargo=stored)
+    )
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "goods_hauled",
             str(owner),
             str(journey.journey_id),
             units=sum(stored.values()),
@@ -1167,7 +1210,8 @@ def _send_deposit(
         else 0
     )
     room = CARGO_UNITS_PER_CARRIER * len(couriers) - provisions
-    food = civilization.inventory.quantities.get(Resource.FOOD, 0)
+    # Couriers are provisioned by the settlement that supplies the post.
+    food = store_at(civilization, post.tile).quantities.get(Resource.FOOD, 0)
     post = post.model_copy(update={"last_deposit_day": state.day})
     if not couriers or room <= 0 or food < provisions:
         cause = "no spare collector" if not couriers else "the couriers cannot be provisioned"
@@ -1202,9 +1246,7 @@ def _send_deposit(
             carried[resource] = taken
             chest[resource] -= taken
             room -= taken
-    civilization.inventory = civilization.inventory.apply_delta(
-        InventoryDelta(changes={Resource.FOOD: -provisions})
-    )
+    take(civilization, post.tile, {Resource.FOOD: provisions})
     journey = Journey(
         journey_id=journey_id,
         kind=JourneyKind.DEPOSIT,
@@ -1598,7 +1640,7 @@ def _fight(
         for person_id in attacker_ids
     ]
     enemy_people = state.civilizations[enemy].population.people
-    store = state.civilizations[enemy].inventory.quantities
+    supplies = store_at(state.civilizations[enemy], tile).quantities
     defending_parties = [
         journey
         for journey in state.journeys
@@ -1609,7 +1651,7 @@ def _fight(
     ]
     # Home defenders arm from their store; defending war parties use what they carry.
     formations = knows(state.civilizations[enemy].capabilities, CapabilityId.SPEAR_FORMATIONS)
-    defender_kits = kit_assignment(home_side, personal_kits(dict(store)), formations=formations)
+    defender_kits = kit_assignment(home_side, personal_kits(dict(supplies)), formations=formations)
     for journey in defending_parties:
         defender_kits.update(
             kit_assignment(
@@ -1708,8 +1750,7 @@ def _fight(
         if abandoned:
             # A routed party leaves its engines behind; defenders at home take them in.
             if home_side:
-                victor = state.civilizations[enemy]
-                victor.inventory, _ = victor.inventory.store_with_waste(abandoned)
+                put(state.civilizations[enemy], tile, abandoned)
             events.append(
                 _event(
                     state,
@@ -1733,8 +1774,7 @@ def _room(state: WorldState, party: Journey) -> int:
     living = sum(people[person_id].alive for person_id in party.traveller_ids)
     load = cargo_load(party.cargo) + party.provisions + sum(party.plunder.values())
     return max(
-        party.carry_per_person * min(living, len(party.traveller_ids))
-        - load,
+        party.carry_per_person * min(living, len(party.traveller_ids)) - load,
         0,
     )
 
@@ -1764,17 +1804,15 @@ def _plunder(
             tile,
             enemy,
         )
+    # Raiders empty the store of the settlement they beat, never the whole civilization's.
     from_store: dict[Resource, int] = {}
     for resource in PLUNDER_ORDER:
-        grab = min(victim.inventory.quantities.get(resource, 0), room)
+        grab = min(store_at(victim, tile).quantities.get(resource, 0), room)
         if grab:
             from_store[resource] = grab
             taken[resource] = taken.get(resource, 0) + grab
             room -= grab
-    if from_store:
-        victim.inventory = victim.inventory.apply_delta(
-            InventoryDelta(changes={resource: -grab for resource, grab in from_store.items()})
-        )
+    take(victim, tile, from_store)
     plunder = dict(party.plunder)
     for resource, grab in taken.items():
         plunder[resource] = plunder.get(resource, 0) + grab
@@ -1924,27 +1962,22 @@ def _war_party_home(state: WorldState, party: Journey) -> dict[Resource, int]:
     return goods
 
 
-def _start_craft(
-    state: WorldState, civilization_id: EntityId, command: DirectOrder
-) -> DomainEvent:
+def _start_craft(state: WorldState, civilization_id: EntityId, command: DirectOrder) -> DomainEvent:
     """Take the materials now; the workers then make the items day by day."""
     assert command.craft_item is not None
     civilization = state.civilizations[civilization_id]
     materials = craft_materials(command.craft_item, command.craft_quantity)
     job_id = EntityId(f"craft:{civilization_id}:{state.day}:{command.command_id}")
-    if any(
-        civilization.inventory.quantities.get(resource, 0) < quantity
-        for resource, quantity in materials.items()
-    ):
+    workshop = civilization.population.people[command.worker_ids[0]].location
+    if not has(civilization, workshop, materials):
         return _event(state, EventPhase.WORK, "craft_unfunded", str(civilization_id), str(job_id))
-    civilization.inventory = civilization.inventory.apply_delta(
-        InventoryDelta(changes={resource: -quantity for resource, quantity in materials.items()})
-    )
+    take(civilization, workshop, materials)
     job = CraftJob(
         job_id=job_id,
         item=command.craft_item,
         quantity=command.craft_quantity,
         worker_ids=tuple(sorted(command.worker_ids)),
+        workshop=workshop,
         started_day=state.day,
         person_days_needed=RECIPES[command.craft_item].person_days * command.craft_quantity,
     )
@@ -1958,6 +1991,140 @@ def _start_craft(
         item=job.item.value,
         quantity=job.quantity,
     )
+
+
+def _raise_storehouse(
+    state: WorldState,
+    civilization_id: EntityId,
+    storehouse_id: EntityId,
+    settlement_id: EntityId,
+    old: StorehouseGrade | None,
+    new: StorehouseGrade,
+) -> DomainEvent:
+    """Record a storehouse's new grade and add the room it gained to its settlement's store."""
+    civilization = state.civilizations[civilization_id]
+    site = next(item for item in civilization.settlements if item.settlement_id == settlement_id)
+    gained = STOREHOUSE_GRADES[new].capacity - (
+        0 if old is None else STOREHOUSE_GRADES[old].capacity
+    )
+    capacity = enlarge(civilization, site.tile, gained)
+    built = Storehouse(
+        storehouse_id=storehouse_id,
+        settlement_id=settlement_id,
+        grade=new,
+        built_day=state.day,
+    )
+    civilization.storehouses = tuple(
+        sorted(
+            (
+                *(item for item in civilization.storehouses if item.storehouse_id != storehouse_id),
+                built,
+            ),
+            key=lambda item: item.storehouse_id,
+        )
+    )
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "storehouse_built" if old is None else "storehouse_upgraded",
+        str(civilization_id),
+        str(storehouse_id),
+        grade=new.value,
+        settlement=str(settlement_id),
+        capacity=capacity,
+    )
+
+
+def _start_storehouse(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> DomainEvent:
+    """Take every step's materials now; the builders then raise the grades one by one."""
+    assert command.storehouse_grade is not None
+    civilization = state.civilizations[civilization_id]
+    tile = civilization.population.people[command.worker_ids[0]].location
+    site = settlement_at(civilization, tile)
+    assert site is not None
+    current = next(
+        (
+            item.grade
+            for item in civilization.storehouses
+            if item.storehouse_id == command.storehouse_id
+        ),
+        None,
+    )
+    job_id = EntityId(f"storehouse-job:{civilization_id}:{state.day}:{command.command_id}")
+    materials = step_materials(current, command.storehouse_grade)
+    if not has(civilization, tile, materials):
+        return _event(
+            state, EventPhase.PROJECT, "storehouse_unfunded", str(civilization_id), str(job_id)
+        )
+    take(civilization, tile, materials)
+    storehouse_id = command.storehouse_id or EntityId(
+        f"storehouse:{site.settlement_id}:{state.day:06d}:{command.command_id}"
+    )
+    job = StorehouseJob(
+        job_id=job_id,
+        storehouse_id=storehouse_id,
+        settlement_id=site.settlement_id,
+        tile=tile,
+        worker_ids=tuple(sorted(command.worker_ids)),
+        start_grade=current,
+        target=command.storehouse_grade,
+        started_day=state.day,
+    )
+    civilization.storehouse_jobs = (*civilization.storehouse_jobs, job)
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "storehouse_work_started",
+        str(civilization_id),
+        str(storehouse_id),
+        target=job.target.value,
+    )
+
+
+def _advance_storehouses(state: WorldState) -> list[DomainEvent]:
+    """Builders at the site put in a day each; every finished grade adds its room at once."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        people = civilization.population.people
+        kept: list[StorehouseJob] = []
+        for job in civilization.storehouse_jobs:
+            living = [person_id for person_id in job.worker_ids if people[person_id].alive]
+            present = sum(
+                people[person_id].location == job.tile and person_id not in away
+                for person_id in living
+            )
+            before = job.built()
+            job = job.model_copy(update={"person_days_done": job.person_days_done + present})
+            after = job.built()
+            if after is not None and after != before:
+                events.append(
+                    _raise_storehouse(
+                        state, civilization_id, job.storehouse_id, job.settlement_id, before, after
+                    )
+                )
+            if after is job.target:
+                continue
+            if not living:
+                # With every builder dead, the unused materials go back into the store.
+                put(civilization, job.tile, step_materials(after, job.target))
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.PROJECT,
+                        "storehouse_work_stopped",
+                        str(civilization_id),
+                        str(job.storehouse_id),
+                        grade=after.value if after is not None else "none",
+                    )
+                )
+                continue
+            kept.append(job)
+        civilization.storehouse_jobs = tuple(kept)
+    return events
 
 
 def _advance_crafting(state: WorldState) -> list[DomainEvent]:
@@ -1980,9 +2147,7 @@ def _advance_crafting(state: WorldState) -> list[DomainEvent]:
             if not job.done:
                 kept.append(job)
                 continue
-            civilization.inventory, waste = civilization.inventory.store_with_waste(
-                {job.item: job.quantity}
-            )
+            waste = put(civilization, job.workshop, {job.item: job.quantity})
             events.append(
                 _event(
                     state,
@@ -2330,18 +2495,28 @@ def _run_councils(
                 civilization = state.civilizations[civilization_id]
                 if command.project_id not in civilization.projects:
                     is_storage = command.project_kind is ProjectKind.STORAGE
-                    resource = Resource.STONE if is_storage else Resource.TIMBER
-                    quantity = 30 if is_storage else 40
-                    if civilization.inventory.quantities.get(resource, 0) >= quantity:
-                        civilization.inventory = civilization.inventory.apply_delta(
-                            InventoryDelta(changes={resource: -quantity})
+                    granary = STOREHOUSE_GRADES[StorehouseGrade.GRANARY]
+                    materials = dict(granary.materials) if is_storage else {Resource.TIMBER: 40}
+                    # A storehouse stands in the settlement of the people who build it.
+                    site = (
+                        supplying(
+                            civilization,
+                            civilization.population.people[command.worker_ids[0]].location,
                         )
+                        if is_storage and command.worker_ids
+                        else None
+                    )
+                    location = civilization.start_center if site is None else site.tile
+                    if has(civilization, location, materials):
+                        take(civilization, location, materials)
                         civilization.projects[command.project_id] = ConstructionProject(
                             project_id=command.project_id,
-                            location=civilization.start_center,
-                            required_materials={resource: quantity},
-                            delivered_materials={resource: quantity},
-                            required_labor_minutes=480 * len(command.worker_ids),
+                            location=location,
+                            required_materials=materials,
+                            delivered_materials=materials,
+                            required_labor_minutes=480
+                            * (granary.person_days if is_storage else len(command.worker_ids)),
+                            adds_capacity=granary.capacity if is_storage else 0,
                         )
                         civilization.work_orders += (
                             WorkOrder(
@@ -2368,6 +2543,12 @@ def _run_councils(
                 and command.craft_item is not None
             ):
                 events.append(_start_craft(state, civilization_id, command))
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.BUILD_STOREHOUSE
+                and command.storehouse_grade is not None
+            ):
+                events.append(_start_storehouse(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.RESEARCH
@@ -2899,6 +3080,7 @@ def advance_day(
     events.extend(_resolve_war(candidate, rng))
     events.extend(_advance_drills(candidate))
     events.extend(_advance_crafting(candidate))
+    events.extend(_advance_storehouses(candidate))
     events.extend(_advance_research(candidate))
     events.extend(_advance_tolls(candidate))
 
@@ -2915,84 +3097,100 @@ def advance_day(
             person_id for garrison in civilization.garrisons for person_id in garrison.member_ids
         }
         # People at drill or in the armoury eat but neither farm nor do other work.
-        drilling = {
-            person_id for drill in civilization.drills for person_id in drill.person_ids
-        } | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids} | {
-            person_id
-            for assignment in civilization.research
-            for person_id in assignment.scholar_ids
-        }
+        drilling = (
+            {person_id for drill in civilization.drills for person_id in drill.person_ids}
+            | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids}
+            | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
+            | {
+                person_id
+                for assignment in civilization.research
+                for person_id in assignment.scholar_ids
+            }
+        )
         home_living = tuple(
             person_id for person_id in civilization.population.living_ids if person_id not in away
         )
-        living_count = len(home_living)
         decrees = candidate.active_decrees.get(civilization_id, {})
         reserve_days = decrees.get("food_reserve_target", 0)
         labor_priority = decrees.get("labor_priority", 0)
-        current_food = civilization.inventory.quantities.get(Resource.FOOD, 0)
-        target_food = living_count * reserve_days
-        if living_count and labor_priority > 0 and current_food < target_food:
-            capacity = civilization.inventory.capacity - civilization.inventory.total_units
-            farm_capacity = sum(
-                (candidate.world_map.tile(coord).soil // 200)
-                + (2 if candidate.world_map.tile(coord).has_water else 0)
-                for coord in civilization.known_tiles
-            )
-            # People at drill eat but do not work the fields.
-            workers = sum(person_id not in drilling for person_id in home_living)
-            produced = min(workers, farm_capacity, target_food - current_food, capacity)
-            if produced:
-                civilization.inventory = civilization.inventory.apply_delta(
-                    InventoryDelta(changes={Resource.FOOD: produced})
-                )
-                events.append(
-                    _event(
-                        candidate,
-                        EventPhase.WORK,
-                        "food_produced",
-                        str(civilization_id),
-                        units=produced,
-                    )
-                )
-        available_food = civilization.inventory.quantities.get(Resource.FOOD, 0)
-        consumed = min(living_count, available_food)
-        if consumed:
-            civilization.inventory = civilization.inventory.apply_delta(
-                InventoryDelta(changes={Resource.FOOD: -consumed})
-            )
-        events.append(
-            _event(
-                candidate,
-                EventPhase.CONSUMPTION,
-                "food_consumed",
-                str(civilization_id),
-                units=consumed,
-            )
-        )
-        # When food runs short, the hungriest eat first, so shortage is shared.
         people = civilization.population.people
-        by_need = sorted(
-            home_living,
-            key=lambda person_id: (
-                -people[person_id].nutrition_debt,
-                people[person_id].health_bp,
-                person_id,
-            ),
-        )
-        fed_today = set(by_need[:consumed]) | (fed_on_the_road & set(people))
-        if consumed < living_count:
-            shortage = living_count - consumed
-            for person_id in by_need[consumed:]:
-                go_hungry(people[person_id])
+        # Everyone eats and farms at the settlement that supplies where they stand.
+        residents: dict[EntityId, list[EntityId]] = {}
+        for person_id in home_living:
+            store_id = store_id_at(civilization, people[person_id].location)
+            assert store_id is not None
+            residents.setdefault(store_id, []).append(person_id)
+        fields: dict[EntityId, list[HexCoord]] = {}
+        for coord in civilization.known_tiles:
+            store_id = store_id_at(civilization, coord)
+            assert store_id is not None
+            fields.setdefault(store_id, []).append(coord)
+        fed_today = fed_on_the_road & set(people)
+        for store_id in sorted(residents):
+            local = residents[store_id]
+            living_count = len(local)
+            larder = store(civilization, store_id)
+            current_food = larder.quantities.get(Resource.FOOD, 0)
+            target_food = living_count * reserve_days
+            if labor_priority > 0 and current_food < target_food:
+                capacity = larder.capacity - larder.total_units
+                farm_capacity = sum(
+                    (candidate.world_map.tile(coord).soil // 200)
+                    + (2 if candidate.world_map.tile(coord).has_water else 0)
+                    for coord in fields.get(store_id, ())
+                )
+                # People at drill eat but do not work the fields.
+                workers = sum(person_id not in drilling for person_id in local)
+                produced = min(workers, farm_capacity, target_food - current_food, capacity)
+                if produced:
+                    larder = larder.apply_delta(InventoryDelta(changes={Resource.FOOD: produced}))
+                    events.append(
+                        _event(
+                            candidate,
+                            EventPhase.WORK,
+                            "food_produced",
+                            str(civilization_id),
+                            str(store_id),
+                            units=produced,
+                        )
+                    )
+            consumed = min(living_count, larder.quantities.get(Resource.FOOD, 0))
+            if consumed:
+                larder = larder.apply_delta(InventoryDelta(changes={Resource.FOOD: -consumed}))
+            set_store(civilization, store_id, larder)
             events.append(
                 _event(
                     candidate,
                     EventPhase.CONSUMPTION,
-                    "food_shortage",
+                    "food_consumed",
                     str(civilization_id),
-                    people=shortage,
+                    str(store_id),
+                    units=consumed,
                 )
             )
+            # When food runs short, the hungriest eat first, so shortage is shared.
+            by_need = sorted(
+                local,
+                key=lambda person_id: (
+                    -people[person_id].nutrition_debt,
+                    people[person_id].health_bp,
+                    person_id,
+                ),
+            )
+            fed_today |= set(by_need[:consumed])
+            if consumed < living_count:
+                for person_id in by_need[consumed:]:
+                    go_hungry(people[person_id])
+                events.append(
+                    _event(
+                        candidate,
+                        EventPhase.CONSUMPTION,
+                        "food_shortage",
+                        str(civilization_id),
+                        str(store_id),
+                        people=living_count - consumed,
+                    )
+                )
 
         work_result = execute_work_day(
             civilization.work_orders,
@@ -3049,7 +3247,7 @@ def advance_day(
             1,
             sum(person_id not in away for person_id in civilization.population.living_ids),
         )
-        food_days = civilization.inventory.quantities.get(Resource.FOOD, 0) // current_living
+        food_days = holdings(civilization).get(Resource.FOOD, 0) // current_living
         growth_policy = candidate.active_decrees.get(civilization_id, {}).get(
             "population_growth_policy",
             0,
@@ -3126,6 +3324,21 @@ def advance_day(
                     str(project_id),
                 )
             )
+            project = civilization.projects[project_id]
+            if project.adds_capacity:
+                # A storage project builds one new granary where it stands.
+                site = supplying(civilization, project.location)
+                assert site is not None
+                events.append(
+                    _raise_storehouse(
+                        candidate,
+                        civilization_id,
+                        EntityId(f"storehouse:{site.settlement_id}:{project_id}"),
+                        site.settlement_id,
+                        None,
+                        StorehouseGrade.GRANARY,
+                    )
+                )
         # Recovery follows the death roll, so the day food returns is still a dangerous one.
         for person_id in sorted(fed_today):
             person = civilization.population.people.get(person_id)

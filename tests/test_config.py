@@ -48,4 +48,3 @@ def test_manifest_hash_covers_engine_version() -> None:
     changed = original.model_copy(update={"engine_version": "0.2.0"})
 
     assert changed.content_hash() != original.content_hash()
-

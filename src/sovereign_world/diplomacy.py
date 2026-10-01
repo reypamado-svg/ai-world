@@ -80,9 +80,7 @@ class ActiveTreaty(BaseModel):
         if self.activated_day < self.offered_day:
             raise ValueError("treaty cannot activate before its offer")
         ending = (self.ended_day, self.end_kind, self.ended_by)
-        if any(value is None for value in ending) and any(
-            value is not None for value in ending
-        ):
+        if any(value is None for value in ending) and any(value is not None for value in ending):
             raise ValueError("an ended treaty records its day, kind, and party")
         if self.ended_day is not None and self.ended_day < self.activated_day:
             raise ValueError("treaty cannot end before it activates")
@@ -164,9 +162,7 @@ class DiplomacyDayResult:
 
 
 def _delivered_words(message: DiplomaticMessage, rng: StableRng, day: int) -> str:
-    roll = int(
-        rng.stream(f"day:{day}:diplomacy:delivery:{message.message_id}").integers(0, 10_000)
-    )
+    roll = int(rng.stream(f"day:{day}:diplomacy:delivery:{message.message_id}").integers(0, 10_000))
     if roll < 1_500:
         return f"[distorted by ambassador] {message.source_text}"
     return message.source_text
@@ -187,8 +183,7 @@ def advance_diplomacy_day(
     """
     people = {
         civilization_id: {
-            person_id: person.model_copy(deep=True)
-            for person_id, person in population.items()
+            person_id: person.model_copy(deep=True) for person_id, person in population.items()
         }
         for civilization_id, population in people_by_civilization.items()
     }

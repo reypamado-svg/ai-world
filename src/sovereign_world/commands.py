@@ -56,6 +56,20 @@ from sovereign_world.roads import (
     materials_for,
 )
 from sovereign_world.state import CivilizationState, WorldState
+from sovereign_world.stores import (
+    STOREHOUSE_GRADES,
+    Storehouse,
+    StorehouseGrade,
+    StorehouseJob,
+    all_stores,
+    holdings,
+    rank,
+    settlement_at,
+    step_materials,
+    steps,
+    store_at,
+    store_id_at,
+)
 from sovereign_world.territory import SETTLEMENT_SPACING, Garrison, Settlement, visible_tiles
 from sovereign_world.tolls import (
     DEFAULT_DEPOSIT_DAYS,
@@ -106,6 +120,8 @@ class DirectOrderKind(StrEnum):
     DRILL = "drill"
     CRAFT_EQUIPMENT = "craft_equipment"
     RESEARCH = "research"
+    HAUL_GOODS = "haul_goods"
+    BUILD_STOREHOUSE = "build_storehouse"
 
 
 MESSAGE_ORDERS = frozenset(
@@ -126,6 +142,7 @@ JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.RELOCATE_GROUP: JourneyKind.RELOCATION,
     DirectOrderKind.BUILD_ROAD: JourneyKind.ROADWORK,
     DirectOrderKind.SEND_WAR_PARTY: JourneyKind.CAMPAIGN,
+    DirectOrderKind.HAUL_GOODS: JourneyKind.HAUL,
 }
 REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
     JourneyKind.SHIPMENT: TreatyKind.TRADE,
@@ -195,6 +212,10 @@ class DirectOrder(BaseModel):
     war_objective: WarObjective | None = None
     drill_days: int = Field(default=30, ge=1, le=180)
     craft_item: Resource | None = None
+    storehouse_id: EntityId | None = None
+    """The storehouse to upgrade; none builds a new one."""
+    storehouse_grade: StorehouseGrade | None = None
+    """The grade the storehouse is raised to, one step at a time."""
     craft_quantity: int = Field(default=1, ge=1, le=MAX_CRAFT_QUANTITY)
     research_topic: CapabilityId | None = None
     research_days: int = Field(default=30, ge=1, le=MAX_RESEARCH_DAYS)
@@ -242,6 +263,15 @@ class CouncilReport(BaseModel):
     known_tiles: tuple[HexCoord, ...]
     known_terrain: tuple[tuple[HexCoord, Terrain], ...] = ()
     inventory: dict[Resource, int]
+    """The capital's store."""
+    stores: dict[EntityId, dict[Resource, int]] = Field(default_factory=dict)
+    """Every settlement's store, the capital's included."""
+    store_capacity: dict[EntityId, int] = Field(default_factory=dict)
+    """How much each settlement's store can hold; storehouses raise it."""
+    storehouses: tuple[Storehouse, ...] = ()
+    storehouse_jobs: tuple[StorehouseJob, ...] = ()
+    holdings: dict[Resource, int] = Field(default_factory=dict)
+    """All the goods in all the civilization's stores."""
     project_ids: tuple[EntityId, ...]
     active_decrees: dict[str, int]
     contacts: tuple[Contact, ...] = ()
@@ -270,9 +300,7 @@ def build_council_report(
 ) -> CouncilReport:
     civilization = state.civilizations[civilization_id]
     latest_migration: dict[EntityId, Journey] = {}
-    for journey in sorted(
-        state.journeys, key=lambda item: (item.departed_day, item.journey_id)
-    ):
+    for journey in sorted(state.journeys, key=lambda item: (item.departed_day, item.journey_id)):
         if journey.kind is JourneyKind.MIGRATION:
             for person_id in journey.traveller_ids:
                 latest_migration[person_id] = journey
@@ -309,6 +337,17 @@ def build_council_report(
             (tile, state.world_map.tile(tile).terrain) for tile in sorted(civilization.known_tiles)
         ),
         inventory=dict(civilization.inventory.quantities),
+        stores={
+            settlement_id: dict(sorted(inventory.quantities.items()))
+            for settlement_id, inventory in all_stores(civilization).items()
+        },
+        holdings=holdings(civilization),
+        storehouses=civilization.storehouses,
+        storehouse_jobs=civilization.storehouse_jobs,
+        store_capacity={
+            settlement_id: inventory.capacity
+            for settlement_id, inventory in all_stores(civilization).items()
+        },
         project_ids=tuple(sorted(civilization.projects)),
         active_decrees=dict(state.active_decrees.get(civilization_id, {})),
         contacts=civilization.contacts,
@@ -365,8 +404,7 @@ def trade_partners(state: WorldState, civilization_id: EntityId) -> frozenset[En
         for treaty in state.active_treaties
         if treaty.in_force
         and treaty.kind is TreatyKind.TRADE
-        and civilization_id
-        in {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+        and civilization_id in {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
     )
 
 
@@ -472,19 +510,27 @@ def at_war(state: WorldState, first: EntityId, second: EntityId) -> War | None:
 def _drilling_people(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
     """People bound to home duties that keep them from travel: drill and the armoury."""
     civilization = state.civilizations[civilization_id]
-    return {
-        person_id for drill in civilization.drills if drill.active for person_id in drill.person_ids
-    } | {
-        person_id
-        for job in civilization.craft_jobs
-        if not job.done
-        for person_id in job.worker_ids
-    } | {
-        person_id
-        for assignment in civilization.research
-        if assignment.active
-        for person_id in assignment.scholar_ids
-    }
+    return (
+        {
+            person_id
+            for drill in civilization.drills
+            if drill.active
+            for person_id in drill.person_ids
+        }
+        | {
+            person_id
+            for job in civilization.craft_jobs
+            if not job.done
+            for person_id in job.worker_ids
+        }
+        | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
+        | {
+            person_id
+            for assignment in civilization.research
+            if assignment.active
+            for person_id in assignment.scholar_ids
+        }
+    )
 
 
 def _garrisoned_people(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
@@ -509,7 +555,7 @@ def journey_supplies(
     free = trade_partners(state, civilization_id) | {civilization_id}
     toll_food = (
         0
-        if kind in {JourneyKind.SHIPMENT, JourneyKind.CAMPAIGN}
+        if kind in {JourneyKind.SHIPMENT, JourneyKind.CAMPAIGN, JourneyKind.HAUL}
         else sum(
             view.food_per_head * crew
             for view in known_tolls(state, civilization_id)
@@ -547,11 +593,38 @@ def war_party_carry(civilization: CivilizationState) -> int:
     return CARGO_UNITS_PER_CARRIER
 
 
+Reserved = dict[tuple[EntityId | None, Resource], int]
+"""Goods already promised by earlier orders in the council, by store and resource."""
+
+
+def _short(
+    civilization: CivilizationState,
+    tile: HexCoord,
+    reserved: Reserved,
+    resource: Resource,
+    quantity: int,
+) -> bool:
+    """Whether the store supplying a tile lacks this much beyond what is promised."""
+    promised = reserved.get((store_id_at(civilization, tile), resource), 0)
+    return promised + quantity > store_at(civilization, tile).quantities.get(resource, 0)
+
+
+def _reserve(
+    civilization: CivilizationState,
+    tile: HexCoord,
+    reserved: Reserved,
+    goods: dict[Resource, int],
+) -> None:
+    store_id = store_id_at(civilization, tile)
+    for resource, quantity in goods.items():
+        reserved[(store_id, resource)] = reserved.get((store_id, resource), 0) + quantity
+
+
 def _campaign_error(
     command: DirectOrder,
     civilization_id: EntityId,
     state: WorldState,
-    reserved_cargo: dict[Resource, int],
+    reserved_cargo: Reserved,
 ) -> CommandError | None:
     """Validate a war party against what this civilization knows and holds."""
     civilization = state.civilizations[civilization_id]
@@ -597,13 +670,9 @@ def _campaign_error(
         return error("invalid_cargo", "every engine needs its crew from among the fighters")
     provisions, taken = journey_supplies(command, state, civilization_id)
     if provisions + cargo_load(command.cargo) > war_party_carry(civilization) * fighters:
-        return error(
-            "cargo_over_capacity", "each fighter can bear only so much food and gear"
-        )
+        return error("cargo_over_capacity", "each fighter can bear only so much food and gear")
     for resource, quantity in taken.items():
-        if reserved_cargo.get(resource, 0) + quantity > civilization.inventory.quantities.get(
-            resource, 0
-        ):
+        if _short(civilization, command.route[0], reserved_cargo, resource, quantity):
             if resource is Resource.FOOD:
                 return error("insufficient_provisions", "not enough food for the war party")
             return error("insufficient_goods", f"not enough {resource} to arm the war party")
@@ -614,9 +683,9 @@ def _internal_journey_error(
     command: DirectOrder,
     civilization_id: EntityId,
     state: WorldState,
-    reserved_cargo: dict[Resource, int],
+    reserved_cargo: Reserved,
 ) -> CommandError | None:
-    """Validate founding, garrisoning, or relocating against what this civilization knows."""
+    """Validate founding, garrisoning, relocating or hauling against what is known."""
     kind = JOURNEY_ORDERS[command.kind]
     civilization = state.civilizations[civilization_id]
 
@@ -645,16 +714,19 @@ def _internal_journey_error(
     expectant = {birth.parent_ids[0] for birth in civilization.population.scheduled_births}
     if expectant & set(command.traveller_ids):
         return error("expectant_traveller", "a mother with a birth due cannot leave on a journey")
-    if command.cargo:
+    hauling = kind is JourneyKind.HAUL
+    if command.cargo and not hauling:
         return error("invalid_cargo", "internal journeys carry no trade cargo")
+    if hauling and (not command.cargo or any(count <= 0 for count in command.cargo.values())):
+        return error("invalid_cargo", "a haul carries a positive quantity of goods")
     destination = route[-1]
     known_settlements = own_settlements | {contact.settlement for contact in civilization.contacts}
-    believed_owner = {
-        view.tile: view.owner for view in _observed_control(state, civilization_id)
-    }
+    believed_owner = {view.tile: view.owner for view in _observed_control(state, civilization_id)}
     foreign = believed_owner.get(destination) not in {None, civilization_id}
     if kind is JourneyKind.RELOCATION and destination not in own_settlements - {route[0]}:
         return error("invalid_destination", "people relocate to another of their own settlements")
+    if hauling and destination not in own_settlements - {route[0]}:
+        return error("invalid_destination", "goods are hauled to another of their own settlements")
     if kind is JourneyKind.SETTLEMENT and (
         foreign
         or any(tile.distance(destination) < SETTLEMENT_SPACING for tile in known_settlements)
@@ -676,18 +748,24 @@ def _internal_journey_error(
                 "foreign_land", "a road cannot be built on foreign land without a trade treaty"
             )
         if command.road_grade in STONE_LAYING and not any(
-            people[person_id].skills.get(STONEWORKING, 0) > 0
-            for person_id in command.traveller_ids
+            people[person_id].skills.get(STONEWORKING, 0) > 0 for person_id in command.traveller_ids
         ):
             return error("no_stoneworker", "laying stone needs a stoneworker in the crew")
     provisions, taken = journey_supplies(command, state, civilization_id)
-    if provisions > CARGO_UNITS_PER_CARRIER * len(command.traveller_ids):
-        return error("cargo_over_capacity", "each traveller can bear 50 units of provisions")
+    if provisions + sum(command.cargo.values()) > CARGO_UNITS_PER_CARRIER * len(
+        command.traveller_ids
+    ):
+        return error(
+            "cargo_over_capacity", "each traveller can bear 50 units of goods and provisions"
+        )
     for resource, quantity in taken.items():
-        available = civilization.inventory.quantities.get(resource, 0)
-        if reserved_cargo.get(resource, 0) + quantity > available:
-            if resource is Resource.FOOD:
+        if _short(civilization, command.route[0], reserved_cargo, resource, quantity):
+            promised = reserved_cargo.get((store_id_at(civilization, route[0]), resource), 0)
+            available = store_at(civilization, route[0]).quantities.get(resource, 0)
+            if resource is Resource.FOOD and promised + command.cargo.get(resource, 0) <= available:
                 return error("insufficient_provisions", "not enough food to provision the party")
+            if hauling:
+                return error("insufficient_goods", f"not enough {resource} to haul")
             return error("insufficient_materials", f"not enough {resource} for the road")
     return None
 
@@ -696,7 +774,7 @@ def _journey_error(
     command: DirectOrder,
     civilization_id: EntityId,
     state: WorldState,
-    reserved_cargo: dict[Resource, int],
+    reserved_cargo: Reserved,
 ) -> CommandError | None:
     """Validate an already-identified shipment or migration against treaty, route, and goods."""
     kind = JOURNEY_ORDERS[command.kind]
@@ -766,9 +844,10 @@ def _journey_error(
             "cargo_over_capacity", "each traveller can bear 50 units of cargo and provisions"
         )
     for resource, quantity in taken.items():
-        available = civilization.inventory.quantities.get(resource, 0)
-        if reserved_cargo.get(resource, 0) + quantity > available:
-            cargo_only = reserved_cargo.get(resource, 0) + command.cargo.get(resource, 0)
+        available = store_at(civilization, command.route[0]).quantities.get(resource, 0)
+        promised = reserved_cargo.get((store_id_at(civilization, command.route[0]), resource), 0)
+        if promised + quantity > available:
+            cargo_only = promised + command.cargo.get(resource, 0)
             if resource is Resource.FOOD and cargo_only <= available:
                 return error("insufficient_provisions", "not enough food to provision the party")
             return error("insufficient_goods", f"not enough {resource} to ship")
@@ -779,7 +858,7 @@ def _craft_error(
     command: DirectOrder,
     civilization_id: EntityId,
     state: WorldState,
-    reserved: dict[Resource, int],
+    reserved: Reserved,
 ) -> CommandError | None:
     """Validate an armoury order: something makeable, by people who know how, from stock."""
     civilization = state.civilizations[civilization_id]
@@ -794,18 +873,82 @@ def _craft_error(
         return error("invalid_craft", "each worker is named once")
     people = civilization.population.people
     homes = {settlement.tile for settlement in civilization.settlements}
-    if any(people[person_id].location not in homes for person_id in command.worker_ids):
-        return error("invalid_craft", "workers make equipment at one of their settlements")
+    places = {people[person_id].location for person_id in command.worker_ids}
+    if len(places) != 1 or not places <= homes:
+        return error("invalid_craft", "workers make equipment together at one of their settlements")
+    [workshop] = places
     needed = RECIPES[item].capability
     if needed is not None and not any(
         people[person_id].skills.get(needed.value, 0) > 0 for person_id in command.worker_ids
     ):
         return error("unqualified_worker", f"making {item} needs someone who knows {needed}")
     for resource, quantity in craft_materials(item, command.craft_quantity).items():
-        if reserved.get(resource, 0) + quantity > civilization.inventory.quantities.get(
-            resource, 0
-        ):
+        if _short(civilization, workshop, reserved, resource, quantity):
             return error("insufficient_materials", f"not enough {resource} to make {item}")
+    return None
+
+
+def _storehouse_grade(
+    civilization: CivilizationState, storehouse_id: EntityId | None
+) -> StorehouseGrade | None:
+    house = next(
+        (item for item in civilization.storehouses if item.storehouse_id == storehouse_id), None
+    )
+    return None if house is None else house.grade
+
+
+def _storehouse_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved: Reserved,
+    upgrading: set[EntityId],
+) -> CommandError | None:
+    """Validate building or upgrading a storehouse where its builders stand."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    target = command.storehouse_grade
+    if target is None or not command.worker_ids:
+        return error("invalid_storehouse", "a storehouse order names a grade and builders")
+    if len(set(command.worker_ids)) != len(command.worker_ids):
+        return error("invalid_storehouse", "each builder is named once")
+    people = civilization.population.people
+    places = {people[person_id].location for person_id in command.worker_ids}
+    site = settlement_at(civilization, next(iter(places))) if len(places) == 1 else None
+    if site is None:
+        return error("invalid_storehouse", "builders work together at one of their settlements")
+    current: StorehouseGrade | None = None
+    if command.storehouse_id is not None:
+        house = next(
+            (
+                item
+                for item in civilization.storehouses
+                if item.storehouse_id == command.storehouse_id
+            ),
+            None,
+        )
+        if house is None or house.settlement_id != site.settlement_id:
+            return error("invalid_storehouse", "builders upgrade a storehouse where they stand")
+        busy = {job.storehouse_id for job in civilization.storehouse_jobs}
+        if house.storehouse_id in busy | upgrading:
+            return error("invalid_storehouse", "that storehouse is already being worked on")
+        current = house.grade
+    if rank(target) <= rank(current):
+        return error("invalid_storehouse", "an upgrade raises the storehouse's grade")
+    for grade in steps(current, target):
+        needed = STOREHOUSE_GRADES[grade].capability
+        if needed is not None and not any(
+            people[person_id].skills.get(needed.value, 0) > 0 for person_id in command.worker_ids
+        ):
+            return error(
+                "unqualified_worker", f"building a {grade} needs someone who knows {needed}"
+            )
+    for resource, quantity in step_materials(current, target).items():
+        if _short(civilization, site.tile, reserved, resource, quantity):
+            return error("insufficient_materials", f"not enough {resource} for the storehouse")
     return None
 
 
@@ -927,7 +1070,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     already_travelling = _travelling_people(state, envelope.civilization_id)
     garrisoned = _garrisoned_people(state, envelope.civilization_id)
     drilling = _drilling_people(state, envelope.civilization_id)
-    reserved_cargo: dict[Resource, int] = {}
+    reserved_cargo: Reserved = {}
+    upgrading: set[EntityId] = set()
     for command in envelope.commands:
         if command.command_id in seen:
             errors.append(
@@ -1014,9 +1158,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     command_error = CommandError(
                         command_id=command.command_id,
                         code="invalid_message",
-                        message=(
-                            "message requires an ID, ambassador, recipient, text, and route"
-                        ),
+                        message=("message requires an ID, ambassador, recipient, text, and route"),
                     )
                 else:
                     assert command.message_id is not None
@@ -1152,6 +1294,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 DirectOrderKind.DRILL,
                 DirectOrderKind.CRAFT_EQUIPMENT,
                 DirectOrderKind.RESEARCH,
+                DirectOrderKind.BUILD_STOREHOUSE,
             }:
                 home_duty = command.worker_ids
             elif command.kind is DirectOrderKind.START_TEACHING and command_error is None:
@@ -1180,6 +1323,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     DirectOrderKind.DRILL,
                     DirectOrderKind.CRAFT_EQUIPMENT,
                     DirectOrderKind.RESEARCH,
+                    DirectOrderKind.BUILD_STOREHOUSE,
                 }:
                     away |= committed_at_home | teaching_people
                 if any(person_id in away for person_id in home_duty):
@@ -1259,6 +1403,10 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             if command.kind is DirectOrderKind.CRAFT_EQUIPMENT and command_error is None:
                 command_error = _craft_error(
                     command, envelope.civilization_id, state, reserved_cargo
+                )
+            if command.kind is DirectOrderKind.BUILD_STOREHOUSE and command_error is None:
+                command_error = _storehouse_error(
+                    command, envelope.civilization_id, state, reserved_cargo, upgrading
                 )
             if (
                 command.kind is DirectOrderKind.DECLARE_WAR
@@ -1411,14 +1559,29 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 tolled.add(command.route[0])
             if command.kind is DirectOrderKind.RESEARCH and command.research_topic is not None:
                 researching.add(command.research_topic)
+            civilization = state.civilizations[envelope.civilization_id]
             if command.kind is DirectOrderKind.CRAFT_EQUIPMENT and command.craft_item:
-                for resource, quantity in craft_materials(
-                    command.craft_item, command.craft_quantity
-                ).items():
-                    reserved_cargo[resource] = reserved_cargo.get(resource, 0) + quantity
+                workshop = civilization.population.people[command.worker_ids[0]].location
+                _reserve(
+                    civilization,
+                    workshop,
+                    reserved_cargo,
+                    craft_materials(command.craft_item, command.craft_quantity),
+                )
             if command.kind in JOURNEY_ORDERS:
                 _, taken = journey_supplies(command, state, envelope.civilization_id)
-                for resource, quantity in taken.items():
-                    reserved_cargo[resource] = reserved_cargo.get(resource, 0) + quantity
+                _reserve(civilization, command.route[0], reserved_cargo, taken)
+            if command.kind is DirectOrderKind.BUILD_STOREHOUSE:
+                assert command.storehouse_grade is not None
+                site = civilization.population.people[command.worker_ids[0]].location
+                current = _storehouse_grade(civilization, command.storehouse_id)
+                _reserve(
+                    civilization,
+                    site,
+                    reserved_cargo,
+                    step_materials(current, command.storehouse_grade),
+                )
+                if command.storehouse_id is not None:
+                    upgrading.add(command.storehouse_id)
         accepted.append(command)
     return CommandValidation(accepted=tuple(accepted), errors=tuple(errors))

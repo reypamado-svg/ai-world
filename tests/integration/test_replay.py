@@ -48,4 +48,3 @@ def test_replay_preserves_private_exploration_history(tmp_path: Path) -> None:
 
     assert state_hash(replayed) == state_hash(state)
     assert all(civilization.observations for civilization in replayed.civilizations.values())
-

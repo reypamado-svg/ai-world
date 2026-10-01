@@ -153,11 +153,7 @@ class WorldStore:
     def append_record(self, record_type: str, payload: dict[str, Any]) -> JournalRecord:
         if self._tail_sequence is None:
             self.read_records()
-        if (
-            self._tail_sequence is None
-            or self._tail_hash is None
-            or self._verified_length is None
-        ):
+        if self._tail_sequence is None or self._tail_hash is None or self._verified_length is None:
             raise RuntimeError("journal tail was not initialized")
         if self.journal_path.stat().st_size != self._verified_length:
             with self.journal_path.open("r+b") as journal:

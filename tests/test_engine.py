@@ -91,9 +91,7 @@ def test_validated_teaching_order_becomes_an_assignment() -> None:
     civilization = state.civilizations[civilization_id]
     teacher = civilization.capabilities[0].practitioner_ids[0]
     apprentice = next(
-        person_id
-        for person_id in civilization.population.living_ids
-        if person_id != teacher
+        person_id for person_id in civilization.population.living_ids if person_id != teacher
     )
 
     class TeachingSovereign:
@@ -219,4 +217,3 @@ def test_validated_message_is_dispatched_and_delivered_to_recipient_only() -> No
     assert message.status is MissionStatus.DELIVERED
     assert result.state.civilizations[recipient].received_messages == (message,)
     assert result.state.civilizations[sender].received_messages == ()
-

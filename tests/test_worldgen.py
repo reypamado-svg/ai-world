@@ -56,4 +56,3 @@ def test_generation_failure_is_bounded_and_reports_seed() -> None:
     assert captured.value.seed == 77
     assert captured.value.attempts == 3
     assert "separation" in captured.value.failures
-

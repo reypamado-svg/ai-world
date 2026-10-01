@@ -76,10 +76,13 @@ def test_second_generation_reaches_adulthood_with_completed_buildings(
             if person.parent_ids and person.alive and person.age_days >= 18 * 365
         ]
         assert second_generation
-        assert sum(
-            project.status is ProjectStatus.COMPLETE
-            for project in civilization.projects.values()
-        ) >= 2
+        assert (
+            sum(
+                project.status is ProjectStatus.COMPLETE
+                for project in civilization.projects.values()
+            )
+            >= 2
+        )
         assert all(quantity >= 0 for quantity in civilization.inventory.quantities.values())
 
     store.append_transition(state, last_events)

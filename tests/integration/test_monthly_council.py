@@ -80,26 +80,28 @@ def test_invalid_command_does_not_block_valid_decree() -> None:
 def test_baseline_sovereign_builds_starter_structures() -> None:
     config = WorldConfig(seed=21, width=24, height=24)
     state = build_initial_state(RunManifest.new(config=config, engine_version="0.1.0"))
-    sovereigns = {
-        civilization_id: BaselineSovereign() for civilization_id in state.civilizations
-    }
+    sovereigns = {civilization_id: BaselineSovereign() for civilization_id in state.civilizations}
 
-    result = advance_day(state, StableRng(config.seed), sovereigns=sovereigns)
-
+    rng = StableRng(config.seed)
+    result = advance_day(state, rng, sovereigns=sovereigns)
     for civilization in result.state.civilizations.values():
         assert len(civilization.projects) == 2
+
+    # Two builders put the storehouse's 10 person-days in over five days.
+    state = result.state
+    for _ in range(4):
+        state = advance_day(state, rng, sovereigns=sovereigns).state
+    for civilization in state.civilizations.values():
         assert all(
-            project.status is ProjectStatus.COMPLETE
-            for project in civilization.projects.values()
+            project.status is ProjectStatus.COMPLETE for project in civilization.projects.values()
         )
+        assert len(civilization.storehouses) == 6, "five founding granaries and a new one"
 
 
 def test_food_reserve_decree_prevents_baseline_starvation() -> None:
     config = WorldConfig(seed=21, width=24, height=24)
     state = build_initial_state(RunManifest.new(config=config, engine_version="0.1.0"))
-    sovereigns = {
-        civilization_id: BaselineSovereign() for civilization_id in state.civilizations
-    }
+    sovereigns = {civilization_id: BaselineSovereign() for civilization_id in state.civilizations}
     rng = StableRng(config.seed)
 
     for _ in range(1_000):

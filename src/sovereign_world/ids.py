@@ -25,4 +25,3 @@ class IdAllocator:
         value = EntityId(f"{self.namespace}:{self.next_sequence:010d}")
         self.next_sequence += 1
         return value
-

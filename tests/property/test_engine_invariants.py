@@ -26,4 +26,3 @@ def test_engine_preserves_world_invariants(days: int) -> None:
             assert set(civilization.population.living_ids).isdisjoint(
                 civilization.population.dead_ids
             )
-

@@ -16,4 +16,3 @@ def test_baseline_sovereign_prioritizes_food_and_respects_command_limit() -> Non
     assert isinstance(envelope.commands[0], Decree)
     assert envelope.commands[0].kind is DecreeKind.FOOD_RESERVE_TARGET
     assert envelope.civilization_id == civilization_id
-

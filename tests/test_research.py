@@ -145,9 +145,7 @@ def test_scholars_stay_at_their_desks() -> None:
 
 def test_spear_formations_strengthen_a_defending_line() -> None:
     state, home, _, _ = _world()
-    person = next(iter(state.civilizations[home].population.people.values())).model_copy(
-        deep=True
-    )
+    person = next(iter(state.civilizations[home].population.people.values())).model_copy(deep=True)
     person.health_bp = 10_000
     person.age_days = 30 * 365
     fighters = [person.person_id]

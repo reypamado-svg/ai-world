@@ -41,9 +41,7 @@ def linked_world(
     step = 1 if home.q + distance < state.config.width else -1
     route = tuple(HexCoord(home.q + index * step, home.r) for index in range(distance + 1))
     # Lay grassland along the route so scenarios test their own rules, not the terrain.
-    grass = {
-        tile: replace(state.world_map.tile(tile), terrain=Terrain.GRASSLAND) for tile in route
-    }
+    grass = {tile: replace(state.world_map.tile(tile), terrain=Terrain.GRASSLAND) for tile in route}
     state.world_map = replace(
         state.world_map,
         tiles=tuple(grass.get(tile.coord, tile) for tile in state.world_map.tiles),
@@ -169,9 +167,7 @@ def roll_matching_id(
     for index in range(100_000):
         candidate = f"{prefix}-{index}"
         if all(
-            predicate(
-                int(rng.stream(f"day:{day}:{stream}:travel:{candidate}").integers(0, 10_000))
-            )
+            predicate(int(rng.stream(f"day:{day}:{stream}:travel:{candidate}").integers(0, 10_000)))
             for day in range(start_day, start_day + days)
         ):
             return candidate

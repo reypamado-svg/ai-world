@@ -106,4 +106,3 @@ def test_project_completes_once_on_exact_labor_boundary() -> None:
     assert first.projects[project.project_id].status is ProjectStatus.COMPLETE
     assert first.completed_project_ids == (project.project_id,)
     assert second.completed_project_ids == ()
-

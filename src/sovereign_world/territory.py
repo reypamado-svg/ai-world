@@ -334,9 +334,7 @@ def advance_territory(
             new_owner: EntityId | None = anchors[tile]
         elif owner is not None and holders.get(owner, 0) >= LOSE_THRESHOLD:
             new_owner = owner
-            rival = _strongest(
-                {key: value for key, value in holders.items() if key != owner}, 0
-            )
+            rival = _strongest({key: value for key, value in holders.items() if key != owner}, 0)
             lead = holders.get(rival, 0) - holders[owner] if rival is not None else 0
             if rival is not None and lead >= CHALLENGE_MARGIN:
                 previous_challenge = challenges.get(tile)
@@ -349,9 +347,7 @@ def advance_territory(
                 if days >= CHALLENGE_DAYS:
                     new_owner = rival
                 else:
-                    new_challenges.append(
-                        Challenge(tile=tile, civilization_id=rival, days=days)
-                    )
+                    new_challenges.append(Challenge(tile=tile, civilization_id=rival, days=days))
         else:
             new_owner = _strongest(holders, TAKE_THRESHOLD)
         if new_owner is not None:
@@ -360,9 +356,7 @@ def advance_territory(
             if owner is not None:
                 changes.append(ControlChange(tile, owner, gained=False, previous_owner=owner))
             if new_owner is not None:
-                changes.append(
-                    ControlChange(tile, new_owner, gained=True, previous_owner=owner)
-                )
+                changes.append(ControlChange(tile, new_owner, gained=True, previous_owner=owner))
 
     return TerritoryDayResult(
         territory=Territory(

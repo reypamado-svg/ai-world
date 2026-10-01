@@ -119,7 +119,7 @@ def test_famine_survivors_recover_once_food_returns() -> None:
     assert all(people[person_id].nutrition_debt >= 20 for person_id in survivors)
     health_after_famine = {person_id: people[person_id].health_bp for person_id in survivors}
 
-    _set_food(state, civilization_id, 50_000)
+    _set_food(state, civilization_id, 20_000)
     for _ in range(6):
         state = advance_day(state, rng).state
 
