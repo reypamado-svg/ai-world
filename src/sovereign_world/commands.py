@@ -20,6 +20,13 @@ from sovereign_world.armoury import (
     personal_kits,
     slows,
 )
+from sovereign_world.bridges import (
+    Bridge,
+    bridge_materials,
+    bridged_edges,
+    deep_spans,
+    spans_planned,
+)
 from sovereign_world.capabilities import CapabilityId
 from sovereign_world.culture import ancestry, culture
 from sovereign_world.diplomacy import (
@@ -101,7 +108,14 @@ from sovereign_world.tolls import (
     TollPost,
     TollView,
 )
-from sovereign_world.travel import crossing, entry_cost, passable, river_depth
+from sovereign_world.travel import (
+    NO_BRIDGES,
+    Bridges,
+    crossing,
+    entry_cost,
+    passable,
+    river_depth,
+)
 from sovereign_world.walls import (
     WALL_GRADES,
     WallGrade,
@@ -380,6 +394,8 @@ class CouncilReport(BaseModel):
     settlements: tuple[Settlement, ...] = ()
     garrisons: tuple[Garrison, ...] = ()
     known_roads: tuple[RoadView, ...] = ()
+    known_bridges: tuple[Bridge, ...] = ()
+    """Bridges this civilization built or can see."""
     toll_posts: tuple[TollPost, ...] = ()
     known_tolls: tuple[TollView, ...] = ()
     wars: tuple[War, ...] = ()
@@ -609,6 +625,7 @@ def build_council_report(
         settlements=civilization.settlements,
         garrisons=civilization.garrisons,
         known_roads=known_roads(state, civilization_id),
+        known_bridges=known_bridges(state, civilization_id),
         toll_posts=civilization.toll_posts,
         known_tolls=known_tolls(state, civilization_id),
         occupations=tuple(
@@ -673,6 +690,29 @@ def known_rivers(world_map: WorldMap, known: frozenset[HexCoord]) -> tuple[River
             tile, across = (edge.a, edge.b) if edge.a in known else (edge.b, edge.a)
             views.append(RiverView(tile=tile, across=across, depth=river_depth(edge.flow)))
     return tuple(sorted(views, key=lambda view: (view.tile, view.across)))
+
+
+def known_bridges(state: WorldState, civilization_id: EntityId) -> tuple[Bridge, ...]:
+    """Bridges this civilization built, and any standing where its people can see today."""
+    in_sight = sight_of(state, civilization_id)
+    return tuple(
+        bridge
+        for bridge in state.bridges
+        if bridge.civilization_id == civilization_id or bridge.a in in_sight or bridge.b in in_sight
+    )
+
+
+def known_spans(state: WorldState, civilization_id: EntityId) -> Bridges:
+    """The river borders this civilization knows are bridged."""
+    return bridged_edges(known_bridges(state, civilization_id))
+
+
+def _route_spans(command: DirectOrder, state: WorldState, civilization_id: EntityId) -> Bridges:
+    """Known bridges, plus those a road crew on this route will build before crossing."""
+    known = known_spans(state, civilization_id)
+    if JOURNEY_ORDERS.get(command.kind) is JourneyKind.ROADWORK:
+        return spans_planned(state.world_map, command.route, command.road_grade, known)
+    return known
 
 
 def known_roads(state: WorldState, civilization_id: EntityId) -> tuple[RoadView, ...]:
@@ -873,6 +913,7 @@ def journey_supplies(
     """
     kind = JOURNEY_ORDERS[command.kind]
     roads = {view.tile: view.grade for view in known_roads(state, civilization_id)}
+    spans = known_spans(state, civilization_id)
     crew = len(command.traveller_ids)
     taken = dict(command.cargo)
     free = trade_partners(state, civilization_id) | {civilization_id}
@@ -886,13 +927,20 @@ def journey_supplies(
         )
     )
     if kind is JourneyKind.ROADWORK and command.road_grade is not None:
-        days = roadwork_days(state.world_map, command.route, command.road_grade, roads, crew)
+        days = roadwork_days(
+            state.world_map, command.route, command.road_grade, roads, crew, bridges=spans
+        )
         # A crew packs what it can bear and turns home when only the walk back is left.
         provisions = min(
             provisions_needed(days, crew, command.extra_provisions + toll_food),
             CARGO_UNITS_PER_CARRIER * crew,
         )
         taken = materials_for(command.route, command.road_grade, roads)
+        for resource, quantity in bridge_materials(
+            state.world_map, command.route, command.road_grade, spans
+        ).items():
+            taken[resource] = taken.get(resource, 0) + quantity
+        taken = dict(sorted(taken.items()))
     else:
         provisions = provisions_needed(
             journey_days(
@@ -901,6 +949,7 @@ def journey_supplies(
                 command.route,
                 roads,
                 heavy=kind is JourneyKind.CAMPAIGN and slows(command.cargo),
+                bridges=spans,
             ),
             crew,
             command.extra_provisions
@@ -949,7 +998,10 @@ def _reserve(
 
 
 def _known_route_passable(
-    world_map: WorldMap, route: tuple[HexCoord, ...], known: frozenset[HexCoord]
+    world_map: WorldMap,
+    route: tuple[HexCoord, ...],
+    known: frozenset[HexCoord],
+    bridges: Bridges = NO_BRIDGES,
 ) -> bool:
     """Whether a route avoids every obstacle its civilization knows of.
 
@@ -958,9 +1010,9 @@ def _known_route_passable(
     """
     for origin, tile in pairwise(route):
         if tile in known:
-            if entry_cost(world_map, tile, origin=origin) is None:
+            if entry_cost(world_map, tile, origin=origin, bridges=bridges) is None:
                 return False
-        elif origin in known and crossing(world_map, origin, tile) is None:
+        elif origin in known and crossing(world_map, origin, tile, bridges) is None:
             return False
     return True
 
@@ -994,7 +1046,12 @@ def _campaign_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:], start=route[0])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=known_spans(state, civilization_id),
+        )
     ):
         return error(
             "invalid_route", "a war party leaves one of its own settlements over known land"
@@ -1066,7 +1123,12 @@ def _internal_journey_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:], start=route[0])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=_route_spans(command, state, civilization_id),
+        )
     ):
         return error(
             "invalid_route",
@@ -1113,10 +1175,16 @@ def _internal_journey_error(
             return error(
                 "foreign_land", "a road cannot be built on foreign land without a trade treaty"
             )
-        if command.road_grade in STONE_LAYING and not any(
+        masonry = command.road_grade in STONE_LAYING or deep_spans(
+            state.world_map, route, command.road_grade, known_spans(state, civilization_id)
+        )
+        if masonry and not any(
             people[person_id].skills.get(STONEWORKING, 0) > 0 for person_id in command.traveller_ids
         ):
-            return error("no_stoneworker", "laying stone needs a stoneworker in the crew")
+            return error(
+                "no_stoneworker",
+                "laying stone or bridging a deep river needs a stoneworker in the crew",
+            )
     provisions, taken = journey_supplies(command, state, civilization_id)
     if provisions + sum(command.cargo.values()) > CARGO_UNITS_PER_CARRIER * len(
         command.traveller_ids
@@ -1161,7 +1229,12 @@ def _petition_error(
         or route[-1] not in known
         or any(tile not in civilization.known_tiles for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:], start=route[0])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=known_spans(state, civilization_id),
+        )
     ):
         return error(
             "invalid_route", "the released walk from a settlement of theirs to one of the other's"
@@ -1316,7 +1389,12 @@ def _courier_error(
         or route[-1] not in {settlement.tile for settlement in civilization.settlements}
         or any(tile not in civilization.known_tiles for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:], start=route[0])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=known_spans(state, civilization_id),
+        )
     ):
         return error("invalid_route", "a courier walks from the spies to one of its settlements")
     return None
@@ -1376,7 +1454,12 @@ def _journey_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:], start=route[0])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=known_spans(state, civilization_id),
+        )
     ):
         return error(
             "invalid_route",
@@ -1736,7 +1819,12 @@ def _toll_error(
         or (len(route) == 1 and tile != civilization.start_center)
         or any(step not in civilization.known_tiles for step in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:], start=route[0])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=known_spans(state, civilization_id),
+        )
     ):
         return error(
             "invalid_route",
@@ -2344,6 +2432,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         state.world_map,
                         route,
                         frozenset(state.civilizations[envelope.civilization_id].known_tiles),
+                        known_spans(state, envelope.civilization_id),
                     )
                 ):
                     command_error = CommandError(
@@ -2395,7 +2484,12 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     or any(tile not in civilization.known_tiles for tile in command.route)
                     or any(not state.world_map.contains(tile) for tile in command.route)
                     or any(first.distance(second) != 1 for first, second in pairwise(command.route))
-                    or not passable(state.world_map, command.route[1:], start=command.route[0])
+                    or not passable(
+                        state.world_map,
+                        command.route[1:],
+                        start=command.route[0],
+                        bridges=known_spans(state, envelope.civilization_id),
+                    )
                 ):
                     command_error = CommandError(
                         command_id=command.command_id,

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from math import ceil
 from typing import Literal
 
-from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
+from sovereign_world.hexmap import HexCoord, Terrain, WorldMap, edge_key
 from sovereign_world.roads import RoadGrade, road_cost
 
 DAY = 10
@@ -53,6 +54,11 @@ engines, plus a day."""
 Roads = Mapping[HexCoord, RoadGrade]
 """The road grade of each tile that has a road."""
 
+Bridges = AbstractSet[tuple[HexCoord, HexCoord]]
+"""River borders that are bridged, as edge keys (see ``hexmap.edge_key``)."""
+
+NO_BRIDGES: frozenset[tuple[HexCoord, HexCoord]] = frozenset()
+
 
 def river_depth(flow: int) -> Depth:
     """How deep a river of this flow is: stream, river or deep."""
@@ -63,11 +69,14 @@ def river_depth(flow: int) -> Depth:
     return "deep"
 
 
-def crossing(world_map: WorldMap, origin: HexCoord, coord: HexCoord) -> int | None:
-    """The extra cost of crossing the border from origin into coord: 0 where no river runs,
-    a wading cost for a stream or river, and None where a deep river cannot be crossed."""
+def crossing(
+    world_map: WorldMap, origin: HexCoord, coord: HexCoord, bridges: Bridges = NO_BRIDGES
+) -> int | None:
+    """The extra cost of crossing the border from origin into coord: 0 where no river runs
+    or a bridge stands, a wading cost for a stream or river, and None where a deep river
+    cannot be crossed."""
     river = world_map.river_between(origin, coord)
-    if river is None:
+    if river is None or edge_key(origin, coord) in bridges:
         return 0
     return CROSSING_COST[river_depth(river.flow)]
 
@@ -78,6 +87,7 @@ def entry_cost(
     roads: Roads | None = None,
     *,
     origin: HexCoord | None = None,
+    bridges: Bridges = NO_BRIDGES,
 ) -> int | None:
     """What entering a tile costs, or None if it cannot be entered; roads make it cheaper.
 
@@ -92,7 +102,7 @@ def entry_cost(
     cost = base if grade is None else road_cost(terrain, grade)
     if origin is None:
         return cost
-    extra = crossing(world_map, origin, coord)
+    extra = crossing(world_map, origin, coord, bridges)
     return None if extra is None else cost + extra
 
 
@@ -107,11 +117,15 @@ def _steps(
 
 
 def passable(
-    world_map: WorldMap, tiles: Iterable[HexCoord], *, start: HexCoord | None = None
+    world_map: WorldMap,
+    tiles: Iterable[HexCoord],
+    *,
+    start: HexCoord | None = None,
+    bridges: Bridges = NO_BRIDGES,
 ) -> bool:
     """Whether every tile can be entered; given the start, also every river border crossed."""
     return all(
-        entry_cost(world_map, tile, origin=origin) is not None
+        entry_cost(world_map, tile, origin=origin, bridges=bridges) is not None
         for origin, tile in _steps(tiles, start)
     )
 
@@ -122,12 +136,13 @@ def travel_days(
     roads: Roads | None = None,
     *,
     start: HexCoord | None = None,
+    bridges: Bridges = NO_BRIDGES,
 ) -> int:
     """Whole days needed to enter each tile in turn, ignoring delays; given the start, river
     crossings on the way are counted too."""
     total = 0
     for origin, tile in _steps(entered, start):
-        cost = entry_cost(world_map, tile, roads, origin=origin)
+        cost = entry_cost(world_map, tile, roads, origin=origin, bridges=bridges)
         if cost is None:
             raise ValueError(f"tile {tile} is impassable")
         total += cost
@@ -143,7 +158,11 @@ def step(progress: int, cost: int) -> tuple[bool, int]:
 
 
 def way_to(
-    world_map: WorldMap, start: HexCoord, goals: frozenset[HexCoord]
+    world_map: WorldMap,
+    start: HexCoord,
+    goals: frozenset[HexCoord],
+    *,
+    bridges: Bridges = NO_BRIDGES,
 ) -> tuple[HexCoord, ...] | None:
     """The shortest way over passable land from start to the nearest goal, by tiles.
 
@@ -160,7 +179,7 @@ def way_to(
             for neighbor in sorted(tile.neighbors()):
                 if neighbor in previous or not world_map.contains(neighbor):
                     continue
-                if entry_cost(world_map, neighbor, origin=tile) is None:
+                if entry_cost(world_map, neighbor, origin=tile, bridges=bridges) is None:
                     continue
                 previous[neighbor] = tile
                 if neighbor in goals:

@@ -12,7 +12,7 @@ from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person
 from sovereign_world.roads import RoadGrade
-from sovereign_world.travel import DAY, MAX_PROGRESS, Roads, entry_cost
+from sovereign_world.travel import DAY, MAX_PROGRESS, NO_BRIDGES, Bridges, Roads, entry_cost
 
 
 class ExpeditionStatus(StrEnum):
@@ -77,6 +77,7 @@ def advance_expeditions(
     observations: tuple[Observation, ...] = (),
     owners: dict[HexCoord, EntityId] | None = None,
     roads: Roads | None = None,
+    bridges: Bridges = NO_BRIDGES,
 ) -> ExpeditionDayResult:
     """Advance each active expedition toward its next tile and refresh its private map.
 
@@ -138,7 +139,7 @@ def advance_expeditions(
             if not world_map.contains(destination) or location.distance(destination) != 1:
                 status = ExpeditionStatus.FAILED
                 break
-            cost = entry_cost(world_map, destination, roads, origin=location)
+            cost = entry_cost(world_map, destination, roads, origin=location, bridges=bridges)
             if cost is None:
                 observation_by_tile[destination] = Observation(
                     tile=destination,

@@ -12,10 +12,11 @@ from pydantic import (
     Field,
     SerializationInfo,
     SerializerFunctionWrapHandler,
-    field_serializer,
+    model_serializer,
 )
 
 from sovereign_world.armoury import CraftJob
+from sovereign_world.bridges import Bridge
 from sovereign_world.capabilities import (
     CapabilityId,
     CapabilityRecord,
@@ -137,6 +138,8 @@ class WorldState(BaseModel):
     journeys: tuple[Journey, ...] = ()
     territory: Territory = Field(default_factory=Territory)
     roads: tuple[Road, ...] = ()
+    bridges: tuple[Bridge, ...] = ()
+    """River borders a road crew has bridged; any traveller crosses them at plain cost."""
     wars: tuple[War, ...] = ()
     battles: tuple[Battle, ...] = ()
     """Every battle as it really happened; civilizations see only their own reports."""
@@ -151,14 +154,19 @@ class WorldState(BaseModel):
     joined_roads: tuple[EntityId, ...] = ()
     """Trade treaties whose partners' settlements a continuous road now links."""
 
-    @field_serializer("world_map", mode="wrap")
-    def _omit_empty_rivers(
-        self, world_map: WorldMap, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    @model_serializer(mode="wrap")
+    def _omit_empty_additions(
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
     ) -> object:
-        # Maps from before rivers had courses have none; leaving the key out keeps their hash.
-        dumped = handler(world_map)
-        if isinstance(dumped, dict) and not dumped.get("rivers"):
-            dumped.pop("rivers", None)
+        # Worlds from before rivers had courses, or before any bridge stood, have none;
+        # leaving those keys out keeps their saves' hashes.
+        dumped = handler(self)
+        if isinstance(dumped, dict):
+            world_map = dumped.get("world_map")
+            if isinstance(world_map, dict) and not world_map.get("rivers"):
+                world_map.pop("rivers", None)
+            if not dumped.get("bridges"):
+                dumped.pop("bridges", None)
         return dumped
 
 
@@ -621,6 +629,16 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("a road lies on the map")
         if state.world_map.tile(road.tile).terrain.value == "water":
             raise ValueError("no road can be built on water")
+    bridges = state.bridges
+    if bridges != tuple(sorted(bridges, key=lambda bridge: (bridge.a, bridge.b))):
+        raise ValueError("bridges must be sorted by border")
+    if len({(bridge.a, bridge.b) for bridge in bridges}) != len(bridges):
+        raise ValueError("a border has at most one bridge")
+    for bridge in bridges:
+        if bridge.civilization_id not in state.civilizations:
+            raise ValueError("a bridge is built by an existing civilization")
+        if state.world_map.river_between(bridge.a, bridge.b) is None:
+            raise ValueError("a bridge spans a river")
     for journey in journeys:
         if journey.kind is JourneyKind.ROADWORK and journey.route[0] not in {
             settlement.tile

@@ -24,6 +24,7 @@ from sovereign_world.armoury import (
     personal_kits,
     settlement_bonus_after_engines,
 )
+from sovereign_world.bridges import Bridge, bridged_edges
 from sovereign_world.capabilities import (
     CapabilityId,
     CapabilityRecord,
@@ -104,6 +105,7 @@ from sovereign_world.logistics import (
     MAX_TRAVELLERS,
     SPYING_KINDS,
     TRAVEL_HAZARD_CAUSE,
+    BridgeBuilt,
     Journey,
     JourneyKind,
     JourneyOutcome,
@@ -943,6 +945,7 @@ def _advance_journeys(
             journey.kind is JourneyKind.CAMPAIGN
             and (_enemy_at(state, journey, tile) is not None or _wreckable(state, journey, tile))
         ),
+        bridges=bridged_edges(state.bridges),
     )
     state.journeys = result.journeys
     for civilization_id, people in result.people_by_civilization.items():
@@ -1008,6 +1011,8 @@ def _advance_journeys(
         )
     for built in result.roads_built:
         events.append(_record_road(state, built))
+    for spanned in result.bridges_built:
+        events.append(_record_bridge(state, spanned))
     for halt in result.roadwork_stopped:
         events.append(
             _event(
@@ -1601,7 +1606,11 @@ def _send_deposit(
     provisions = (
         provisions_needed(
             journey_days(
-                JourneyKind.DEPOSIT, state.world_map, post.deposit_route, grades_of(state.roads)
+                JourneyKind.DEPOSIT,
+                state.world_map,
+                post.deposit_route,
+                grades_of(state.roads),
+                bridges=bridged_edges(state.bridges),
             ),
             len(couriers),
         )
@@ -2715,7 +2724,7 @@ def _free_captives(
     taken_ids = {journey.journey_id for journey in state.journeys}
     for (civilization_id, tile), group in sorted(walking.items()):
         homes = frozenset(item.tile for item in state.civilizations[civilization_id].settlements)
-        route = way_to(state.world_map, tile, homes)
+        route = way_to(state.world_map, tile, homes, bridges=bridged_edges(state.bridges))
         if route is None or len(route) < 2:
             continue
         for chunk in batched(group, MAX_TRAVELLERS):
@@ -3100,7 +3109,9 @@ def _break_up(state: WorldState, civilization_id: EntityId) -> list[DomainEvent]
     events: list[DomainEvent] = []
     taken = {journey.journey_id for journey in state.journeys}
     for (here, recipient, gate), group in sorted(groups.items()):
-        route = way_to(state.world_map, here, frozenset({gate}))
+        route = way_to(
+            state.world_map, here, frozenset({gate}), bridges=bridged_edges(state.bridges)
+        )
         if route is None or len(route) < 2:
             continue
         for chunk in batched(group, MAX_TRAVELLERS):
@@ -3608,6 +3619,7 @@ def _hold_occupation(state: WorldState, party: Journey, rng: StableRng) -> list[
         tuple(reversed(party.route))[1:],
         grades_of(state.roads),
         start=party.route[-1],
+        bridges=bridged_edges(state.bridges),
     )
     if not taken and party.provisions < len(living) * home:
         events.extend(_withdraw(state, party, OccupationEnd.STARVED))
@@ -3779,6 +3791,7 @@ def _hold_camp(state: WorldState, party: Journey, rng: StableRng) -> list[Domain
         tuple(reversed(party.route))[1:],
         grades_of(state.roads),
         start=party.route[-1],
+        bridges=bridged_edges(state.bridges),
     )
     if party.provisions < len(living) * home:
         return _break_camp(state, party, SiegeEnd.STARVED)
@@ -4715,6 +4728,27 @@ def _advance_drills(state: WorldState) -> list[DomainEvent]:
     return events
 
 
+def _record_bridge(state: WorldState, built: BridgeBuilt) -> DomainEvent:
+    """Bridge a river border; every traveller crosses it at plain cost from now on."""
+    bridge = Bridge(
+        a=built.a, b=built.b, civilization_id=built.civilization_id, built_day=state.day
+    )
+    state.bridges = tuple(sorted((*state.bridges, bridge), key=lambda item: (item.a, item.b)))
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "bridge_built",
+        str(built.civilization_id),
+        _tile_id(built.a),
+        depth=built.depth,
+        journey=str(built.journey_id),
+        q=built.a.q,
+        r=built.a.r,
+        across_q=built.b.q,
+        across_r=built.b.r,
+    )
+
+
 def _record_road(state: WorldState, built: RoadBuilt) -> DomainEvent:
     """Raise a tile's road by one grade; the crew that built it sees what it made."""
     existing = next((road for road in state.roads if road.tile == built.tile), None)
@@ -4834,6 +4868,7 @@ def _advance_territory(state: WorldState) -> list[DomainEvent]:
         garrisoned,
         grades_of(state.roads),
         besieged=frozenset(siege.settlement_id for siege in state.sieges if siege.active),
+        bridges=bridged_edges(state.bridges),
         occupied={
             occupation.settlement_id: occupation.occupier_id
             for occupation in state.occupations
@@ -5329,6 +5364,7 @@ def advance_day(
             observations=civilization.observations,
             owners=candidate.territory.owner_of(),
             roads=grades_of(candidate.roads),
+            bridges=bridged_edges(candidate.bridges),
         )
         civilization.expeditions = expedition_result.expeditions
         civilization.observations = expedition_result.observations
@@ -5435,6 +5471,7 @@ def advance_day(
         rng=rng,
         world_map=candidate.world_map,
         roads=grades_of(candidate.roads),
+        bridges=bridged_edges(candidate.bridges),
         briefed=frozenset(
             civilization_id
             for civilization_id, civilization in candidate.civilizations.items()

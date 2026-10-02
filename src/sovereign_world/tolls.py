@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.resources import Resource
-from sovereign_world.travel import entry_cost
+from sovereign_world.travel import NO_BRIDGES, Bridges, entry_cost
 
 MAX_CARGO_RATE_BP = 2_000
 MAX_FOOD_PER_HEAD = 2
@@ -117,6 +117,8 @@ def detour(
     route: tuple[HexCoord, ...],
     index: int,
     avoid: frozenset[HexCoord],
+    *,
+    bridges: Bridges = NO_BRIDGES,
 ) -> tuple[HexCoord, ...] | None:
     """The shortest way over known land from route[index] back onto a later route tile.
 
@@ -142,7 +144,7 @@ def detour(
                 or neighbor in avoid
                 or neighbor not in known
                 or not world_map.contains(neighbor)
-                or entry_cost(world_map, neighbor, origin=tile) is None
+                or entry_cost(world_map, neighbor, origin=tile, bridges=bridges) is None
             ):
                 continue
             previous[neighbor] = tile

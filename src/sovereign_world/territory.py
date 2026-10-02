@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
-from sovereign_world.travel import Roads, entry_cost
+from sovereign_world.travel import NO_BRIDGES, Bridges, Roads, entry_cost
 
 SETTLEMENT_BASE_STRENGTH = 40
 SETTLEMENT_STRENGTH_PER_ROOT = 8
@@ -155,6 +155,7 @@ def influence_field(
     world_map: WorldMap,
     sources: Iterable[tuple[HexCoord, int]],
     roads: Roads | None = None,
+    bridges: Bridges = NO_BRIDGES,
 ) -> dict[HexCoord, int]:
     """Best (strength - travel cost) from any source, over passable land, above zero.
 
@@ -173,7 +174,7 @@ def influence_field(
         if value != best.get(tile):
             continue
         for neighbor in world_map.neighbors(tile):
-            cost = entry_cost(world_map, neighbor, roads, origin=tile)
+            cost = entry_cost(world_map, neighbor, roads, origin=tile, bridges=bridges)
             if cost is None:
                 continue
             reached = value - cost
@@ -189,6 +190,7 @@ def supply_connected(
     capital: HexCoord,
     civilization_id: EntityId,
     owners: Mapping[HexCoord, EntityId],
+    bridges: Bridges = NO_BRIDGES,
 ) -> bool:
     """Whether a source reaches its capital over land its civilization owns or nobody owns."""
     if start == capital:
@@ -198,7 +200,10 @@ def supply_connected(
     while frontier:
         tile = frontier.pop()
         for neighbor in world_map.neighbors(tile):
-            if neighbor in seen or entry_cost(world_map, neighbor, origin=tile) is None:
+            if (
+                neighbor in seen
+                or entry_cost(world_map, neighbor, origin=tile, bridges=bridges) is None
+            ):
                 continue
             if owners.get(neighbor, civilization_id) != civilization_id:
                 continue
@@ -257,6 +262,7 @@ def advance_territory(
     roads: Roads | None = None,
     besieged: frozenset[EntityId] = frozenset(),
     occupied: Mapping[EntityId, EntityId] | None = None,
+    bridges: Bridges = NO_BRIDGES,
 ) -> TerritoryDayResult:
     """Drift each civilization's hold toward its influence, then settle ownership.
 
@@ -309,7 +315,7 @@ def advance_territory(
         if strength and (
             capital is None
             or source_id in besieged
-            or not supply_connected(world_map, tile, capital, civilization_id, owners)
+            or not supply_connected(world_map, tile, capital, civilization_id, owners, bridges)
         ):
             strength //= 2
             cut_off.append(source_id)
@@ -317,7 +323,7 @@ def advance_territory(
 
     previous = territory.held_by_tile()
     fields = {
-        civilization_id: influence_field(world_map, civilization_sources, roads)
+        civilization_id: influence_field(world_map, civilization_sources, roads, bridges)
         for civilization_id, civilization_sources in sorted(sources.items())
     }
     held: dict[HexCoord, dict[EntityId, int]] = {}

@@ -9,7 +9,7 @@ from sovereign_world.commands import CommandEnvelope, CouncilReport, DirectOrder
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.diplomacy import ActiveTreaty, Contact, TreatyKind, TreatyOffer
 from sovereign_world.exploration import Observation
-from sovereign_world.hexmap import HexCoord, Terrain
+from sovereign_world.hexmap import HexCoord, RiverEdge, Terrain, corner_tiles, edge_key
 from sovereign_world.ids import EntityId
 from sovereign_world.rng import StableRng
 from sovereign_world.state import CivilizationState, WorldState, build_initial_state
@@ -197,4 +197,29 @@ def clear_message_id(prefix: str, *, start_day: int = 0, days: int = 8) -> str:
         lambda roll: roll >= 900,
         start_day=start_day,
         days=days,
+    )
+
+
+def flatten(state: WorldState, around: tuple[HexCoord, ...], reach: int = 2) -> None:
+    """Grassland within reach of the given tiles, and no rivers anywhere."""
+    near = {
+        tile.coord
+        for tile in state.world_map.tiles
+        if min(tile.coord.distance(spot) for spot in around) <= reach
+    }
+    state.world_map = replace(
+        state.world_map,
+        tiles=tuple(
+            replace(tile, terrain=Terrain.GRASSLAND) if tile.coord in near else tile
+            for tile in state.world_map.tiles
+        ),
+        rivers=(),
+    )
+
+
+def river(state: WorldState, first: HexCoord, second: HexCoord, flow: int) -> None:
+    a, b = edge_key(first, second)
+    edge = RiverEdge(a=a, b=b, flow=flow, downstream=corner_tiles(a, b)[0])
+    state.world_map = replace(
+        state.world_map, rivers=tuple(sorted((*state.world_map.rivers, edge)))
     )

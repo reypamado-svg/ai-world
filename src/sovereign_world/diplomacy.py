@@ -14,7 +14,7 @@ from sovereign_world.languages import fidelity, render
 from sovereign_world.people import Person
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
-from sovereign_world.travel import DAY, MAX_PROGRESS, Roads, entry_cost
+from sovereign_world.travel import DAY, MAX_PROGRESS, NO_BRIDGES, Bridges, Roads, entry_cost
 
 
 class MissionStatus(StrEnum):
@@ -271,6 +271,7 @@ def advance_diplomacy_day(
     world_map: WorldMap,
     roads: Roads | None = None,
     briefed: frozenset[EntityId] = frozenset(),
+    bridges: Bridges = NO_BRIDGES,
 ) -> DiplomacyDayResult:
     """Advance each ambassador along its known route without revealing foreign state.
 
@@ -313,7 +314,9 @@ def advance_diplomacy_day(
         # A day's walking may cover several cheap road tiles.
         while route_index < len(mission.route):
             origin = mission.route[route_index - 1] if route_index else None
-            cost = entry_cost(world_map, mission.route[route_index], roads, origin=origin)
+            cost = entry_cost(
+                world_map, mission.route[route_index], roads, origin=origin, bridges=bridges
+            )
             if cost is None:
                 raise ValueError("an ambassador route cannot enter impassable terrain")
             if progress < cost:
