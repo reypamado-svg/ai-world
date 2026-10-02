@@ -1,4 +1,5 @@
-"""council-3: sovereigns are told how the land is crossed, in words made from the rules."""
+"""council-3 and council-4: sovereigns are told how the land is crossed and, under rules
+version 2, how houses, ranks and civil research work, in words made from the rules."""
 
 import pytest
 
@@ -6,16 +7,29 @@ from sovereign_world.bridges import BRIDGE_LABOUR, BRIDGE_MATERIALS
 from sovereign_world.commands import build_council_report
 from sovereign_world.config import RunManifest, SovereignConfig, WorldConfig
 from sovereign_world.gateway.factory import build_sovereigns
-from sovereign_world.gateway.prompt import PROMPT_VERSION, charter, travel_rule
+from sovereign_world.gateway.prompt import (
+    PROMPT_VERSION,
+    buildings_rule,
+    charter,
+    housing_rule,
+    ranks_rule,
+    travel_rule,
+)
 from sovereign_world.hexmap import Terrain
+from sovereign_world.housing import HOUSE_GRADES, HOUSEHOLD
 from sovereign_world.ids import EntityId
+from sovereign_world.ranks import REALM_RANKS, SETTLEMENT_RANKS, WAR_PARTY_LIMIT
 from sovereign_world.state import build_initial_state
 from sovereign_world.travel import CROSSING_COST, DAY, ENTRY_COST, TILE_SPACING_M
 
 
-def _report():
+def _report(rules_version: int = 2):
     state = build_initial_state(
-        RunManifest.new(WorldConfig(seed=21, width=24, height=24), engine_version="0.2.0")
+        RunManifest.new(
+            WorldConfig(seed=21, width=24, height=24),
+            engine_version="0.2.0",
+            rules_version=rules_version,
+        )
     )
     return build_council_report(state, sorted(state.civilizations)[0])
 
@@ -47,7 +61,7 @@ def test_the_charter_states_the_travel_rules_from_the_tables() -> None:
 
 
 def test_new_sovereigns_use_this_prompt_version() -> None:
-    assert PROMPT_VERSION == "council-3"
+    assert PROMPT_VERSION == "council-4"
     assert SovereignConfig().prompt_version == PROMPT_VERSION
 
 
@@ -67,3 +81,24 @@ def test_a_run_recorded_with_council_2_keeps_its_hash_and_must_fork() -> None:
     assert reloaded.content_hash() == manifest.content_hash()
     with pytest.raises(ValueError, match="fork the run"):
         build_sovereigns(reloaded, (EntityId("civilization:0001"),))
+
+
+def test_rules_two_worlds_are_told_of_houses_ranks_and_civil_research() -> None:
+    new, old = charter(_report(2)), charter(_report(1))
+    for rule in (housing_rule(), ranks_rule(), buildings_rule()):
+        assert rule in new
+        assert rule not in old
+    assert travel_rule() in new and travel_rule() in old
+
+    houses = housing_rule()
+    assert f"Every {HOUSEHOLD} people need a house" in houses
+    for spec in HOUSE_GRADES.values():
+        assert f"{spec.person_days} person-days" in houses
+    ranks = ranks_rule()
+    for need in SETTLEMENT_RANKS.values():
+        assert f"{need.residents} people, {need.houses} houses" in ranks
+    for need in REALM_RANKS.values():
+        assert f"{need.people} people" in ranks
+    for limit in WAR_PARTY_LIMIT.values():
+        assert f"{limit} for a" in ranks
+    assert "hall" in buildings_rule() and "writing (250 points)" in buildings_rule()

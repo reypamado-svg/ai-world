@@ -79,7 +79,9 @@ def test_invalid_command_does_not_block_valid_decree() -> None:
 
 def test_baseline_sovereign_builds_starter_structures() -> None:
     config = WorldConfig(seed=21, width=24, height=24)
-    state = build_initial_state(RunManifest.new(config=config, engine_version="0.1.0"))
+    state = build_initial_state(
+        RunManifest.new(config=config, engine_version="0.1.0", rules_version=1)
+    )
     sovereigns = {civilization_id: BaselineSovereign() for civilization_id in state.civilizations}
 
     rng = StableRng(config.seed)
@@ -112,3 +114,20 @@ def test_food_reserve_decree_prevents_baseline_starvation() -> None:
         civilization.inventory.quantities.get(Resource.FOOD, 0) > 0
         for civilization in state.civilizations.values()
     )
+
+
+def test_under_rules_two_the_baseline_builds_houses_a_hall_and_a_storehouse() -> None:
+    config = WorldConfig(seed=21, width=24, height=24)
+    state = build_initial_state(RunManifest.new(config=config, engine_version="0.1.0"))
+    sovereigns = {civilization_id: BaselineSovereign() for civilization_id in state.civilizations}
+
+    rng = StableRng(config.seed)
+    for _ in range(25):
+        state = advance_day(state, rng, sovereigns=sovereigns).state
+    for civilization in state.civilizations.values():
+        [capital] = civilization.settlements
+        assert len(civilization.storehouses) == 6, "five founding granaries and a new one"
+        assert civilization.housing[capital.settlement_id].count >= 8, "a house beyond the 7 huts"
+        [hall] = civilization.institutions
+        assert hall.kind.value == "hall" and hall.built
+    assert all(decrees.get("housing_policy") == 10 for decrees in state.active_decrees.values())

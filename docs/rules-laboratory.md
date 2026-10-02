@@ -39,6 +39,18 @@ Without `--width` and `--height`, a world is 100 × 100 tiles (each 25 km across
 
 `run` resumes the latest verified journal state, advances the requested number of daily ticks, and saves a new checkpoint. Repeating `run` continues the same world.
 
+## Rules versions
+
+Each world records the rules it runs under in its manifest.
+- **Rules 2:** worlds made with `init` now. They add:
+  - houses: every five people need one, and births need room;
+  - settlement ranks (village to city) and realm ranks (chiefdom to empire), and what they unlock;
+  - the hall, armoury and training grounds;
+  - civil research;
+  - decrees that end when their days run out.
+- **Rules 1:** worlds made before rules versions were recorded. They keep rules 1 and replay and verify exactly as before.
+- **Forks:** a fork keeps its parent's rules.
+
 ## Checkpoint, replay, and verify
 
 ```powershell

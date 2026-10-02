@@ -156,3 +156,132 @@ Seed 21's four capitals moved from 13 tiles apart to 26: (81,27), (95,95), (4,25
   - Sampling costs about 3.4 µs per point.
 - **Sites on the map:** sites are marked with a glyph per kind, labelled "engine day 0" from about 600 px per tile, and shown as dots on the minimap.
 - **Speeds:** the buttons are now 1×, 10×, 25×, 50× and 100×.
+
+## S2 as built: houses, ranks, rank buildings, civil research (rules version 2)
+
+Planned in detail with Fable 5.1. The rank buildings were added at the user's request, after research into Age of Empires and Manor Lords.
+
+**Rules versions.**
+- The manifest and the world record `rules_version`.
+- `init` makes rules 2. Older manifests and saves read as rules 1 and leave the field out, so they hash and replay as before. A fork keeps its parent's rules.
+- `rules.py` turns the version into switches: houses, decrees that expire, ranks, civil research.
+- The shared scenario helpers stay on rules 1, so tests of other mechanics keep testing those mechanics.
+- All 14 reference runs keep every daily hash.
+
+**Houses** (`housing.py`). Every five people need a house (a household of about five is the figure most used for early towns).
+
+| House | Cost | Needs |
+|---|---|---|
+| Hut | 10 timber, 5 person-days | — |
+| House | 20 timber, 10 stone, 10 person-days | timbercraft |
+| Stone house | 10 timber, 30 stone, 15 person-days | stoneworking |
+
+- **Starting huts:** founders raise 7 huts at the capital. Settlers raise one hut for every five as they arrive.
+- **Births:** women conceive only at a settlement that has a house for everyone it feeds (captives held there count), three months of food in its own store, and the growth decree in force. Under rules 1 the old single gate stands, and every random draw is unchanged.
+- **Building:** a shelter project builds 1 to 20 houses of the best kind the people know, one after another. The builders stand at one settlement and take the materials from its store. If every builder dies, the unused materials go back.
+- **Housing decree:** `HOUSING_POLICY` (0–100) keeps that share of spare room. When a settlement falls short, the two lowest-numbered idle grown-ups start a house, if its store can pay.
+- **Decrees expire:** every decree now ends when its `duration_days` run out, unless a council issues it again. The check runs before the councils, so renewing a decree on its last day leaves no gap.
+- **Losses:** a settlement stormed, or its storehouse burned, loses a quarter of its houses, the meanest first. One left empty for a year loses a house a month.
+- **Moves:** houses pass with a ceded settlement and are gone with a fallen people.
+
+**Settlement ranks** (`ranks.py`). Each rank above village also needs an open hall.
+
+| Rank | People | Houses | Also needs |
+|---|---|---|---|
+| Small town | 300 | 60 | storehouse grade; timbercraft or stoneworking |
+| Town | 1,000 | 200 | walls; writing; an open institution of one more kind |
+| Big town | 3,000 | 600 | 2 more kinds; surveying or organised logistics; a quarter of houses stone |
+| City | 8,000 | 1,600 | 3 more kinds including an archive; writing and organised logistics; a warehouse; stone walls; a quarter of houses stone |
+
+- **Sizes** follow the medieval town sizes in Medieval Demographics Made Easy.
+- **Evaluation:** ranks are weighed at each monthly council and move one step at a time.
+- **Keeping a rank:** it holds while people and houses stay at 70% or more of the threshold, and is lost with a required work, craft or building. Losing the hall drops the settlement a step.
+
+**Realm ranks.**
+
+| Rank | Settlements | People | Land | Also needs |
+|---|---|---|---|---|
+| Kingdom | 3, including a town | 2,000 | 40 tiles | writing; an open archive or diplomatic service |
+| Empire | 8, including a city | 20,000 | 150 tiles | organised logistics; rule over other peoples |
+
+- **Rule over other peoples** means one of:
+  - tribute received under a treaty in force;
+  - a settlement it occupies;
+  - a settlement ceded to it;
+  - a tenth of its free people living by another culture.
+
+  It is needed to rise, not to stay.
+- **Sources:** Service's band–tribe–chiefdom–state sequence (1962) and Carneiro's circumscription theory (1970) shaped the chiefdom-to-kingdom step. Taagepera's work on empire sizes (1978) shaped the land a great realm needs.
+
+**What ranks unlock** (rules 2 only; refusals use `rank_required` or `party_too_large`).
+
+| Gate | Needs |
+|---|---|
+| Warehouse | small town |
+| Depot | town |
+| Toll takings | a small town to receive them |
+| Institutions besides the hall | village 1, small town 3, town 4, big town 6, city any number |
+| War party size | 16 people for a chiefdom, 24 for a kingdom, 32 for an empire (uncapped under rules 1) |
+| Demanding tribute in peace terms | the proposer is a kingdom or above |
+| Research | scholars in a city earn 1 point a day more |
+
+**Rank buildings** (new institution kinds; founded and kept like the others).
+
+| Building | Unlock | Cost | Effect while open |
+|---|---|---|---|
+| Hall | any settlement | 40 timber, 20 stone, 20 person-days | the seat every rank above village needs; its settlement's hold on the land is 10 stronger (about one more tile); takes no slot |
+| Armoury | small town | 30 timber, 30 stone, 20 person-days | equipment made there 50% faster; bronze arms and catapults are made only at an open armoury |
+| Training grounds | small town | 40 timber, 10 stone, 15 person-days | drill there raises arms 10 further (30, or 40 with drill doctrine) |
+| Ranch, stables | reserved: village, small town | — | built once wild animals arrive and can be tamed |
+
+The idea follows both games:
+- **Age of Empires:** the Town Center is the anchor every age-up builds on.
+- **Manor Lords:** the settlement level comes from housing, and the manor is the lord's seat.
+
+**Civil research** (rules 2).
+
+| Topic | Points | Needs |
+|---|---|---|
+| Writing | 250 | a small town |
+| Irrigation | 300 | cultivation, and a field with a river or 10% wetland |
+| Herbal care | 200 | — |
+| Fishing | 150 | water at or beside a settlement |
+| Surveying | 300 | writing |
+| Organised logistics | 400 | writing and surveying |
+
+- **Half pace:** from kingdom rank, civil research runs at half pace without an open school or archive.
+- **Now reachable:** writing opens the archive, school and diplomatic service; herbal care opens the healers' house. These were unreachable before.
+- **Deferred:** the food from irrigation and fishing comes in S3, with the land-cover mechanics that rewrite farm capacity. Navigation is not offered yet.
+
+**Council-4.**
+- **Prompt version:** `council-4`.
+- **Rules text:** for rules-2 worlds the charter adds a housing rule, a ranks rule and a buildings-and-research rule, each written from the engine's own tables.
+- **Reply schema:** it gains `house_count` and the new decree and institution kinds.
+- **Older runs:** council-3 runs fork onto council-4, as before.
+- **Report:** under rules 2 it carries `rules_version`, `housing`, `house_jobs`, `ranks` and `realm_rank`. These are left out under rules 1, so older reports and prompts read exactly as before.
+- **Baseline sovereign under rules 2:**
+  - adds a housing decree of 10%;
+  - sizes a shelter order to restore that spare room, within what the store can afford;
+  - founds a hall at the capital on day 0.
+
+  Under rules 1 its orders are unchanged.
+
+**A two-year sample run** (seed 21, 48×48, the baseline sovereign, rules 2):
+
+| Measure | Result |
+|---|---|
+| Hall | built and open at every capital by day 20 |
+| Houses | 9 to 10 per capital after two years, from 7 at the start; 9 houses built in all, always a little ahead of the people |
+| People | 39, 40, 41 and 40 per civilization: the same as the same world under rules 1, so houses kept pace and did not slow growth |
+| Ranks | none: a small town needs 300 people |
+| Speed | 25 s for 730 days |
+
+**Known limit.** Timber is not gathered yet; it comes in S3. A rules-2 people builds with its starting 500 timber, enough for about 25 houses or 50 huts (room for 125 to 250 more people), and then stops growing.
+
+**For the observer (O2).** O2 will draw:
+- each settlement's houses from `housing` (counts per grade; hut, house or stone-house sprite) around its storehouses;
+- crowding from slots against residents;
+- building sites from `house_jobs`;
+- the hall, armoury and training grounds as institution sprites.
+
+The current sample village stays until then.
