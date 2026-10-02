@@ -27,14 +27,18 @@ for (const n of [400, 2000, 5000]) {
   await page.goto(`http://127.0.0.1:${server.address().port}/index.html?citizens=${n}&quality=${quality}`);
   await page.waitForFunction(() => window.__observer?.ready || window.__observerError, null, { timeout: 600000 });
   const loadMs = Date.now() - t0;
+  // Zooms: settlement 1.0, local 0.1, regional with a tile 3,000 px wide, atlas the whole world.
   for (const [view, zoom] of [
     ['settlement', 1.0],
-    ['regional', 0.2],
-    ['atlas', 0.03],
+    ['local', 0.1],
+    ['regional', 'tile-3000'],
+    ['atlas', 'home'],
   ]) {
     await page.evaluate((z) => {
-      window.__observer.setPaused(false);
-      window.__observer.viewVillage(z);
+      const o = window.__observer;
+      o.setPaused(false);
+      if (z === 'home') o.home();
+      else o.viewVillage(z === 'tile-3000' ? o.zoomForTilePx(3000) : z);
     }, zoom);
     await page.evaluate(() => window.__observer.settle());
     await page.waitForTimeout(6000); // let the ticker run in real time
@@ -70,6 +74,11 @@ const cols = [
   'drawnSprites',
   'loadedChunks',
   'gpuBytes',
+  'patchSize',
+  'visiblePatches',
+  'patchBytes',
+  'patchBakeMsAvg',
+  'decorSprites',
   'atlasBytes',
   'jsHeapBytes',
   'quality',

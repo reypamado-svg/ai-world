@@ -371,3 +371,97 @@ O1 measured 11 days per second at 48×48 on a version-1 world.
 - **Journal writes now dominate.** Every day the whole state is written. At 48×48 that is 485 KB of JSON: about 50 ms to gzip at the default level 9, 18 ms to hash and 7 ms to serialize.
 
 **Suggested follow-up (not done here).** A lower gzip level, or journal deltas. Either would change the bytes of new journals, so it belongs in its own change.
+
+## O1b as built: the observer at 25 km tiles
+
+Planned with Fable 5.1 and built in six commits (C1–C6).
+
+**Scale from the world rule (C1).**
+- The terrain export (version 3) carries the engine's travel tables under `engine.travel`: tile spacing, day length in tenths, entry and crossing costs, and the stream and deep thresholds. The presentation hex radius is gone. The client derives the radius as 25,000 / √3 m and fails loudly if the table is missing.
+- Texture levels are set in screen pixels per tile (chunks 32–256, tiles 512 / 1,024), so they hold at any tile size. At 25 km a tile is 565,685 px wide at zoom 1; the whole world fits the screen at zoom 1.4e-5.
+- The camera has four bands:
+
+  | Band | Zoom |
+  |---|---|
+  | atlas | below 4.5e-4 (a tile under 256 px) |
+  | regional | 4.5e-4 – 0.02 |
+  | local | 0.02 – 0.5 |
+  | settlement | from 0.5 |
+
+- The wheel zooms faster and the buttons double or halve the zoom, for five decades of zoom.
+
+**The courier walks for days (C1).**
+- `sim/travel-plan.js` plans the SAMPLE courier's trip from the engine's costs: a tile takes its entry cost in days; each day is five hours of walking and then a camp.
+- A ford is waded at the border for its crossing cost. Deep rivers and water are refused.
+- On the seed-21 route (two grassland tiles west) the courier walks, camps, arrives on day two, waits a day and walks home. This is a visual approximation, and the inspector says so.
+
+**Local-origin rule (C2).**
+- Canvas paths and Pixi graphics are float32, and at this scale the world is about 8e7 screen pixels wide, where float32 steps are 8 px. Every chunk and tile texture now paints relative to its own centre. The village's crowd dots and pin are drawn relative to the village. Sprites and containers carry the anchor in float64.
+- The precision test paints a tile at (99, 99) from two nearby anchors: 0 pixels differ. From the world origin, about 870 do.
+
+**Rivers in metres (C2).**
+- `world/rivers.js` gives each river border a channel width by depth class: streams 40–60 m, fordable rivers 80–140 m, deep rivers 150–400 m.
+- The wandering curve is analytic and seeded by the border, so every level draws the same curve and both tiles agree.
+- Shallow borders show a gravel ford bar (presentation). The map keeps a minimum width of 1–3 px by flow.
+
+**Tile interiors (C3).**
+- `world/interior.js` is a pure colour field over the plane, painted from each tile's own values:
+  - meadow or steppe by moisture;
+  - canopy clumps by timber;
+  - a snow line on mountains that rises with temperature;
+  - dunes and rock in deserts, frost on tundra, wind ridges on snowfields;
+  - hillshade whose strength follows the terrain.
+- Land tiles blend over 15% of the radius: half and half at a border and a third each at a corner, from either side.
+- Where water meets land, the shoreline wanders up to 16% of the radius off the border, corners round off, and a beach and shallows line it.
+- Patterns finer than the sampling fade instead of aliasing.
+- Map colours, tile textures and patches all sample the same field, so they agree.
+
+**Ground patches and trees (C4).**
+- From about 1,700 px per tile, the ground is drawn as square plane patches of 3,200 m down to 6.25 m, each 256 texels.
+- Each patch is baked from the field on a 33- or 65-point lattice, scaled up, with a world-aligned grain and the rivers.
+- The patch size keeps a texel under two screen pixels. Coarser patches show beneath until finer ones are ready, and a one-texel overlap hides seams.
+- Budget: 320 patches or 96 MB, two bakes a frame (one at low quality).
+- Trees, bushes and rocks come in 50 m cells from the tile beneath: timber for trees, stone for rocks. They never appear in water, in a river channel or in the village's clear zone.
+
+**Village in its tile (C5).**
+- The village stands at the tile centre with a SAMPLE ring of fields 60–400 m out, about 800 m across. The badge says so.
+- The footer states the world rule and says whether a river borders the capital tile.
+
+**Measurements (C6).**
+- Run with `node tests/measure.mjs`, at quality high and 1600 × 900. The container renders with software GL, so the frame times are NOT representative of a real GPU.
+- JS update time per frame, average (p95), in milliseconds:
+
+  | Citizens | settlement 1.0 | local 0.1 | regional (tile 3,000 px) | atlas (world) |
+  |---|---|---|---|---|
+  | 400 | 6.7 (18) | 5.0 (14) | 0.4 (0.9) | 1.9 (6.5) |
+  | 2,000 | 16 (37) | 10 (24) | 1.4 (3.0) | 3.2 (7.7) |
+  | 5,000 | 36 (81) | 23 (50) | 3.1 (7.8) | 4.8 (8.6) |
+
+- Patch bakes averaged 2.3–4.3 ms.
+- Patch memory peaked at 37.5 MB (31 visible 3,200 m patches) and stayed far under the 96 MB budget.
+- Terrain textures used 44.5 MB at the whole-world view (169 chunks).
+
+**Tests.**
+- New:
+  - `travel-plan.test.mjs` (6);
+  - `rivers.test.mjs` (2);
+  - `interior.test.mjs` (8);
+  - `patches.test.mjs` (2);
+  - `precision.test.mjs` (2);
+  - a patch-budget zoom-through in `bands.test.mjs`.
+- `bands.test.mjs` follows the courier days into the journey.
+- `counts`, `hex` and `streaming` take zooms in screen pixels per tile.
+- All 45 browser tests and the exporter tests pass.
+
+**Deviations from the plan.**
+- Fords are drawn on every shallow border, not only on the courier's route (none of the sample route's borders carries a river).
+- Hex outlines are drawn only between land tiles.
+- Detailed tiles request their neighbours' chunks so they can blend. Without this, the first view at some zooms never finished.
+- Decor cells are sorted by cell, not against travellers. This is the same known limitation as before.
+
+**Deferred.**
+- Bridge glyphs (the day-0 export has none).
+- Roads and territory borders.
+- Web Worker bakes, until bakes are measured over 8 ms a frame on real hardware.
+- Ocean wave animation.
+- Couriers for other capitals.

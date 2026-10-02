@@ -40,13 +40,16 @@ export class VillageLayer {
     this.dots = new PIXI.Graphics();
     this.pin = new PIXI.Graphics();
     this.badge = new PIXI.Container();
-    const g = new PIXI.Graphics();
-    g.roundRect(-6, -40, 300, 34, 6).fill({ color: 0x1b1408, alpha: 0.85 }).stroke({ width: 1.5, color: 0xe9b44c });
     const text = new PIXI.Text({
       text: `SAMPLE village · ${village.scene.people.length} sample citizens · fields: SAMPLE`,
       style: { fontFamily: 'system-ui, sans-serif', fontSize: 12, fontWeight: '700', fill: 0xe9b44c },
     });
     text.position.set(2, -33);
+    // The box fits the text.
+    const g = new PIXI.Graphics();
+    g.roundRect(-6, -40, text.width + 16, 34, 6)
+      .fill({ color: 0x1b1408, alpha: 0.85 })
+      .stroke({ width: 1.5, color: 0xe9b44c });
     this.badge.addChild(g, text);
     const o = project(village.origin.x, village.origin.y);
     this.badge.position.set(o.x - 100, o.y + 60);

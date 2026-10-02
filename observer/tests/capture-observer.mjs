@@ -1,5 +1,7 @@
-// Review material for the O1 observer prototype.
+// Review material for the observer prototype (O1b: 25 km tiles).
 //   node tests/capture-observer.mjs <outdir> [--clip]
+// Zooms are given as screen pixels per tile where the tile is the subject, so
+// the shots keep their framing if the tile size changes.
 // The clip steps display time and zoom deterministically (24 fps), so it is
 // smooth even under slow software rendering.
 import { chromium } from 'playwright';
@@ -27,12 +29,14 @@ async function open(viewport) {
 
 const page = await open({ width: 1600, height: 900 });
 const shots = [
-  ['o1-01-world-atlas', (o) => o.home()],
-  ['o1-02-atlas-capital', (o) => o.viewVillage(0.035)],
-  ['o1-03-regional', (o) => o.viewVillage(0.14)],
-  ['o1-04-regional-close', (o) => o.viewVillage(0.32)],
-  ['o1-05-settlement', (o) => o.viewVillage(0.65)],
-  ['o1-06-settlement-close', (o) => o.viewVillage(1.3)],
+  ['o1b-01-world-atlas', (o) => o.home()],
+  ['o1b-02-atlas-capital', (o) => o.viewVillage(o.zoomForTilePx(60))],
+  ['o1b-03-regional-tiles', (o) => o.viewVillage(o.zoomForTilePx(600))],
+  ['o1b-04-regional-patches', (o) => o.viewVillage(0.002)],
+  ['o1b-05-local-3km', (o) => o.viewVillage(0.02)],
+  ['o1b-06-local-fields', (o) => o.viewVillage(0.07)],
+  ['o1b-07-settlement', (o) => o.viewVillage(0.65)],
+  ['o1b-08-settlement-close', (o) => o.viewVillage(1.3)],
 ];
 for (const [name, fn] of shots) {
   await page.evaluate(`(${fn.toString()})(window.__observer)`);
@@ -41,30 +45,33 @@ for (const [name, fn] of shots) {
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${out}/${name}.png` });
 }
-// Inspector and following the courier out across tiles.
+// Inspector and following the courier: camped on the first night, days from home.
 await page.evaluate(async () => {
   const o = window.__observer;
   const id = o.courierId();
-  o.setTime(40);
-  o.viewVillage(0.9);
+  const camp = o.courierPlan().camps[0];
+  o.setTime(camp.t0 + 600);
   o.select(id);
   o.follow(true);
-  for (let i = 0; i < 160; i += 1) o.step(1);
+  const p = o.positionOf(id);
+  o.view(p.x, p.y, 0.9);
+  for (let i = 0; i < 20; i += 1) o.step(0.5);
   await o.settle();
 });
 await page.waitForTimeout(700);
-await page.screenshot({ path: `${out}/o1-07-follow-courier.png` });
+await page.screenshot({ path: `${out}/o1b-09-follow-courier-camp.png` });
 await page.evaluate(async () => {
   const o = window.__observer;
   o.follow(false);
-  o.viewVillage(0.2);
+  const p = o.positionOf(o.courierId());
+  o.view(p.x, p.y, 0.05);
   await o.settle();
 });
 await page.waitForTimeout(500);
-await page.screenshot({ path: `${out}/o1-08-follow-pin-regional.png` });
+await page.screenshot({ path: `${out}/o1b-10-courier-pin-local.png` });
 await page.evaluate(() => document.getElementById('btn-measure').click());
 await page.waitForTimeout(300);
-await page.screenshot({ path: `${out}/o1-09-measurements-panel.png` });
+await page.screenshot({ path: `${out}/o1b-11-measurements-panel.png` });
 await page.close();
 
 if (wantClip) {
@@ -140,7 +147,7 @@ if (wantClip) {
     '21',
     '-movflags',
     '+faststart',
-    `${out}/o1-zoom-through.mp4`,
+    `${out}/o1b-zoom-through.mp4`,
   ]);
   if (r.status !== 0) console.log('ffmpeg failed:', String(r.stderr));
   else console.log(`clip: ${n} frames`);
