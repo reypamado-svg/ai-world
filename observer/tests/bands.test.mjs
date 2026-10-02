@@ -127,7 +127,7 @@ test('follow keeps the selected courier across a chunk boundary', async () => {
   const r = await page.evaluate(() => {
     const o = window.__observer;
     const id = o.courierId();
-    // At 40 s the courier is on the village main road, walking out east.
+    // At 40 s the courier is on the village roads, walking out toward a tile in another chunk.
     const t = 40;
     o.setTime(t);
     o.select(id);
@@ -145,11 +145,15 @@ test('follow keeps the selected courier across a chunk boundary', async () => {
       if (i > 20) maxLag = Math.max(maxLag, Math.hypot(at.x - 640, at.y - (720 - 72) / 2));
       if (chunks.length >= 2 && i > 30) break;
     }
-    return { chunks, selection: o.selection(), maxLag, personChunk: o.chunkOfPerson(id) };
+    const info = o.villageInfo();
+    const chunkOf = ([q, r]) => `${Math.floor(q / 8)},${Math.floor(r / 8)}`;
+    const expected = [chunkOf(info.tile), chunkOf(info.courierTile)];
+    return { chunks, expected, selection: o.selection(), maxLag, personChunk: o.chunkOfPerson(id) };
   });
   assert.ok(r.chunks.length >= 2, `camera stayed in ${r.chunks}`);
-  assert.equal(r.chunks[0], '2,3');
-  assert.equal(r.chunks[1], '3,3');
+  assert.notEqual(r.expected[0], r.expected[1]);
+  assert.equal(r.chunks[0], r.expected[0]);
+  assert.equal(r.chunks[1], r.expected[1]);
   assert.deepEqual(r.selection, { id: await page.evaluate(() => window.__observer.courierId()), following: true });
   assert.ok(r.maxLag < 200, `camera lagged ${r.maxLag}px behind the courier`);
 });

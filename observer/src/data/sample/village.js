@@ -95,5 +95,5 @@ export function observerVillage(footprintOf, R, tile, route = { dq: 1, dr: 0, st
 
   const alpha = (x, y) => Math.max(0, Math.min(1, (inradius - hexDistance(x, y)) / 6));
   const groundBounds = { x0: -R, y0: -R, x1: R, y1: R };
-  return { scene, origin, tile, alpha, groundBounds, dropped, courierId: id };
+  return { scene, origin, tile, alpha, groundBounds, dropped, courierId: id, courierTile: [tq, tr] };
 }

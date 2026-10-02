@@ -486,7 +486,12 @@ function buildApi(app) {
     setQuality: (mode) => app.quality.setMode(mode),
     villageInfo: () =>
       app.villageData
-        ? { tile: app.villageData.tile, origin: app.villageData.origin, dropped: app.villageData.dropped }
+        ? {
+            tile: app.villageData.tile,
+            origin: app.villageData.origin,
+            dropped: app.villageData.dropped,
+            courierTile: app.villageData.courierTile,
+          }
         : null,
   };
 }
