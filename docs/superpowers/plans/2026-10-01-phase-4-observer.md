@@ -356,3 +356,18 @@ The user asked for a third-party model to review the phase. Draft PR #35 (base `
 - **Default size.** `init` now makes a 100 × 100 world by default (about 2,500 km across). The demo docs and the two tests that relied on the old default pass explicit sizes.
 
 **Tests.** `tests/test_bridges.py` (7) and `tests/test_charter.py` (3).
+
+**Throughput after G5.** `tests/observer/throughput.py`, seed 21, scripted sovereigns, no providers. It includes process start-up and a journal write every day.
+
+| World | 365 days | Days per second | Living at the end |
+|---|---|---|---|
+| 48×48 | 52 s | 7.0 | 141 |
+| 100×100 | 131 s | 2.8 | 141 |
+
+O1 measured 11 days per second at 48×48 on a version-1 world.
+
+**Where the time goes.**
+- **The simulation itself.** Profiling showed most of its time was spent deep-copying the state each day, including the frozen world map. `WorldMap.__deepcopy__` now returns the map itself, which halves an in-memory day. Without journal writes, version-1 and version-2 worlds run at a similar speed.
+- **Journal writes now dominate.** Every day the whole state is written. At 48×48 that is 485 KB of JSON: about 50 ms to gzip at the default level 9, 18 ms to hash and 7 ms to serialize.
+
+**Suggested follow-up (not done here).** A lower gzip level, or journal deltas. Either would change the bytes of new journals, so it belongs in its own change.

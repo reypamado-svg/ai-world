@@ -349,3 +349,14 @@ def _pair_map() -> tuple[Tile, ...]:
 def test_world_map_rejects_malformed_rivers(edge: RiverEdge, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         WorldMap(width=3, height=3, tiles=_pair_map(), rivers=(edge,))
+
+
+def test_copying_a_state_shares_its_frozen_map() -> None:
+    state = build_initial_state(RunManifest.new(WorldConfig(seed=7, width=24, height=24), "0.2.0"))
+
+    copy = state.model_copy(deep=True)
+
+    assert copy.world_map is state.world_map, "the map never changes, so copies share it"
+    assert state_hash(copy) == state_hash(state)
+    with pytest.raises(AttributeError):
+        copy.world_map.width = 1  # type: ignore[misc]

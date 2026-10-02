@@ -117,6 +117,10 @@ class WorldMap:
     def neighbors(self, coord: HexCoord) -> tuple[HexCoord, ...]:
         return tuple(neighbor for neighbor in coord.neighbors() if self.contains(neighbor))
 
+    def __deepcopy__(self, memo: dict[int, object]) -> WorldMap:
+        # Frozen all the way down (tiles, rivers, coordinates): a copy can share it.
+        return self
+
     def river_between(self, first: HexCoord, second: HexCoord) -> RiverEdge | None:
         """The river running along the border of two tiles, if any."""
         index: dict[tuple[HexCoord, HexCoord], RiverEdge] = self.__dict__["_river_index"]
