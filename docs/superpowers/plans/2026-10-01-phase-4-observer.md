@@ -300,3 +300,29 @@ The user reviewed O1 and asked for realistic terrain: tiles generated from their
 - that malformed rivers are refused.
 
 The exporter test checks `hydrology.json` against the engine. The full suite passed with one expected fix: a test that built its "defaults" manifest with `RunManifest.new`.
+
+## Third-party review (Codex) and G3 crossing rules
+
+The user asked for a third-party model to review the phase. Draft PR #35 (base `main`, not for merging yet) was opened, and Codex reviewed commit c238e55. All three findings were real; each was fixed with a test, answered on its thread and resolved.
+
+| Finding | What changed |
+|---|---|
+| **P1:** deep rivers blocked only start placement; movement and route checks ignored river borders | Built G3 on the PR (d1fb900, 5451a9b; detail below). |
+| **P2:** the courier fell back to an unchecked route | `chooseCourierRoute` falls back to a single checked step, or returns no route, in which case the courier stays in the village (9371e7b, `route.test.mjs`). |
+| **P2:** the `animHz` quality setting was never read | Citizens are drawn at a display time stepped to the level's rate, and unchanged schedule updates are skipped. At 15 Hz there are at most 17 recomputes per 60 frames, against at least 55 at high quality (9371e7b, `counts.test.mjs`). |
+
+**G3 rules (`travel.py`).**
+- `entry_cost(..., origin=)` adds the border crossing:
+  - a stream (flow below 4) adds half a day;
+  - a river adds a day;
+  - a deep river (flow 10 or more) cannot be crossed on foot.
+- `passable` and `travel_days` take `start=`, and `way_to` goes around deep borders.
+- `MAX_PROGRESS` covers the dearest crossing. It is only an upper bound, so old data still loads.
+
+**Callers.**
+- Every caller passes the tile walked from: journeys and their day counts, roadwork, ambassadors, expeditions, territory influence and supply connection, toll detours, occupation and siege homeward days, and every route check in commands.
+- **Expeditions.** One is refused only for a deep river seen from a known tile. An unseen one stops the explorers (BLOCKED) and reveals the far bank.
+- **Council reports** carry `known_rivers` with their depth.
+- **The baseline survey** stops short of known water and known deep rivers.
+
+**Tests.** `tests/test_crossings.py` has 9 tests. The full suite passed (462 passed, 2 skipped) once three expedition tests were changed to choose a neighbour that really is one day away. The soak seed matrix passed 100/100.
