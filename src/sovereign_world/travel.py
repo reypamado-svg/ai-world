@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from math import ceil
+from typing import Literal
 
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
 from sovereign_world.roads import RoadGrade, road_cost
@@ -23,35 +24,110 @@ ENTRY_COST: dict[Terrain, int | None] = {
 }
 """Cost of entering a tile, in tenths of a day; None means impassable."""
 
-MAX_PROGRESS = -(-max(cost for cost in ENTRY_COST.values() if cost is not None) * 3 // 2) + DAY
-"""Unspent walking never reaches this: the dearest tile, slowed by siege engines, plus a day."""
 
+STREAM_FLOW = 4
+"""Rivers below this flow are streams."""
+DEEP_FLOW = 10
+"""Rivers at or above this flow are too deep to wade."""
+
+Depth = Literal["stream", "river", "deep"]
+
+CROSSING_COST: dict[Depth, int | None] = {"stream": 5, "river": 10, "deep": None}
+"""Extra cost of wading across a river border, in tenths of a day; None means it cannot be
+waded."""
+
+MAX_PROGRESS = (
+    -(
+        -(
+            max(cost for cost in ENTRY_COST.values() if cost is not None)
+            + max(cost for cost in CROSSING_COST.values() if cost is not None)
+        )
+        * 3
+        // 2
+    )
+    + DAY
+)
+"""Unspent walking never reaches this: the dearest tile and river crossing, slowed by siege
+engines, plus a day."""
 
 Roads = Mapping[HexCoord, RoadGrade]
 """The road grade of each tile that has a road."""
 
 
-def entry_cost(world_map: WorldMap, coord: HexCoord, roads: Roads | None = None) -> int | None:
-    """What entering a tile costs, or None if it cannot be entered; roads make it cheaper."""
+def river_depth(flow: int) -> Depth:
+    """How deep a river of this flow is: stream, river or deep."""
+    if flow < STREAM_FLOW:
+        return "stream"
+    if flow < DEEP_FLOW:
+        return "river"
+    return "deep"
+
+
+def crossing(world_map: WorldMap, origin: HexCoord, coord: HexCoord) -> int | None:
+    """The extra cost of crossing the border from origin into coord: 0 where no river runs,
+    a wading cost for a stream or river, and None where a deep river cannot be crossed."""
+    river = world_map.river_between(origin, coord)
+    if river is None:
+        return 0
+    return CROSSING_COST[river_depth(river.flow)]
+
+
+def entry_cost(
+    world_map: WorldMap,
+    coord: HexCoord,
+    roads: Roads | None = None,
+    *,
+    origin: HexCoord | None = None,
+) -> int | None:
+    """What entering a tile costs, or None if it cannot be entered; roads make it cheaper.
+
+    Given the tile the traveller comes from, a river along the border between them is
+    crossed too: wading adds to the cost, and a deep river cannot be crossed at all.
+    """
     terrain = world_map.tile(coord).terrain
     base = ENTRY_COST[terrain]
+    if base is None:
+        return None
     grade = roads.get(coord) if roads else None
-    if base is None or grade is None:
-        return base
-    return road_cost(terrain, grade)
+    cost = base if grade is None else road_cost(terrain, grade)
+    if origin is None:
+        return cost
+    extra = crossing(world_map, origin, coord)
+    return None if extra is None else cost + extra
 
 
-def passable(world_map: WorldMap, tiles: Iterable[HexCoord]) -> bool:
-    return all(entry_cost(world_map, tile) is not None for tile in tiles)
+def _steps(
+    entered: Iterable[HexCoord], start: HexCoord | None
+) -> Iterable[tuple[HexCoord | None, HexCoord]]:
+    """Each tile entered, with the tile it is entered from when that is known."""
+    previous = start
+    for tile in entered:
+        yield previous, tile
+        previous = tile if start is not None else None
+
+
+def passable(
+    world_map: WorldMap, tiles: Iterable[HexCoord], *, start: HexCoord | None = None
+) -> bool:
+    """Whether every tile can be entered; given the start, also every river border crossed."""
+    return all(
+        entry_cost(world_map, tile, origin=origin) is not None
+        for origin, tile in _steps(tiles, start)
+    )
 
 
 def travel_days(
-    world_map: WorldMap, entered: Iterable[HexCoord], roads: Roads | None = None
+    world_map: WorldMap,
+    entered: Iterable[HexCoord],
+    roads: Roads | None = None,
+    *,
+    start: HexCoord | None = None,
 ) -> int:
-    """Whole days needed to enter each tile in turn, ignoring delays."""
+    """Whole days needed to enter each tile in turn, ignoring delays; given the start, river
+    crossings on the way are counted too."""
     total = 0
-    for tile in entered:
-        cost = entry_cost(world_map, tile, roads)
+    for origin, tile in _steps(entered, start):
+        cost = entry_cost(world_map, tile, roads, origin=origin)
         if cost is None:
             raise ValueError(f"tile {tile} is impassable")
         total += cost
@@ -84,7 +160,7 @@ def way_to(
             for neighbor in sorted(tile.neighbors()):
                 if neighbor in previous or not world_map.contains(neighbor):
                     continue
-                if entry_cost(world_map, neighbor) is None:
+                if entry_cost(world_map, neighbor, origin=tile) is None:
                     continue
                 previous[neighbor] = tile
                 if neighbor in goals:

@@ -42,6 +42,9 @@ def _world(kind: TreatyKind | None = TreatyKind.TRADE):
             replace(tile, terrain=Terrain.GRASSLAND) if tile.coord in band else tile
             for tile in state.world_map.tiles
         ),
+        rivers=tuple(
+            edge for edge in state.world_map.rivers if edge.a not in band and edge.b not in band
+        ),
     )
     civilization = state.civilizations[home]
     seen = {item.tile: item for item in civilization.observations}

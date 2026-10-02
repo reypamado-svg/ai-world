@@ -28,7 +28,8 @@ from sovereign_world.config import CURRENT_GENERATOR, RunManifest, WorldConfig
 from sovereign_world.hexmap import HexCoord, Terrain, Tile, WorldMap
 from sovereign_world.rng import StableRng
 from sovereign_world.state import build_initial_state
-from sovereign_world.worldgen import DEEP_FLOW, generate_world
+from sovereign_world.travel import DEEP_FLOW
+from sovereign_world.worldgen import generate_world
 
 TERRAIN_CODES: tuple[Terrain, ...] = tuple(Terrain)
 TILE_FIELDS: tuple[str, ...] = (

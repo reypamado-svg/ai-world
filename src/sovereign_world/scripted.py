@@ -14,7 +14,7 @@ from sovereign_world.commands import (
     DirectOrderKind,
     ProjectKind,
 )
-from sovereign_world.hexmap import HexCoord
+from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
 
 
@@ -65,10 +65,9 @@ def plan_baseline_commands(report: CouncilReport) -> tuple[Command, ...]:
     if report.day != 0:
         return commands
     direction = -1 if report.start_center.q >= 4 else 1
-    route = tuple(
-        HexCoord(report.start_center.q + (step * direction), report.start_center.r)
-        for step in range(6)
-    )
+    route = _survey_route(report, direction) or _survey_route(report, -direction)
+    if route is None:
+        return commands
     return (
         *commands,
         DirectOrder(
@@ -80,6 +79,23 @@ def plan_baseline_commands(report: CouncilReport) -> tuple[Command, ...]:
             priority=80,
         ),
     )
+
+
+def _survey_route(report: CouncilReport, direction: int) -> tuple[HexCoord, ...] | None:
+    """A straight survey of up to five tiles, stopping short of known water and of rivers
+    known to be too deep to wade; None when not even one step is open."""
+    terrain = dict(report.known_terrain)
+    deep = {
+        frozenset((view.tile, view.across)) for view in report.known_rivers if view.depth == "deep"
+    }
+    route = [report.start_center]
+    for _step in range(5):
+        here = route[-1]
+        ahead = HexCoord(here.q + direction, here.r)
+        if terrain.get(ahead) is Terrain.WATER or frozenset((here, ahead)) in deep:
+            break
+        route.append(ahead)
+    return tuple(route) if len(route) > 1 else None
 
 
 class BaselineSovereign:

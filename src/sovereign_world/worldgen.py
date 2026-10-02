@@ -11,9 +11,7 @@ from sovereign_world import geography
 from sovereign_world.config import CURRENT_GENERATOR, WorldConfig
 from sovereign_world.hexmap import HexCoord, Terrain, Tile, WorldMap
 from sovereign_world.rng import StableRng
-
-DEEP_FLOW = 10
-"""River flow at which a river is too deep to wade; travel's crossing rule uses the same line."""
+from sovereign_world.travel import DEEP_FLOW
 
 LOWLAND_STARTS = frozenset({Terrain.GRASSLAND, Terrain.FOREST})
 """Where a version-2 world may place a capital."""

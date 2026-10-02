@@ -312,7 +312,8 @@ def advance_diplomacy_day(
         progress = mission.travel_progress + DAY
         # A day's walking may cover several cheap road tiles.
         while route_index < len(mission.route):
-            cost = entry_cost(world_map, mission.route[route_index], roads)
+            origin = mission.route[route_index - 1] if route_index else None
+            cost = entry_cost(world_map, mission.route[route_index], roads, origin=origin)
             if cost is None:
                 raise ValueError("an ambassador route cannot enter impassable terrain")
             if progress < cost:

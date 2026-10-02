@@ -13,7 +13,8 @@ from sovereign_world.geography import ALLOWED, SNOW_BELOW, foot_component
 from sovereign_world.hexmap import HexCoord, RiverEdge, Terrain, Tile, WorldMap, corner_tiles
 from sovereign_world.rng import StableRng
 from sovereign_world.state import WorldState, build_initial_state, state_hash
-from sovereign_world.worldgen import DEEP_FLOW, LOWLAND_STARTS, GeneratedWorld, generate_world
+from sovereign_world.travel import DEEP_FLOW
+from sovereign_world.worldgen import LOWLAND_STARTS, GeneratedWorld, generate_world
 
 Corner = tuple[HexCoord, ...]
 

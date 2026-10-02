@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from itertools import pairwise
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,7 +34,7 @@ from sovereign_world.endings import Ending, EndingKind, RuinView
 from sovereign_world.espionage import MAX_SPIES, MAX_WATCH_DAYS, CaughtSpy, SpyReport
 from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
-from sovereign_world.hexmap import HexCoord, Terrain
+from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import (
     INSTITUTIONS,
@@ -101,7 +101,7 @@ from sovereign_world.tolls import (
     TollPost,
     TollView,
 )
-from sovereign_world.travel import passable
+from sovereign_world.travel import crossing, entry_cost, passable, river_depth
 from sovereign_world.walls import (
     WALL_GRADES,
     WallGrade,
@@ -333,6 +333,17 @@ class CommandValidation(BaseModel):
     errors: tuple[CommandError, ...]
 
 
+class RiverView(BaseModel):
+    """A river a civilization knows of: it runs along the border between a known tile and
+    its neighbour across, and is a stream, a river, or too deep to wade."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tile: HexCoord
+    across: HexCoord
+    depth: Literal["stream", "river", "deep"]
+
+
 class CouncilReport(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -343,6 +354,8 @@ class CouncilReport(BaseModel):
     start_center: HexCoord
     known_tiles: tuple[HexCoord, ...]
     known_terrain: tuple[tuple[HexCoord, Terrain], ...] = ()
+    known_rivers: tuple[RiverView, ...] = ()
+    """Rivers along the borders of known tiles."""
     inventory: dict[Resource, int]
     """The capital's store."""
     stores: dict[EntityId, dict[Resource, int]] = Field(default_factory=dict)
@@ -559,6 +572,7 @@ def build_council_report(
         known_terrain=tuple(
             (tile, state.world_map.tile(tile).terrain) for tile in sorted(civilization.known_tiles)
         ),
+        known_rivers=known_rivers(state.world_map, frozenset(civilization.known_tiles)),
         inventory=dict(civilization.inventory.quantities),
         stores={
             settlement_id: dict(sorted(inventory.quantities.items()))
@@ -649,6 +663,16 @@ def trade_partners(state: WorldState, civilization_id: EntityId) -> frozenset[En
         and treaty.kind is TreatyKind.TRADE
         and civilization_id in {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
     )
+
+
+def known_rivers(world_map: WorldMap, known: frozenset[HexCoord]) -> tuple[RiverView, ...]:
+    """Every river along a border of a known tile, seen from that tile."""
+    views: list[RiverView] = []
+    for edge in world_map.rivers:
+        if edge.a in known or edge.b in known:
+            tile, across = (edge.a, edge.b) if edge.a in known else (edge.b, edge.a)
+            views.append(RiverView(tile=tile, across=across, depth=river_depth(edge.flow)))
+    return tuple(sorted(views, key=lambda view: (view.tile, view.across)))
 
 
 def known_roads(state: WorldState, civilization_id: EntityId) -> tuple[RoadView, ...]:
@@ -924,6 +948,23 @@ def _reserve(
         reserved[(store_id, resource)] = reserved.get((store_id, resource), 0) + quantity
 
 
+def _known_route_passable(
+    world_map: WorldMap, route: tuple[HexCoord, ...], known: frozenset[HexCoord]
+) -> bool:
+    """Whether a route avoids every obstacle its civilization knows of.
+
+    Known tiles must be enterable, and a river along a border seen from a known tile must be
+    wadeable; what lies in unknown country is not checked, so refusing never reveals it.
+    """
+    for origin, tile in pairwise(route):
+        if tile in known:
+            if entry_cost(world_map, tile, origin=origin) is None:
+                return False
+        elif origin in known and crossing(world_map, origin, tile) is None:
+            return False
+    return True
+
+
 def _campaign_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -953,7 +994,7 @@ def _campaign_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(state.world_map, route[1:], start=route[0])
     ):
         return error(
             "invalid_route", "a war party leaves one of its own settlements over known land"
@@ -1025,7 +1066,7 @@ def _internal_journey_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(state.world_map, route[1:], start=route[0])
     ):
         return error(
             "invalid_route",
@@ -1120,7 +1161,7 @@ def _petition_error(
         or route[-1] not in known
         or any(tile not in civilization.known_tiles for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(state.world_map, route[1:], start=route[0])
     ):
         return error(
             "invalid_route", "the released walk from a settlement of theirs to one of the other's"
@@ -1275,7 +1316,7 @@ def _courier_error(
         or route[-1] not in {settlement.tile for settlement in civilization.settlements}
         or any(tile not in civilization.known_tiles for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(state.world_map, route[1:], start=route[0])
     ):
         return error("invalid_route", "a courier walks from the spies to one of its settlements")
     return None
@@ -1335,7 +1376,7 @@ def _journey_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(state.world_map, route[1:], start=route[0])
     ):
         return error(
             "invalid_route",
@@ -1695,7 +1736,7 @@ def _toll_error(
         or (len(route) == 1 and tile != civilization.start_center)
         or any(step not in civilization.known_tiles for step in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(state.world_map, route[1:], start=route[0])
     ):
         return error(
             "invalid_route",
@@ -2299,13 +2340,10 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     or route[0] not in locations
                     or any(not state.world_map.contains(tile) for tile in route)
                     or any(first.distance(second) != 1 for first, second in pairwise(route))
-                    or not passable(
+                    or not _known_route_passable(
                         state.world_map,
-                        (
-                            tile
-                            for tile in route[1:]
-                            if tile in state.civilizations[envelope.civilization_id].known_tiles
-                        ),
+                        route,
+                        frozenset(state.civilizations[envelope.civilization_id].known_tiles),
                     )
                 ):
                     command_error = CommandError(
@@ -2357,7 +2395,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     or any(tile not in civilization.known_tiles for tile in command.route)
                     or any(not state.world_map.contains(tile) for tile in command.route)
                     or any(first.distance(second) != 1 for first, second in pairwise(command.route))
-                    or not passable(state.world_map, command.route[1:])
+                    or not passable(state.world_map, command.route[1:], start=command.route[0])
                 ):
                     command_error = CommandError(
                         command_id=command.command_id,

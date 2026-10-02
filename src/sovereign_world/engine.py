@@ -3603,7 +3603,12 @@ def _hold_occupation(state: WorldState, party: Journey, rng: StableRng) -> list[
         )
         party = party.model_copy(update={"plunder": dict(sorted(plunder.items()))})
         _replace_journey(state, party)
-    home = travel_days(state.world_map, tuple(reversed(party.route))[1:], grades_of(state.roads))
+    home = travel_days(
+        state.world_map,
+        tuple(reversed(party.route))[1:],
+        grades_of(state.roads),
+        start=party.route[-1],
+    )
     if not taken and party.provisions < len(living) * home:
         events.extend(_withdraw(state, party, OccupationEnd.STARVED))
     return events
@@ -3769,7 +3774,12 @@ def _hold_camp(state: WorldState, party: Journey, rng: StableRng) -> list[Domain
     ]
     if len(living) < MIN_BESIEGERS:
         return _break_camp(state, party, SiegeEnd.TOO_FEW)
-    home = travel_days(state.world_map, tuple(reversed(party.route))[1:], grades_of(state.roads))
+    home = travel_days(
+        state.world_map,
+        tuple(reversed(party.route))[1:],
+        grades_of(state.roads),
+        start=party.route[-1],
+    )
     if party.provisions < len(living) * home:
         return _break_camp(state, party, SiegeEnd.STARVED)
     catapults = crewed_engines(len(living), engines_in(party.cargo)).get(Resource.CATAPULT, 0)

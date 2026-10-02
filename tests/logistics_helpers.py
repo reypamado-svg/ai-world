@@ -40,11 +40,15 @@ def linked_world(
     home = sender.start_center
     step = 1 if home.q + distance < state.config.width else -1
     route = tuple(HexCoord(home.q + index * step, home.r) for index in range(distance + 1))
-    # Lay grassland along the route so scenarios test their own rules, not the terrain.
+    # Lay grassland along the route, with no rivers on its borders, so scenarios test their
+    # own rules, not the terrain.
     grass = {tile: replace(state.world_map.tile(tile), terrain=Terrain.GRASSLAND) for tile in route}
     state.world_map = replace(
         state.world_map,
         tiles=tuple(grass.get(tile.coord, tile) for tile in state.world_map.tiles),
+        rivers=tuple(
+            edge for edge in state.world_map.rivers if edge.a not in grass and edge.b not in grass
+        ),
     )
     move_home(recipient, route[-1])
     for person in recipient.population.people.values():

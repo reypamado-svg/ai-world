@@ -173,7 +173,7 @@ def influence_field(
         if value != best.get(tile):
             continue
         for neighbor in world_map.neighbors(tile):
-            cost = entry_cost(world_map, neighbor, roads)
+            cost = entry_cost(world_map, neighbor, roads, origin=tile)
             if cost is None:
                 continue
             reached = value - cost
@@ -198,7 +198,7 @@ def supply_connected(
     while frontier:
         tile = frontier.pop()
         for neighbor in world_map.neighbors(tile):
-            if neighbor in seen or entry_cost(world_map, neighbor) is None:
+            if neighbor in seen or entry_cost(world_map, neighbor, origin=tile) is None:
                 continue
             if owners.get(neighbor, civilization_id) != civilization_id:
                 continue

@@ -308,9 +308,9 @@ def journey_days(
 
     Heavy siege engines make every day of it half as long again.
     """
-    days = travel_days(world_map, route[1:], roads)
+    days = travel_days(world_map, route[1:], roads, start=route[0])
     if kind in ROUND_TRIP_KINDS:
-        days += travel_days(world_map, tuple(reversed(route))[1:], roads)
+        days += travel_days(world_map, tuple(reversed(route))[1:], roads, start=route[-1])
     return slowed(days) if heavy else days
 
 
@@ -330,7 +330,8 @@ def roadwork_days(
         labour = sum(step_labour(base, grade) for grade in steps_to(roads.get(tile), target))
         work += ceil(labour / max(crew, 1))
     home = tuple(reversed(route))[1:]
-    return travel_days(world_map, route[1:], roads) + work + travel_days(world_map, home, roads)
+    out = travel_days(world_map, route[1:], roads, start=route[0])
+    return out + work + travel_days(world_map, home, roads, start=route[-1])
 
 
 def provisions_needed(days: int, travellers: int, extra: int = 0) -> int:
@@ -880,7 +881,7 @@ def _walk(
     progress = journey.travel_progress + DAY
     while index != end:
         ahead = index + (1 if outbound else -1)
-        cost = entry_cost(world_map, journey.route[ahead], grades)
+        cost = entry_cost(world_map, journey.route[ahead], grades, origin=journey.route[index])
         if cost is None:
             raise ValueError("a journey route cannot enter impassable terrain")
         if journey.kind is JourneyKind.CAMPAIGN and slows(journey.cargo):
@@ -1010,9 +1011,9 @@ def _days_left(
     grades: dict[HexCoord, RoadGrade],
 ) -> int:
     """Days of walking still ahead from route[index], and back again for a round trip."""
-    days = travel_days(world_map, route[index + 1 :], grades)
+    days = travel_days(world_map, route[index + 1 :], grades, start=route[index])
     if kind in ROUND_TRIP_KINDS or kind is JourneyKind.ROADWORK:
-        days += travel_days(world_map, tuple(reversed(route))[1:], grades)
+        days += travel_days(world_map, tuple(reversed(route))[1:], grades, start=route[-1])
     return days
 
 
@@ -1053,7 +1054,7 @@ def _roadwork_day(
     here = journey.route[journey.route_index]
     homeward = tuple(reversed(journey.route[: journey.route_index + 1]))[1:]
     if journey.provisions <= provisions_needed(
-        travel_days(world_map, homeward, grades), len(living)
+        travel_days(world_map, homeward, grades, start=here), len(living)
     ):
         return stop(journey, StopReason.PROVISIONS)
     upcoming = next_grade(grades.get(here))

@@ -138,7 +138,7 @@ def advance_expeditions(
             if not world_map.contains(destination) or location.distance(destination) != 1:
                 status = ExpeditionStatus.FAILED
                 break
-            cost = entry_cost(world_map, destination, roads)
+            cost = entry_cost(world_map, destination, roads, origin=location)
             if cost is None:
                 observation_by_tile[destination] = Observation(
                     tile=destination,

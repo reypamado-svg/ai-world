@@ -36,7 +36,13 @@ HISTORY_FIELDS = frozenset(
 """Report fields that grow with every year; they become memories, not state."""
 DROPPED_FIELDS = frozenset({"known_tiles"})
 """Report fields the state layer repeats elsewhere (`known_terrain` lists the same tiles)."""
-TRIMMED_LAST = ("known_terrain", "observed_control", "known_roads", "known_tolls")
+TRIMMED_LAST = (
+    "known_terrain",
+    "known_rivers",
+    "observed_control",
+    "known_roads",
+    "known_tolls",
+)
 """Map fields cut back, farthest from home first, when the state layer is too long."""
 
 

@@ -142,7 +142,7 @@ def detour(
                 or neighbor in avoid
                 or neighbor not in known
                 or not world_map.contains(neighbor)
-                or entry_cost(world_map, neighbor) is None
+                or entry_cost(world_map, neighbor, origin=tile) is None
             ):
                 continue
             previous[neighbor] = tile
