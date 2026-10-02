@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from math import isqrt
 
 import numpy as np
 
@@ -46,6 +47,8 @@ class StartingRegion:
 class GeneratedWorld:
     world_map: WorldMap
     starts: tuple[StartingRegion, ...]
+    start_spacing: int = 12
+    """The least distance between starts the generator held to."""
 
 
 class WorldGenerationError(RuntimeError):
@@ -171,12 +174,10 @@ def _largest_landmass(world_map: WorldMap) -> frozenset[HexCoord]:
     return frozenset(largest)
 
 
-def _select_starts(
-    world_map: WorldMap,
-    count: int,
-    min_distance: int,
-    generator_version: int = 1,
-) -> tuple[list[StartingRegion], list[str]]:
+def _candidates(
+    world_map: WorldMap, generator_version: int
+) -> tuple[list[tuple[StartViability, HexCoord]], frozenset[HexCoord]]:
+    """Viable start sites, best first, and the land they must all lie on."""
     candidates: list[tuple[StartViability, HexCoord]] = []
     # Settle only on land that every other start can reach on foot.
     if generator_version >= 2:
@@ -197,8 +198,17 @@ def _select_starts(
                 and viability.construction_units >= 64
             ):
                 candidates.append((viability, center))
-
     candidates.sort(key=lambda item: (-item[0].score, item[1].q, item[1].r))
+    return candidates, landmass
+
+
+def _select_starts(
+    world_map: WorldMap,
+    count: int,
+    min_distance: int,
+    generator_version: int = 1,
+) -> tuple[list[StartingRegion], list[str]]:
+    candidates, _ = _candidates(world_map, generator_version)
     # Version 1 picks greedily from the best site; version 2 also tries each next-best site as
     # the first pick, since regional terrain clusters good sites together.
     firsts = range(len(candidates)) if generator_version >= 2 else range(min(1, len(candidates)))
@@ -221,6 +231,66 @@ def _select_starts(
     return selected, reasons
 
 
+def start_spacing_target(land_tiles: int, count: int, width: int, height: int, floor: int) -> int:
+    """How far apart version-3 starts aim to be: wider with more land and fewer civilizations."""
+    return max(floor, min(isqrt(land_tiles // (3 * count)), min(width, height) // 2))
+
+
+def _spaced_starts(
+    world_map: WorldMap,
+    count: int,
+    floor: int,
+) -> tuple[list[StartingRegion], int, list[str]]:
+    """Version 3: starts as far apart as the land allows, among good sites.
+
+    It aims for the spacing the land supports (`start_spacing_target`) and steps down by two
+    tiles to `floor` until a set fits. At each spacing it first draws from the sites scoring
+    at least 80% of the best, then 60%, then any viable site: spacing comes before quality.
+    Each set starts from one of the best sites in its pool (any of them at the floor) and
+    adds, each time, the site farthest from those already chosen (ties by position).
+    """
+    candidates, landmass = _candidates(world_map, 3)
+    if not candidates:
+        return [], floor, ["viability"]
+    q = np.array([center.q for _, center in candidates], dtype=np.int64)
+    r = np.array([center.r for _, center in candidates], dtype=np.int64)
+    score = np.array([viability.score for viability, _ in candidates], dtype=np.int64)
+    best = int(score[0])
+    target = start_spacing_target(len(landmass), count, world_map.width, world_map.height, floor)
+    for spacing in range(target, floor - 1, -2):
+        for share in (80, 60, 0):
+            pool = (
+                np.flatnonzero(score * 100 >= best * share) if share else np.arange(len(candidates))
+            )
+            firsts = pool if spacing == floor and share == 0 else pool[:8]
+            for first in firsts:
+                chosen = [int(first)]
+                nearest = np.full(len(pool), 10**9, dtype=np.int64)
+                while len(chosen) < count:
+                    last = chosen[-1]
+                    dq = q[pool] - q[last]
+                    dr = r[pool] - r[last]
+                    nearest = np.minimum(nearest, (abs(dq) + abs(dr) + abs(dq + dr)) // 2)
+                    fits = nearest >= spacing
+                    if not fits.any():
+                        break
+                    # Farthest from those chosen first; ties by (q, r).
+                    order = np.lexsort((r[pool], q[pool], -nearest))
+                    pick = next(int(index) for index in order if fits[index])
+                    chosen.append(int(pool[pick]))
+                if len(chosen) == count:
+                    starts = [
+                        StartingRegion(
+                            civilization_index=index,
+                            center=candidates[item][1],
+                            viability=candidates[item][0],
+                        )
+                        for index, item in enumerate(chosen)
+                    ]
+                    return starts, spacing, []
+    return [], floor, ["separation"]
+
+
 def generate_world(
     config: WorldConfig,
     rng: StableRng,
@@ -231,7 +301,8 @@ def generate_world(
     """Make a world and its starting regions.
 
     Version 1 is the original generator, kept so a run made with it can be rebuilt from its
-    manifest; version 2 makes regional terrain with logical neighbours and flowing rivers.
+    manifest; version 2 makes regional terrain with logical neighbours and flowing rivers;
+    version 3 keeps version 2's terrain and places starts as far apart as the land allows.
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be positive")
@@ -243,14 +314,20 @@ def generate_world(
             world_map = _generate_map(config, rng, attempt)
         else:
             world_map = geography.generate_map(config.width, config.height, rng, attempt)
-        starts, reasons = _select_starts(
-            world_map,
-            count=config.civilizations,
-            min_distance=min_start_distance,
-            generator_version=generator_version,
-        )
+        spacing = min_start_distance
+        if generator_version >= 3:
+            starts, spacing, reasons = _spaced_starts(
+                world_map, count=config.civilizations, floor=min_start_distance
+            )
+        else:
+            starts, reasons = _select_starts(
+                world_map,
+                count=config.civilizations,
+                min_distance=min_start_distance,
+                generator_version=generator_version,
+            )
         if len(starts) == config.civilizations:
-            return GeneratedWorld(world_map=world_map, starts=tuple(starts))
+            return GeneratedWorld(world_map=world_map, starts=tuple(starts), start_spacing=spacing)
         failures.update(reasons)
     raise WorldGenerationError(
         config.seed, max_attempts, dict(failures), count=config.civilizations

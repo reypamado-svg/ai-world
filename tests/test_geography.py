@@ -219,8 +219,34 @@ def test_starts_are_lowland_and_reachable_on_foot(seed: int, size: int) -> None:
         assert generated.world_map.tile(start.center).terrain in LOWLAND_STARTS
         assert start.center in reachable
         assert start.viability.has_water
+    assert generated.start_spacing >= 12
     for left, right in combinations(generated.starts, 2):
-        assert left.center.distance(right.center) >= 12
+        assert left.center.distance(right.center) >= generated.start_spacing
+
+
+@pytest.mark.parametrize(("count", "least"), [(4, 24), (3, 30), (2, 36)])
+def test_version_three_spaces_starts_with_the_land(count: int, least: int) -> None:
+    config = WorldConfig(seed=21, width=100, height=100, civilizations=count)
+
+    generated = generate_world(config, StableRng(config.seed), generator_version=3)
+
+    assert len(generated.starts) == count
+    assert generated.start_spacing >= least
+    for left, right in combinations(generated.starts, 2):
+        assert left.center.distance(right.center) >= generated.start_spacing
+
+
+def test_version_three_keeps_version_two_terrain() -> None:
+    config = WorldConfig(seed=21, width=100, height=100)
+
+    second = generate_world(config, StableRng(config.seed), generator_version=2)
+    third = generate_world(config, StableRng(config.seed), generator_version=3)
+
+    assert [tile.terrain for tile in third.world_map.tiles] == [
+        tile.terrain for tile in second.world_map.tiles
+    ]
+    assert third.world_map.rivers == second.world_map.rivers
+    assert second.start_spacing == 12
 
 
 def test_generation_repeats_and_is_quick() -> None:

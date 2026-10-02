@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CURRENT_GENERATOR = 2
+CURRENT_GENERATOR = 3
 """The world generator new runs use; see ``RunManifest.generator_version``."""
 
 
