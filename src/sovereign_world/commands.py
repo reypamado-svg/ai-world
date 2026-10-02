@@ -48,7 +48,14 @@ from sovereign_world.espionage import MAX_SPIES, MAX_WATCH_DAYS, CaughtSpy, SpyR
 from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
-from sovereign_world.housing import HouseGrade, best_grade, residents_by_settlement
+from sovereign_world.housing import (
+    MAX_HOUSES_PER_ORDER,
+    HouseGrade,
+    HouseJob,
+    best_grade,
+    house_materials,
+    residents_by_settlement,
+)
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import (
     INSTITUTIONS,
@@ -152,6 +159,8 @@ class DecreeKind(StrEnum):
     FOOD_RESERVE_TARGET = "food_reserve_target"
     LABOR_PRIORITY = "labor_priority"
     POPULATION_GROWTH_POLICY = "population_growth_policy"
+    HOUSING_POLICY = "housing_policy"
+    """Rules version 2: the spare room, in percent, each settlement keeps building toward."""
 
 
 class DirectOrderKind(StrEnum):
@@ -325,6 +334,8 @@ class DirectOrder(BaseModel):
     research_days: int = Field(default=30, ge=1, le=MAX_RESEARCH_DAYS)
     extra_provisions: int = Field(default=0, ge=0, le=CARGO_UNITS_PER_CARRIER * MAX_TRAVELLERS)
     priority: int = Field(default=50, ge=0, le=100)
+    house_count: int = Field(default=1, ge=1, le=MAX_HOUSES_PER_ORDER)
+    """Rules version 2: how many houses a shelter project raises, one after another."""
 
 
 Command = Annotated[Decree | DirectOrder, Field(union_mode="left_to_right")]
@@ -407,6 +418,7 @@ _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("known_sites", []),
     ("rules_version", 1),
     ("housing", {}),
+    ("house_jobs", []),
 )
 """Report fields added since council-3, and the value at which each is left out, so reports
 from older worlds read, and so prompt, exactly as before."""
@@ -498,6 +510,8 @@ class CouncilReport(BaseModel):
     """The rules this world runs under; version 2 adds houses, ranks and civil research."""
     housing: dict[EntityId, HousingView] = Field(default_factory=dict)
     """Each settlement's houses (rules version 2)."""
+    house_jobs: tuple[HouseJob, ...] = ()
+    """Houses going up."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -679,6 +693,7 @@ def build_council_report(
         known_sites=known_sites(state, civilization),
         rules_version=state.rules_version,
         housing=_housing_views(state, civilization_id),
+        house_jobs=civilization.house_jobs,
         inventory=dict(civilization.inventory.quantities),
         stores={
             settlement_id: dict(sorted(inventory.quantities.items()))
@@ -1001,6 +1016,7 @@ def _drilling_people(state: WorldState, civilization_id: EntityId) -> set[Entity
         }
         | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
         | {person_id for job in civilization.wall_jobs for person_id in job.worker_ids}
+        | {person_id for job in civilization.house_jobs for person_id in job.worker_ids}
         | {
             person_id
             for assignment in civilization.research
@@ -1391,6 +1407,67 @@ def _spy_error(
             message=f"at most {MAX_SPIES} go spying together",
         )
     return _petition_error(command, civilization_id, state, reserved_cargo)
+
+
+def _shelter_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved: Reserved,
+    starting: set[EntityId],
+) -> CommandError | None:
+    """Rules version 2: builders raise houses, of the best kind their people know, where they
+    stand, from their settlement's store."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    if not command.worker_ids or len(set(command.worker_ids)) != len(command.worker_ids):
+        return error("invalid_project", "a shelter project names one or more distinct builders")
+    assert command.project_id is not None
+    if (
+        command.project_id in starting
+        or command.project_id in civilization.projects
+        or any(job.job_id == command.project_id for job in civilization.house_jobs)
+    ):
+        return error("invalid_project", "that project is already under way")
+    people = civilization.population.people
+    places = {people[person_id].location for person_id in command.worker_ids}
+    site = settlement_at(civilization, next(iter(places))) if len(places) == 1 else None
+    if site is None:
+        return error(
+            "invalid_project", "builders raise houses together at one of their settlements"
+        )
+    grade = best_grade(civilization.capabilities)
+    materials = house_materials(grade, command.house_count)
+    for resource, quantity in materials.items():
+        if _short(civilization, site.tile, reserved, resource, quantity):
+            return error(
+                "insufficient_materials",
+                f"not enough {resource} for {command.house_count} {grade.value}(s)",
+            )
+    starting.add(command.project_id)
+    _reserve(civilization, site.tile, reserved, materials)
+    return None
+
+
+def _decree_error(command: Decree, state: WorldState) -> CommandError | None:
+    if command.kind is not DecreeKind.HOUSING_POLICY:
+        return None
+    if not rules_for(state.rules_version).houses:
+        return CommandError(
+            command_id=command.command_id,
+            code="invalid_decree",
+            message="this world's rules have no houses, so no housing policy",
+        )
+    if not 0 <= command.value <= 100:
+        return CommandError(
+            command_id=command.command_id,
+            code="invalid_decree",
+            message="a housing policy is the spare room to keep, from 0 to 100 percent",
+        )
+    return None
 
 
 def _found_institution_error(
@@ -2009,6 +2086,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     couriered: set[EntityId] = set()
     founding: set[tuple[EntityId, InstitutionKind]] = set()
     restaffed: set[EntityId] = set()
+    starting_houses: set[EntityId] = set()
+    rules = rules_for(state.rules_version)
     teaching_load: dict[EntityId, int] = {}
     for assignment in state.civilizations[envelope.civilization_id].teaching_assignments:
         teaching_load[assignment.teacher_id] = teaching_load.get(assignment.teacher_id, 0) + 1
@@ -2478,6 +2557,15 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 command_error = _walls_error(
                     command, envelope.civilization_id, state, reserved_cargo, walling
                 )
+            if (
+                command.kind is DirectOrderKind.START_PROJECT
+                and command.project_kind is ProjectKind.SHELTER
+                and rules.houses
+                and command_error is None
+            ):
+                command_error = _shelter_error(
+                    command, envelope.civilization_id, state, reserved_cargo, starting_houses
+                )
             if command.kind is DirectOrderKind.FOUND_INSTITUTION and command_error is None:
                 command_error = _found_institution_error(
                     command, envelope.civilization_id, state, reserved_cargo, founding
@@ -2688,5 +2776,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     civilization, site_tile, reserved_cargo, _wall_materials(civilization, command)
                 )
                 walling.add(site_tile)
+        elif (decree_error := _decree_error(command, state)) is not None:
+            errors.append(decree_error)
+            continue
         accepted.append(command)
     return CommandValidation(accepted=tuple(accepted), errors=tuple(errors))

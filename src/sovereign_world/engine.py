@@ -88,7 +88,18 @@ from sovereign_world.exploration import (
     advance_expeditions,
 )
 from sovereign_world.hexmap import HexCoord
-from sovereign_world.housing import founding_housing, slots_of
+from sovereign_world.housing import (
+    ABANDONED_DECAY_DAYS,
+    ABANDONED_GRACE_DAYS,
+    STORMED_SHARE,
+    HouseJob,
+    Housing,
+    best_grade,
+    founding_housing,
+    house_materials,
+    residents_by_settlement,
+    slots_of,
+)
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import (
     HEALING_FACTOR,
@@ -818,6 +829,10 @@ def _cede(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
         if person.alive and person.captive_of == giver_id and person.held_at == sid
     )
     events = _free_captives(state, held_there, "released")
+    for job in giver.house_jobs:
+        if job.settlement_id == sid:
+            put(giver, tile, job.unused_materials())
+    giver.house_jobs = tuple(item for item in giver.house_jobs if item.settlement_id != sid)
     inventory = store(giver, sid)
     giver.settlements = tuple(item for item in giver.settlements if item.settlement_id != sid)
     giver.stores = {key: value for key, value in giver.stores.items() if key != sid}
@@ -2224,6 +2239,9 @@ def _fight(
         events.append(_event(state, EventPhase.MOVEMENT, "side_broke", str(sender), str(battle_id)))
     else:
         events.append(_event(state, EventPhase.MOVEMENT, "side_broke", str(enemy), str(battle_id)))
+        stormed = settlement_at(state.civilizations[enemy], tile) if at_home else None
+        if stormed is not None:
+            events.extend(_lose_houses(state, enemy, stormed.settlement_id, "stormed"))
     _replace_journey(state, party)
     # A routed party lets its prisoners go; then the winners take their own captives.
     routed = [
@@ -3248,6 +3266,7 @@ def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent
     )
     civilization.settlements = ()
     civilization.housing = {}
+    civilization.house_jobs = ()
     civilization.stores = {}
     civilization.inventory = Inventory(capacity=0)
     civilization.storehouses = ()
@@ -3663,6 +3682,7 @@ def _burn_storehouse(state: WorldState, command: DirectOrder) -> list[DomainEven
         STOREHOUSE_GRADES[below].capacity if below is not None else 0
     )
     burned = shrink(owner, occupation.tile, lost_room)
+    housing_events = _lose_houses(state, occupation.owner_id, house.settlement_id, "burned")
     owner.storehouses = tuple(
         item
         for item in (
@@ -3682,7 +3702,8 @@ def _burn_storehouse(state: WorldState, command: DirectOrder) -> list[DomainEven
             str(house.storehouse_id),
             grade=below.value if below is not None else "none",
             lost=sum(burned.values()),
-        )
+        ),
+        *housing_events,
     ]
 
 
@@ -4106,6 +4127,275 @@ def _advance_storehouses(state: WorldState) -> list[DomainEvent]:
             kept.append(job)
         civilization.storehouse_jobs = tuple(kept)
     return events
+
+
+def _expire_decrees(state: WorldState) -> list[DomainEvent]:
+    """Rules version 2: a decree ends when its days run out, unless a council renews it."""
+    events: list[DomainEvent] = []
+    for civilization_id in sorted(state.active_decrees):
+        decrees = state.active_decrees[civilization_id]
+        for kind in sorted(key for key in decrees if not key.endswith("_expires")):
+            expires = decrees.get(f"{kind}_expires")
+            if expires is not None and expires <= state.day:
+                del decrees[kind]
+                del decrees[f"{kind}_expires"]
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.COMMAND,
+                        "decree_expired",
+                        str(civilization_id),
+                        decree=kind,
+                    )
+                )
+    return events
+
+
+def _start_houses(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> list[DomainEvent]:
+    """Builders take the timber and stone for their houses from their settlement's store."""
+    civilization = state.civilizations[civilization_id]
+    assert command.project_id is not None
+    site = settlement_at(
+        civilization, civilization.population.people[command.worker_ids[0]].location
+    )
+    assert site is not None
+    grade = best_grade(civilization.capabilities)
+    return [
+        _open_house_job(
+            state,
+            civilization_id,
+            HouseJob(
+                job_id=command.project_id,
+                settlement_id=site.settlement_id,
+                tile=site.tile,
+                worker_ids=tuple(sorted(command.worker_ids)),
+                grade=grade,
+                count=command.house_count,
+                started_day=state.day,
+            ),
+            "council",
+        )
+    ]
+
+
+def _open_house_job(
+    state: WorldState, civilization_id: EntityId, job: HouseJob, source: str
+) -> DomainEvent:
+    civilization = state.civilizations[civilization_id]
+    take(civilization, job.tile, house_materials(job.grade, job.count))
+    civilization.house_jobs = tuple(
+        sorted((*civilization.house_jobs, job), key=lambda item: item.job_id)
+    )
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "house_work_started",
+        str(civilization_id),
+        str(job.job_id),
+        settlement=str(job.settlement_id),
+        grade=job.grade.value,
+        count=job.count,
+        source=source,
+    )
+
+
+def _apply_housing_policy(state: WorldState) -> list[DomainEvent]:
+    """Rules version 2: under a housing policy, a settlement short of spare room sets its two
+    lowest-numbered idle grown-ups to raising a house, if its store can pay for one."""
+    events: list[DomainEvent] = []
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        target = state.active_decrees.get(civilization_id, {}).get("housing_policy", 0)
+        if target <= 0 or civilization.eliminated_day is not None:
+            continue
+        residents = residents_by_settlement(state, civilization_id)
+        busy = _busy_at_home(state, civilization_id)
+        building = {job.settlement_id for job in civilization.house_jobs}
+        grade = best_grade(civilization.capabilities)
+        materials = house_materials(grade, 1)
+        people = civilization.population.people
+        for settlement in civilization.settlements:
+            sid = settlement.settlement_id
+            if sid in building:
+                continue
+            count = len(residents.get(sid, ()))
+            spare = slots_of(civilization, sid) - count
+            if spare * 100 >= target * max(count, 1):
+                continue
+            if not has(civilization, settlement.tile, materials):
+                continue
+            idle = [
+                person_id
+                for person_id in civilization.population.living_ids
+                if person_id not in busy
+                and people[person_id].location == settlement.tile
+                and people[person_id].captive_of is None
+                and people[person_id].age_days >= GROWN_DAYS
+            ][:2]
+            if len(idle) < 2:
+                continue
+            events.append(
+                _open_house_job(
+                    state,
+                    civilization_id,
+                    HouseJob(
+                        job_id=EntityId(f"house-job:{sid}:{state.day}"),
+                        settlement_id=sid,
+                        tile=settlement.tile,
+                        worker_ids=tuple(idle),
+                        grade=grade,
+                        count=1,
+                        started_day=state.day,
+                    ),
+                    "housing_policy",
+                )
+            )
+            busy.update(idle)
+    return events
+
+
+GROWN_DAYS = 16 * 365
+"""The age at which a person can be set to building."""
+
+
+def _busy_at_home(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
+    """People already bound to a duty, on the road, or in a garrison."""
+    civilization = state.civilizations[civilization_id]
+    return (
+        _away(state)
+        | {person_id for garrison in civilization.garrisons for person_id in garrison.member_ids}
+        | {person_id for drill in civilization.drills for person_id in drill.person_ids}
+        | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids}
+        | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
+        | {person_id for job in civilization.wall_jobs for person_id in job.worker_ids}
+        | {person_id for job in civilization.house_jobs for person_id in job.worker_ids}
+        | {person_id for item in civilization.research for person_id in item.scholar_ids}
+        | {
+            person_id
+            for item in civilization.teaching_assignments
+            for person_id in (item.teacher_id, item.apprentice_id)
+        }
+        | {person_id for order in civilization.work_orders for person_id in order.worker_ids}
+        | staff_of(civilization)
+    )
+
+
+def _advance_houses(state: WorldState) -> list[DomainEvent]:
+    """Builders at the site put in a day each, and each house stands as soon as it is done.
+    Houses of a settlement left empty for a year begin to fall, one a month."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        people = civilization.population.people
+        kept: list[HouseJob] = []
+        for job in civilization.house_jobs:
+            living = [person_id for person_id in job.worker_ids if people[person_id].alive]
+            present = sum(
+                people[person_id].location == job.tile and person_id not in away
+                for person_id in living
+            )
+            before = job.built()
+            present += _workshop_bonus(state, civilization_id, job.tile, present, away)
+            job = job.model_copy(update={"person_days_done": job.person_days_done + present})
+            after = job.built()
+            if after > before:
+                housing = civilization.housing.get(job.settlement_id) or Housing()
+                civilization.housing = dict(
+                    sorted(
+                        {
+                            **civilization.housing,
+                            job.settlement_id: housing.plus(job.grade, after - before),
+                        }.items()
+                    )
+                )
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.PROJECT,
+                        "house_built",
+                        str(civilization_id),
+                        str(job.job_id),
+                        settlement=str(job.settlement_id),
+                        grade=job.grade.value,
+                        count=after - before,
+                        slots=slots_of(civilization, job.settlement_id),
+                    )
+                )
+            if after == job.count:
+                continue
+            if not living:
+                # With every builder dead, the unused materials go back into the store.
+                put(civilization, job.tile, job.unused_materials())
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.PROJECT,
+                        "house_work_stopped",
+                        str(civilization_id),
+                        str(job.job_id),
+                        built=after,
+                    )
+                )
+                continue
+            kept.append(job)
+        civilization.house_jobs = tuple(kept)
+        if not civilization.housing:
+            continue
+        residents = residents_by_settlement(state, civilization_id)
+        for sid in sorted(civilization.housing):
+            housing = civilization.housing[sid]
+            if residents.get(sid):
+                if housing.empty_since is not None:
+                    civilization.housing = {
+                        **civilization.housing,
+                        sid: housing.model_copy(update={"empty_since": None}),
+                    }
+                continue
+            if housing.empty_since is None:
+                civilization.housing = {
+                    **civilization.housing,
+                    sid: housing.model_copy(update={"empty_since": state.day}),
+                }
+                continue
+            empty_days = state.day - housing.empty_since
+            if (
+                empty_days >= ABANDONED_GRACE_DAYS
+                and (empty_days - ABANDONED_GRACE_DAYS) % ABANDONED_DECAY_DAYS == 0
+            ):
+                events.extend(_lose_houses(state, civilization_id, sid, "abandoned"))
+    return events
+
+
+def _lose_houses(
+    state: WorldState, civilization_id: EntityId, settlement_id: EntityId, cause: str
+) -> list[DomainEvent]:
+    """Rules version 2: a stormed or burned settlement loses a quarter of its houses, an
+    abandoned one a house at a time; the meanest fall first."""
+    if not rules_for(state.rules_version).houses:
+        return []
+    civilization = state.civilizations[civilization_id]
+    housing = civilization.housing.get(settlement_id)
+    if housing is None or not housing.count:
+        return []
+    count = 1 if cause == "abandoned" else housing.count // STORMED_SHARE
+    if not count:
+        return []
+    left, lost = housing.minus(count)
+    civilization.housing = {**civilization.housing, settlement_id: left}
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "houses_lost",
+            str(civilization_id),
+            str(settlement_id),
+            cause=cause,
+            count=lost,
+        )
+    ]
 
 
 def _workshop_bonus(
@@ -4990,6 +5280,13 @@ def _run_councils(
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.START_PROJECT
+                and command.project_kind is ProjectKind.SHELTER
+                and rules_for(state.rules_version).houses
+            ):
+                events.extend(_start_houses(state, civilization_id, command))
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.START_PROJECT
                 and command.project_id is not None
                 and command.project_kind is not None
             ):
@@ -5374,6 +5671,8 @@ def advance_day(
     }
     candidate.active_decrees = deepcopy(state.active_decrees)
     events: list[DomainEvent] = []
+    if rules_for(candidate.rules_version).decrees_expire:
+        events.extend(_expire_decrees(candidate))
     if candidate.day % candidate.config.council_interval_days == 0:
         for civilization_id in sorted(candidate.civilizations):
             events.extend(_refuse_unanswered(candidate, civilization_id))
@@ -5662,6 +5961,9 @@ def advance_day(
     events.extend(_advance_drills(candidate))
     events.extend(_advance_crafting(candidate))
     events.extend(_advance_storehouses(candidate))
+    if rules_for(candidate.rules_version).houses:
+        events.extend(_apply_housing_policy(candidate))
+        events.extend(_advance_houses(candidate))
     events.extend(_advance_walls(candidate))
     events.extend(_advance_institutions(candidate))
     events.extend(_advance_research(candidate))
@@ -5688,6 +5990,7 @@ def advance_day(
             | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids}
             | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
             | {person_id for job in civilization.wall_jobs for person_id in job.worker_ids}
+            | {person_id for job in civilization.house_jobs for person_id in job.worker_ids}
             | {
                 person_id
                 for assignment in civilization.research

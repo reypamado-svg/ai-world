@@ -35,7 +35,7 @@ from sovereign_world.endings import Ending, Ruin, RuinView
 from sovereign_world.espionage import CaughtSpy, SpyReport
 from sovereign_world.exploration import Expedition, ExpeditionStatus, Observation
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
-from sovereign_world.housing import Housing, founding_housing
+from sovereign_world.housing import HouseJob, Housing, founding_housing
 from sovereign_world.ids import EntityId, IdAllocator
 from sovereign_world.institutions import Institution
 from sovereign_world.logistics import (
@@ -124,6 +124,8 @@ class CivilizationState(BaseModel):
     """Battles as this civilization's own survivors told them."""
     housing: dict[EntityId, Housing] = Field(default_factory=dict)
     """Each settlement's houses, by settlement id (rules version 2)."""
+    house_jobs: tuple[HouseJob, ...] = ()
+    """Houses going up, by job id."""
 
 
 _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
@@ -425,6 +427,14 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("a storehouse stands in one of its civilization's settlements")
         if not set(civilization.housing) <= settlement_ids:
             raise ValueError("houses stand in their civilization's own settlements")
+        house_jobs = [job.job_id for job in civilization.house_jobs]
+        if house_jobs != sorted(set(house_jobs)):
+            raise ValueError("house jobs are unique and sorted")
+        if any(job.settlement_id not in settlement_ids for job in civilization.house_jobs):
+            raise ValueError("houses go up in their civilization's own settlements")
+        builders = [person_id for job in civilization.house_jobs for person_id in job.worker_ids]
+        if len(builders) != len(set(builders)):
+            raise ValueError("a builder works on one house job at a time")
         walled = [item.settlement_id for item in civilization.walls]
         if walled != sorted(set(walled)) or not set(walled) <= settlement_ids:
             raise ValueError("each settlement has at most one set of walls, sorted")

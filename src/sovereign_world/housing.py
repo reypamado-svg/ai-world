@@ -158,3 +158,45 @@ def residents_by_settlement(
         assert held_at is not None
         residents.setdefault(held_at, []).append(person_id)
     return residents
+
+
+MAX_HOUSES_PER_ORDER = 20
+ABANDONED_GRACE_DAYS = 365
+"""An empty settlement's houses stand this long before they start to fall."""
+ABANDONED_DECAY_DAYS = 30
+"""After that, one house falls every this many days."""
+STORMED_SHARE = 4
+"""A settlement stormed or burned loses a quarter of its houses."""
+
+
+class HouseJob(BaseModel):
+    """Builders raising houses at one settlement, one after another."""
+
+    model_config = ConfigDict(frozen=True)
+
+    job_id: EntityId
+    settlement_id: EntityId
+    tile: HexCoord
+    worker_ids: tuple[EntityId, ...]
+    grade: HouseGrade
+    count: int = Field(ge=1, le=MAX_HOUSES_PER_ORDER)
+    started_day: int = Field(ge=0)
+    person_days_done: int = Field(default=0, ge=0)
+
+    def built(self) -> int:
+        """Houses finished so far."""
+        return min(self.count, self.person_days_done // HOUSE_GRADES[self.grade].person_days)
+
+    def unused_materials(self) -> dict[Resource, int]:
+        """What the houses not yet finished would still take."""
+        left = self.count - self.built()
+        return {
+            resource: quantity * left
+            for resource, quantity in HOUSE_GRADES[self.grade].materials.items()
+        }
+
+
+def house_materials(grade: HouseGrade, count: int) -> dict[Resource, int]:
+    return {
+        resource: quantity * count for resource, quantity in HOUSE_GRADES[grade].materials.items()
+    }
