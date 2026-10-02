@@ -107,6 +107,36 @@ class Population(BaseModel):
 FoundingPopulation = Population
 
 
+class CopyOnRead(dict[EntityId, Person]):
+    """People that are copied only when looked up by id, the first time.
+
+    A step that changes a few people (travellers, ambassadors, apprentices) works on
+    copies of just those, instead of copying everyone; the people passed in are never
+    changed. Look people up by key (`[]`, `get`) before changing them: iterating values
+    yields the shared originals, for reading only. Turn the result back into a plain
+    dict with `dict(...)`, which keeps every copy made and the original order.
+    """
+
+    __slots__ = ("_copied",)
+
+    def __init__(self, people: dict[EntityId, Person]) -> None:
+        super().__init__(people)
+        self._copied: set[EntityId] = set()
+
+    def __getitem__(self, person_id: EntityId) -> Person:
+        person = super().__getitem__(person_id)
+        if person_id not in self._copied:
+            person = person.model_copy(deep=True)
+            super().__setitem__(person_id, person)
+            self._copied.add(person_id)
+        return person
+
+    def get(self, person_id: EntityId, default: Person | None = None) -> Person | None:  # type: ignore[override]
+        if person_id not in self:
+            return default
+        return self[person_id]
+
+
 @dataclass(frozen=True, slots=True)
 class BirthRecord:
     person_id: EntityId
@@ -217,8 +247,9 @@ def _eligible_pairs(people: dict[EntityId, Person]) -> list[tuple[Person, Person
         and person.health_bp >= FERTILE_HEALTH_BP
     ]
     pairs: list[tuple[Person, Person]] = []
+    males_by_id = sorted(males, key=lambda person: person.person_id)
     for female in sorted(females, key=lambda person: person.person_id):
-        for male in sorted(males, key=lambda person: person.person_id):
+        for male in males_by_id:
             if female.parent_ids and set(female.parent_ids) & set(male.parent_ids):
                 continue
             pairs.append((female, male))
@@ -233,8 +264,14 @@ def advance_population_day(
     *,
     food_days: int = 0,
     shelter_slots: int = 0,
+    in_place: bool = False,
 ) -> PopulationDayResult:
-    candidate = population.model_copy(deep=True)
+    """Births, aging, deaths and conceptions for one day.
+
+    With `in_place` the population itself is updated (the engine passes its own
+    working copy); otherwise a copy is, and the population passed in is left alone.
+    """
+    candidate = population if in_place else population.model_copy(deep=True)
     births: list[BirthRecord] = []
     deaths: list[DeathRecord] = []
     pending: list[ScheduledBirth] = []

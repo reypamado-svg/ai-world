@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
-from sovereign_world.people import Person
+from sovereign_world.people import CopyOnRead, Person
 from sovereign_world.roads import RoadGrade
 from sovereign_world.travel import DAY, MAX_PROGRESS, NO_BRIDGES, Bridges, Roads, entry_cost
 
@@ -85,9 +85,7 @@ def advance_expeditions(
     the expedition, which observes the water it cannot cross. Explorers note who owns
     each tile they enter, and the grade of any road on it.
     """
-    updated_people = {
-        person_id: person.model_copy(deep=True) for person_id, person in people.items()
-    }
+    updated_people = CopyOnRead(people)
     owners = owners or {}
     roads = roads or {}
     observation_by_tile = {observation.tile: observation for observation in observations}
@@ -197,7 +195,7 @@ def advance_expeditions(
             returned_ids.append(expedition.expedition_id)
     return ExpeditionDayResult(
         expeditions=tuple(sorted(updated_expeditions, key=lambda item: item.expedition_id)),
-        people=updated_people,
+        people=dict(updated_people),
         observations=tuple(sorted(observation_by_tile.values(), key=lambda item: item.tile)),
         observed_tiles=tuple(sorted(set(observed_tiles))),
         returned_ids=tuple(sorted(returned_ids)),

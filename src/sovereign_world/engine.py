@@ -5703,8 +5703,12 @@ def advance_day(
         # Everyone eats and farms at the settlement that supplies where they stand; captives
         # eat and farm where they are held.
         residents: dict[EntityId, list[EntityId]] = {}
+        store_of: dict[HexCoord, EntityId | None] = {}
         for person_id in home_living:
-            store_id = store_id_at(civilization, people[person_id].location)
+            location = people[person_id].location
+            if location not in store_of:
+                store_of[location] = store_id_at(civilization, location)
+            store_id = store_of[location]
             assert store_id is not None
             residents.setdefault(store_id, []).append(person_id)
         for person_id, person in sorted(held.items()):
@@ -5855,6 +5859,7 @@ def advance_day(
             rng=rng.stream(f"day:{candidate.day}:population:{civilization_id}"),
             food_days=food_days,
             shelter_slots=current_living + 64 if growth_policy > 0 else 0,
+            in_place=True,
         )
         civilization.population = population_result.population
         _keep_archive(candidate, civilization_id, institution_away)

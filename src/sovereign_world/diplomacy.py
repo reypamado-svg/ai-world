@@ -11,7 +11,7 @@ from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import SERVICE_FIDELITY
 from sovereign_world.languages import fidelity, render
-from sovereign_world.people import Person
+from sovereign_world.people import CopyOnRead, Person
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.travel import (
@@ -285,10 +285,8 @@ def advance_diplomacy_day(
 
     Rough terrain takes more than a day to enter, and roads make it quicker.
     """
-    people = {
-        civilization_id: {
-            person_id: person.model_copy(deep=True) for person_id, person in population.items()
-        }
+    people: dict[EntityId, dict[EntityId, Person]] = {
+        civilization_id: CopyOnRead(population)
         for civilization_id, population in people_by_civilization.items()
     }
     updated: list[DiplomaticMessage] = []
@@ -368,7 +366,9 @@ def advance_diplomacy_day(
         delivered.append(completed)
     return DiplomacyDayResult(
         missions=tuple(sorted(updated, key=lambda item: item.message_id)),
-        people_by_civilization=people,
+        people_by_civilization={
+            civilization_id: dict(population) for civilization_id, population in people.items()
+        },
         delivered=tuple(sorted(delivered, key=lambda item: item.message_id)),
         delayed_ids=tuple(sorted(delayed_ids)),
         lost_ids=tuple(sorted(lost_ids)),

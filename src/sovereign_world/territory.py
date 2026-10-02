@@ -410,9 +410,10 @@ def advance_territory(
 
 
 def visible_tiles(world_map: WorldMap, centers: Iterable[HexCoord]) -> frozenset[HexCoord]:
-    """Tiles within sight of a settlement."""
+    """Tiles within sight of a settlement (or of anyone standing at the given tiles)."""
     seen: set[HexCoord] = set()
-    for center in centers:
+    # Many people often stand on one tile; each tile's view is worked out once.
+    for center in set(centers):
         ring = {center}
         for _ in range(SETTLEMENT_SIGHT):
             ring |= {neighbor for tile in ring for neighbor in world_map.neighbors(tile)}

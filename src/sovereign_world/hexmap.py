@@ -13,6 +13,13 @@ class HexCoord:
     q: int
     r: int
 
+    def __copy__(self) -> HexCoord:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, object]) -> HexCoord:
+        # Frozen and made of ints: copying a coordinate would only waste time.
+        return self
+
     def neighbors(self) -> tuple[HexCoord, ...]:
         offsets = ((1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1))
         return tuple(HexCoord(self.q + dq, self.r + dr) for dq, dr in offsets)

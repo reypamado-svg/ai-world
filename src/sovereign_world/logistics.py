@@ -22,7 +22,7 @@ from sovereign_world.bridges import (
 from sovereign_world.espionage import MAX_WATCH_DAYS, Estimate
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap, edge_key
 from sovereign_world.ids import EntityId
-from sovereign_world.people import Person, go_hungry
+from sovereign_world.people import CopyOnRead, Person, go_hungry
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import (
@@ -552,10 +552,8 @@ def advance_journeys_day(
     over land its civilization knows, if its pack covers the longer road, and otherwise
     turns back with its goods. A road crew that cannot pay stops.
     """
-    people = {
-        civilization_id: {
-            person_id: person.model_copy(deep=True) for person_id, person in population.items()
-        }
+    people: dict[EntityId, dict[EntityId, Person]] = {
+        civilization_id: CopyOnRead(population)
         for civilization_id, population in people_by_civilization.items()
     }
     updated: list[Journey] = []
@@ -882,7 +880,9 @@ def advance_journeys_day(
 
     return JourneyDayResult(
         journeys=tuple(sorted(fed_journeys, key=lambda item: item.journey_id)),
-        people_by_civilization=people,
+        people_by_civilization={
+            civilization_id: dict(population) for civilization_id, population in people.items()
+        },
         delayed_ids=tuple(sorted(delayed_ids)),
         lost_ids=tuple(sorted(lost_ids)),
         perished_ids=tuple(sorted(perished_ids)),

@@ -8,7 +8,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.ids import EntityId
-from sovereign_world.people import Person
+from sovereign_world.people import CopyOnRead, Person
 
 
 class CapabilityId(StrEnum):
@@ -115,9 +115,7 @@ def advance_knowledge_day(
     day: int,
 ) -> KnowledgeDayResult:
     """Advance teaching and remove unrecorded capabilities with no living practitioner."""
-    updated_people = {
-        person_id: person.model_copy(deep=True) for person_id, person in people.items()
-    }
+    updated_people = CopyOnRead(people)
     records = {record.capability: record for record in knowledge.records}
     forgotten: list[CapabilityId] = []
     for capability, record in tuple(records.items()):
@@ -172,7 +170,7 @@ def advance_knowledge_day(
                 sorted(remaining_assignments, key=lambda assignment: assignment.assignment_id)
             ),
         ),
-        people=updated_people,
+        people=dict(updated_people),
         learned=tuple(learned),
         forgotten=tuple(sorted(forgotten, key=lambda capability: capability.value)),
     )
