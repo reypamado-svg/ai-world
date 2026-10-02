@@ -69,6 +69,12 @@ test('water and land do not blend: one wandering shoreline, a beach on land and 
   assert.equal(changes.length, 1, `shoreline crossings at ${changes}`);
   // The shore lies within the wobble of the border, which is halfway between the centres.
   assert.ok(Math.abs(changes[0] - 0.5) <= WOBBLE / Math.sqrt(3) + 1e-3, `shore at ${changes[0]}`);
+  // waterAt agrees with the painted shoreline.
+  const point = (k) => ({ x: land.x + (lake.x - land.x) * k, y: land.y + (lake.y - land.y) * k });
+  const before = point(changes[0] - 2 / steps);
+  const after = point(changes[0] + 2 / steps);
+  assert.equal(field.waterAt(before.x, before.y), false);
+  assert.equal(field.waterAt(after.x, after.y), true);
   const beach = at(changes[0] - 2 / steps);
   const shallows = at(changes[0] + 2 / steps);
   assert.ok(beach[0] > 170 && beach[0] > beach[2], `beach ${beach}`);

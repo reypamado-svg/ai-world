@@ -183,6 +183,41 @@ test('follow keeps the selected courier across a chunk boundary, days into the j
   assert.match(r.waiting, /^Waiting/);
 });
 
+test('ground patches and trees settle within their budgets while zooming into the village', async () => {
+  const r = await page.evaluate(async () => {
+    const o = window.__observer;
+    o.select(null);
+    const v = o.villageInfo().origin;
+    const rows = [];
+    // From where patches begin (a tile about 1,800 px wide) to the settlement band.
+    for (let zoom = o.zoomForTilePx(1800); zoom < 1.2; zoom *= 2) {
+      // Look 600 m east of the village, off its own ground.
+      o.view(v.x + 600, v.y, zoom);
+      const settled = await o.settle(1500);
+      const p = o.patchStats();
+      rows.push({
+        zoom,
+        complete: settled.complete,
+        size: p.size,
+        entries: p.entries,
+        bytes: p.bytes,
+        decor: o.stats().decorSprites,
+      });
+    }
+    return rows;
+  });
+  let last = Infinity;
+  for (const row of r) {
+    assert.ok(row.complete, `zoom ${row.zoom} did not settle`);
+    assert.ok(row.size <= last, `patch size grew to ${row.size} at zoom ${row.zoom}`);
+    last = row.size;
+    assert.ok(row.entries <= 320 && row.bytes <= 96e6, `patch cache over budget: ${JSON.stringify(row)}`);
+  }
+  assert.ok(r[0].size >= 1600, `first patches are ${r[0].size} m`);
+  assert.ok(r.at(-1).size <= 50, `last patches are ${r.at(-1).size} m`);
+  assert.ok(r.at(-1).decor > 0, 'bushes and trees appear up close');
+});
+
 test('camera, zoom and follow never change presentation positions; pause freezes them', async () => {
   const r = await page.evaluate(async () => {
     const o = window.__observer;

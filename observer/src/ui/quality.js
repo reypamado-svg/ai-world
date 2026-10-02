@@ -4,9 +4,15 @@
 // animation is refreshed and how many citizens get full detail.
 
 export const LEVELS = {
-  high: { resolution: Math.min(2, window.devicePixelRatio || 1), shadows: true, crowdBudget: 800, animHz: 60 },
-  medium: { resolution: 1, shadows: true, crowdBudget: 400, animHz: 30 },
-  low: { resolution: 0.75, shadows: false, crowdBudget: 150, animHz: 15 },
+  high: {
+    resolution: Math.min(2, window.devicePixelRatio || 1),
+    shadows: true,
+    crowdBudget: 800,
+    animHz: 60,
+    patchBakes: 2,
+  },
+  medium: { resolution: 1, shadows: true, crowdBudget: 400, animHz: 30, patchBakes: 2 },
+  low: { resolution: 0.75, shadows: false, crowdBudget: 150, animHz: 15, patchBakes: 1 },
 };
 const ORDER = ['high', 'medium', 'low'];
 

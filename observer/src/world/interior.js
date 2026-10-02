@@ -191,10 +191,14 @@ export function makeInterior({ R, tileAt, lakes = new Set(), features = [] }) {
   const at = (q, r) => tileAt(q, r) ?? { terrain: 0 };
 
   /** Ground colour [r, g, b] at a plane point; `res` is the sample spacing in metres (0: full detail). */
-  function sample(x, y, res = 0) {
+  /**
+   * Where a point lies relative to the shore: its tile, the distances to the
+   * tile's six borders, and the nearest water/land border it may have crossed.
+   */
+  function locate(x, y) {
     const h = planeToHex(x, y, R);
     const t = tileAt(h.q, h.r);
-    if (!t) return terrainColour({ terrain: 0 }, x, y, false, res);
+    if (!t) return { h, t };
     const c = hexCentre(h.q, h.r, R);
     const { u, v } = planeToUV(x - c.x, y - c.y);
     const ownWater = t.terrain === 0;
@@ -221,6 +225,19 @@ export function makeInterior({ R, tileAt, lakes = new Set(), features = [] }) {
       const k = ROUND * R;
       across.e = -k * Math.log(Math.exp(-across.e / k) + Math.exp(-second / k));
     }
+    return { h, t, d, ownWater, across };
+  }
+
+  /** Whether a plane point is water (lake, sea or off the map), shorelines included. */
+  function waterAt(x, y) {
+    const { t, ownWater, across } = locate(x, y);
+    if (!t) return true;
+    return across && across.e < 0 ? !ownWater : ownWater;
+  }
+
+  function sample(x, y, res = 0) {
+    const { h, t, d, ownWater, across } = locate(x, y);
+    if (!t) return terrainColour({ terrain: 0 }, x, y, false, res);
     let colour;
     let water = ownWater;
     if (across && across.e < 0) {
@@ -259,7 +276,7 @@ export function makeInterior({ R, tileAt, lakes = new Set(), features = [] }) {
     return colour;
   }
 
-  return { sample };
+  return { sample, waterAt };
 }
 
 /** A tile's flat colour for the map (its interior at the centre, without relief). */

@@ -18,6 +18,7 @@ import { TERRAINS, TerrainSource } from './data/terrain-source.js';
 import { SyntheticSource } from './data/synthetic-source.js';
 import { chooseCourierRoute, observerVillage } from './data/sample/village.js';
 import { TerrainLayer } from './render/terrain-layer.js';
+import { PatchLayer } from './render/patch-layer.js';
 import { DecorLayer } from './render/decor.js';
 import { VillageLayer, bandOf } from './render/village-layer.js';
 import { CapitalMarkers } from './render/markers.js';
@@ -64,6 +65,14 @@ class ObserverApp {
     pixi.stage.addChild(this.world);
     this.terrain = new TerrainLayer({ PIXI, source, ...(extras.terrainOptions ?? {}) });
     this.world.addChild(this.terrain.container);
+    // Ground patches take over from about 1,700 px per tile, where a tile texture would blur.
+    this.patches = new PatchLayer({
+      PIXI,
+      terrain: this.terrain,
+      interior: () => this.terrain.interior(),
+      minZoom: zoomForTilePx(1700, this.R),
+    });
+    this.world.addChild(this.patches.container);
     this.villageData = extras.village ?? null;
     if (extras.village) {
       const v = extras.village;
@@ -71,7 +80,8 @@ class ObserverApp {
         PIXI,
         atlas: extras.atlas,
         terrain: this.terrain,
-        skip: new Set([`${v.tile[0]},${v.tile[1]}`]),
+        // The village and its field ring stay clear of trees.
+        clear: [{ x: v.origin.x, y: v.origin.y, r: v.fieldRing?.r1 ?? 64 }],
       });
       this.world.addChild(this.decor.container);
       this.village = new VillageLayer({
@@ -195,7 +205,9 @@ class ObserverApp {
     const view = this.camera.viewRect(this.world, width, height, 0);
     this.view = view;
     this.terrain.update(view, this.camera.zoom);
-    this.decor?.update(this.camera.zoom);
+    this.patches.bakesPerFrame = this.settings?.patchBakes ?? 2;
+    this.patches.update(view, this.camera.zoom);
+    this.decor?.update(view, this.camera.zoom);
     if (this.village) {
       const margin = this.camera.viewRect(this.world, width, height, 80);
       this.village.update(this.animT, margin, this.camera.zoom, {
@@ -211,6 +223,7 @@ class ObserverApp {
 
   stats() {
     const t = this.terrain.stats();
+    const p = this.patches.stats();
     const v = this.village?.counts() ?? {};
     const iv = this.intervalStats.summary();
     return {
@@ -231,6 +244,11 @@ class ObserverApp {
       atlasBytes: this.atlas ? Math.round(this.atlas.textureBytes() + this.groundBytes) : 0,
       jsHeapBytes: jsHeapBytes(),
       inFlight: t.loader.inFlight,
+      patchSize: p.size,
+      visiblePatches: p.visible,
+      patchBytes: Math.round(p.bytes),
+      patchBakeMsAvg: Number(p.bakeMsAvg.toFixed(2)),
+      decorSprites: this.decor?.container.visible ? this.decor.sprites : 0,
     };
   }
 
@@ -455,12 +473,13 @@ function buildApi(app) {
     settle: async (maxFrames = 600) => {
       for (let f = 0; f < maxFrames; f += 1) {
         app.frame(16, false);
-        if (app.terrain.stats().complete) return { frames: f + 1, complete: true };
+        if (app.terrain.stats().complete && app.patches.complete) return { frames: f + 1, complete: true };
         await new Promise((r) => setTimeout(r, 15));
       }
       return { frames: maxFrames, complete: false };
     },
     terrainStats: () => app.terrain.stats(),
+    patchStats: () => app.patches.stats(),
     stats: () => app.stats(),
     canvasToPlane: (cx, cy) => {
       const w = app.camera.screenToWorld(app.world, cx, cy);
@@ -516,7 +535,10 @@ function buildApi(app) {
       return toCanvas(p.x + off.x, p.y + off.y);
     },
     isDrawn: (id) => v.renderer.drawOrder.some((o) => o.id === id),
-    releaseHidden: () => app.terrain.releaseHidden(),
+    releaseHidden: () => {
+      app.terrain.releaseHidden();
+      app.patches.releaseHidden();
+    },
     textureCount: () => ({
       terrain: app.terrain.liveTextures,
       // Freed slots are left as null in the list, so count live entries only.
