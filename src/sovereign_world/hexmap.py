@@ -41,6 +41,25 @@ class Terrain(StrEnum):
     SNOW = "snow"
 
 
+class CoverClass(StrEnum):
+    """What the ground inside a tile is covered with (world generator version 3)."""
+
+    OPEN = "open"
+    """Grass, meadow, steppe, moss: open ground for grazing and fields."""
+    WOOD = "wood"
+    SCRUB = "scrub"
+    WETLAND = "wetland"
+    """Marsh, reed beds and ponds."""
+    ROCK = "rock"
+    SAND = "sand"
+    SNOWFIELD = "snowfield"
+
+
+COVER_CLASSES = tuple(CoverClass)
+COVER_TOTAL = 10_000
+"""A tile's cover shares are basis points of the tile and sum to this."""
+
+
 @dataclass(frozen=True, slots=True)
 class Tile:
     coord: HexCoord
@@ -53,6 +72,9 @@ class Tile:
     stone: int
     ore: int
     river: bool = False
+    cover: tuple[int, ...] = ()
+    """Share of the tile under each `CoverClass`, in that order, in basis points summing to
+    10,000; empty on water and on maps from before version 3."""
 
     @property
     def has_water(self) -> bool:
@@ -96,6 +118,14 @@ class WorldMap:
             expected = HexCoord(index % self.width, index // self.width)
             if tile.coord != expected:
                 raise ValueError(f"tile {index} has coordinate {tile.coord}, expected {expected}")
+            if tile.cover and (
+                len(tile.cover) != len(COVER_CLASSES)
+                or min(tile.cover) < 0
+                or sum(tile.cover) != COVER_TOTAL
+            ):
+                raise ValueError(
+                    f"tile {tile.coord} cover must be {len(COVER_CLASSES)} shares of 10000"
+                )
         index_by_edge: dict[tuple[HexCoord, HexCoord], RiverEdge] = {}
         for edge in self.rivers:
             if not edge.a < edge.b or edge.b not in edge.a.neighbors():
@@ -137,12 +167,20 @@ class WorldMap:
         payload: dict[str, object] = {
             "width": self.width,
             "height": self.height,
-            "tiles": [asdict(tile) for tile in self.tiles],
+            "tiles": [_tile_payload(tile) for tile in self.tiles],
         }
         if self.rivers:
             payload["rivers"] = [asdict(edge) for edge in self.rivers]
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
         return hashlib.sha256(encoded).hexdigest()
+
+
+def _tile_payload(tile: Tile) -> dict[str, object]:
+    payload = asdict(tile)
+    # Maps without cover hash exactly as they did before cover existed.
+    if not tile.cover:
+        payload.pop("cover")
+    return payload
 
 
 def corner_tiles(first: HexCoord, second: HexCoord) -> tuple[HexCoord, ...]:

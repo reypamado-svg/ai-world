@@ -163,8 +163,13 @@ class WorldState(BaseModel):
         dumped = handler(self)
         if isinstance(dumped, dict):
             world_map = dumped.get("world_map")
-            if isinstance(world_map, dict) and not world_map.get("rivers"):
-                world_map.pop("rivers", None)
+            if isinstance(world_map, dict):
+                if not world_map.get("rivers"):
+                    world_map.pop("rivers", None)
+                # Tiles without land cover (water, and every tile of older maps).
+                for tile in world_map.get("tiles", ()):
+                    if isinstance(tile, dict) and not tile.get("cover"):
+                        tile.pop("cover", None)
             if not dumped.get("bridges"):
                 dumped.pop("bridges", None)
         return dumped

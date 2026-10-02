@@ -10,6 +10,7 @@ import numpy as np
 
 from sovereign_world import geography
 from sovereign_world.config import CURRENT_GENERATOR, WorldConfig
+from sovereign_world.cover import generate_cover
 from sovereign_world.hexmap import HexCoord, Terrain, Tile, WorldMap
 from sovereign_world.rng import StableRng
 from sovereign_world.travel import DEEP_FLOW
@@ -302,7 +303,8 @@ def generate_world(
 
     Version 1 is the original generator, kept so a run made with it can be rebuilt from its
     manifest; version 2 makes regional terrain with logical neighbours and flowing rivers;
-    version 3 keeps version 2's terrain and places starts as far apart as the land allows.
+    version 3 keeps version 2's terrain, adds land cover inside each tile, and places starts as
+    far apart as the land allows.
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be positive")
@@ -314,6 +316,8 @@ def generate_world(
             world_map = _generate_map(config, rng, attempt)
         else:
             world_map = geography.generate_map(config.width, config.height, rng, attempt)
+        if generator_version >= 3:
+            world_map = generate_cover(world_map, rng, attempt)
         spacing = min_start_distance
         if generator_version >= 3:
             starts, spacing, reasons = _spaced_starts(
