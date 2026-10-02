@@ -30,7 +30,8 @@ after(async () => {
 test('rapid jumps across a huge world stay within budgets and leave nothing behind', async () => {
   const result = await page.evaluate(async () => {
     const o = window.__observer;
-    const start = { q: 2048, r: 2048, zoom: 0.03 };
+    // Zooms are given as screen pixels per tile, so the test holds at any tile size.
+    const start = { q: 2048, r: 2048, zoom: o.zoomForTilePx(75) };
     // Let the canvas reach its final size before taking the baseline.
     await new Promise((r) => setTimeout(r, 500));
     o.viewHex(start.q, start.r, start.zoom);
@@ -45,7 +46,7 @@ test('rapid jumps across a huge world stay within budgets and leave nothing behi
     const samples = [];
     const t0 = performance.now();
     for (let i = 0; i < 60; i += 1) {
-      const zoom = minZoom + rnd() * (0.12 - minZoom);
+      const zoom = minZoom + rnd() * (o.zoomForTilePx(300) - minZoom);
       o.viewHex(Math.floor(rnd() * 4096), Math.floor(rnd() * 4096), zoom);
       const s = o.terrainStats();
       samples.push({ inFlight: s.loader.inFlight, cpu: s.cpu.bytes, gpu: s.gpu.bytes, gpuEntries: s.gpu.entries });
@@ -57,7 +58,7 @@ test('rapid jumps across a huge world stay within budgets and leave nothing behi
     const settled = await o.settle(800);
     const after = o.terrainStats();
     // Far corner: positions are large; rendering must still settle.
-    o.viewHex(4095, 4095, 0.05);
+    o.viewHex(4095, 4095, o.zoomForTilePx(125));
     const corner = await o.settle(800);
     // Return to the start view and release everything off screen.
     o.viewHex(start.q, start.r, start.zoom);

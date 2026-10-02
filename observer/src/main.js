@@ -5,8 +5,16 @@
 
 import * as PIXI from '../vendor/pixi/pixi.min.mjs';
 import { project, unproject } from './world/coords.js';
-import { hexCentre, worldScreenBounds, chunkScreenBounds, planeToHex, chunkOf } from './world/hex.js';
-import { TerrainSource } from './data/terrain-source.js';
+import {
+  chunkOf,
+  chunkScreenBounds,
+  hexCentre,
+  hexRadiusOf,
+  planeToHex,
+  worldScreenBounds,
+  zoomForTilePx,
+} from './world/hex.js';
+import { TERRAINS, TerrainSource } from './data/terrain-source.js';
 import { SyntheticSource } from './data/synthetic-source.js';
 import { chooseCourierRoute, observerVillage } from './data/sample/village.js';
 import { TerrainLayer } from './render/terrain-layer.js';
@@ -38,11 +46,11 @@ function chunkBudgetZoom(source, screenW, screenH, budget) {
   const [ncq, ncr] = source.manifest.presentation.chunks;
   if (ncq * ncr <= budget) return 0; // the whole world fits the budget
   const ct = source.manifest.presentation.chunk_tiles;
-  const R = source.manifest.presentation.hex_radius_m;
+  const R = hexRadiusOf(source.manifest);
   const b = chunkScreenBounds(1, 1, ct, R, source.width, source.height);
   const cw = (b.x1 - b.x0) * 0.6; // chunks overlap in screen space (skewed rows)
   const ch = (b.y1 - b.y0) * 0.6;
-  let z = 0.001;
+  let z = 1e-7;
   while (z < 1 && (screenW / (cw * z) + 2) * (screenH / (ch * z) + 2) > budget) z *= 1.05;
   return z;
 }
@@ -51,7 +59,7 @@ class ObserverApp {
   constructor(pixi, source, extras) {
     this.pixi = pixi;
     this.source = source;
-    this.R = source.manifest.presentation.hex_radius_m;
+    this.R = hexRadiusOf(source.manifest);
     this.world = new PIXI.Container();
     pixi.stage.addChild(this.world);
     this.terrain = new TerrainLayer({ PIXI, source, ...(extras.terrainOptions ?? {}) });
@@ -212,7 +220,7 @@ class ObserverApp {
       ...this.frameStats.summary(),
       quality: `${this.quality.mode}${this.quality.mode === 'auto' ? ` (${this.quality.level})` : ''}`,
       zoom: Number(this.camera.zoom.toFixed(4)),
-      band: bandOf(this.camera.zoom),
+      band: bandOf(this.camera.zoom, this.terrain.hexModeZoom),
       ...v,
       textureLevel: t.level,
       hexLevel: t.hexLevel,
@@ -287,13 +295,14 @@ class ObserverApp {
           height,
           e.clientX - rect.left,
           e.clientY - rect.top,
-          Math.exp(-e.deltaY * 0.0015),
+          Math.exp(-e.deltaY * 0.0025),
         );
       },
       { passive: false },
     );
-    $('btn-zoom-in').addEventListener('click', () => this.camera.setZoom(this.camera.zoom * 1.4));
-    $('btn-zoom-out').addEventListener('click', () => this.camera.setZoom(this.camera.zoom / 1.4));
+    // Zoom spans five decades (a whole continent down to one person): bigger steps.
+    $('btn-zoom-in').addEventListener('click', () => this.camera.setZoom(this.camera.zoom * 2));
+    $('btn-zoom-out').addEventListener('click', () => this.camera.setZoom(this.camera.zoom / 2));
     $('btn-world').addEventListener('click', () => {
       this.follow = false;
       Object.assign(this.camera, this.home);
@@ -410,7 +419,7 @@ function buildApi(app) {
       const p = project(app.villageData.origin.x, app.villageData.origin.y);
       return { x: p.x, y: p.y };
     },
-    band: () => bandOf(app.camera.zoom),
+    band: () => bandOf(app.camera.zoom, app.terrain.hexModeZoom),
     frame: () => app.frame(0, false),
     setPaused: (p) => app.setPaused(p),
     setTime: (t) => {
@@ -423,6 +432,11 @@ function buildApi(app) {
       app.t += dt;
       app.frame(dt * 1000, false);
     },
+    /** The zoom at which one tile is `px` screen pixels wide. */
+    zoomForTilePx: (px) => zoomForTilePx(px, app.R),
+    R: () => app.R,
+    /** The SAMPLE courier's journey: arrival at each tile, camps and fords, in schedule time. */
+    courierPlan: () => app.villageData?.courierPlan ?? null,
     /** How many times citizens' schedules have been recomputed for drawing. */
     animRecomputes: () => app.village?.renderer.recomputes ?? 0,
     /** Run frames until every visible chunk is loaded and baked at the wanted level. */
@@ -448,6 +462,12 @@ function buildApi(app) {
     positionOf: (id) => {
       const p = local(id);
       return { ...p, x: p.x + app.villageData.origin.x, y: p.y + app.villageData.origin.y };
+    },
+    activityOf: (id) => v.renderer.activityAt(id, app.t),
+    /** Ground-plane distance in metres from (x, y) to the centre of tile (q, r). */
+    distanceToHexCentre: (x, y, q, r) => {
+      const c = hexCentre(q, r, app.R);
+      return Math.hypot(x - c.x, y - c.y);
     },
     chunkOfPerson: (id) => {
       const p = local(id);
@@ -515,24 +535,35 @@ async function courierRoute(source, tile) {
     for (let i = 0; i < c.n; i += 1) if (c.q[i] === q && c.r[i] === r) return c.terrain[i];
     return 0;
   };
-  const land = new Map();
+  const terrain = new Map();
   const [q0, r0] = tile;
   for (let dr = -4; dr <= 4; dr += 1)
     for (let dq = -4; dq <= 4; dq += 1) {
       const [q, r] = [q0 + dq, r0 + dr];
-      if (q >= 0 && r >= 0 && q < source.width && r < source.height) land.set(`${q},${r}`, (await tileAt(q, r)) !== 0);
+      if (q >= 0 && r >= 0 && q < source.width && r < source.height) terrain.set(`${q},${r}`, await tileAt(q, r));
     }
   const rivers = source.rivers;
-  return chooseCourierRoute(tile, {
-    landAt: (q, r) => land.get(`${q},${r}`) ?? false,
-    deepBetween: ([aq, ar], [bq, br]) =>
-      (rivers.byTile.get(`${aq},${ar}`) ?? []).some(
-        (e) => e.flow >= rivers.deepFlow && ((e.bq === bq && e.br === br) || (e.aq === bq && e.ar === br)),
-      ),
+  const flowBetween = (a, b) => {
+    const [aq, ar] = Array.isArray(a) ? a : [a.q, a.r];
+    const [bq, br] = Array.isArray(b) ? b : [b.q, b.r];
+    const edge = (rivers.byTile.get(`${aq},${ar}`) ?? []).find(
+      (e) => (e.bq === bq && e.br === br) || (e.aq === bq && e.ar === br),
+    );
+    return edge ? edge.flow : 0;
+  };
+  const route = chooseCourierRoute(tile, {
+    landAt: (q, r) => (terrain.get(`${q},${r}`) ?? 0) !== 0,
+    deepBetween: (a, b) => flowBetween(a, b) >= rivers.deepFlow,
     chunkTiles: ct,
     width: source.width,
     height: source.height,
   });
+  const travel = {
+    rules: source.manifest.engine.travel,
+    terrainAt: (q, r) => TERRAINS[terrain.get(`${q},${r}`) ?? 0],
+    flowBetween,
+  };
+  return { route, travel };
 }
 
 async function main() {
@@ -562,13 +593,13 @@ async function main() {
     setStatus('Loading engine terrain manifest');
     source = await TerrainSource.open('data/terrain');
     const day0 = await source.day0();
-    extras = { overview: await source.overview(), day0, terrainOptions: { gpuBytes: 192e6, gpuEntries: 192 } };
+    extras = { overview: await source.overview(), day0, terrainOptions: { gpuBytes: 192e6, gpuEntries: 256 } };
     const atlas = new Atlas(PIXI);
     const { assetInfo } = await bakeStaticAssets(atlas, CIV_COLORS[0], setStatus);
     const footprintOf = (asset) => assetInfo.get(asset).footprint;
     const tile = day0.civilizations[0].capital.tile;
-    const route = await courierRoute(source, tile);
-    const village = observerVillage(footprintOf, source.manifest.presentation.hex_radius_m, tile, route);
+    const { route, travel } = await courierRoute(source, tile);
+    const village = observerVillage(footprintOf, hexRadiusOf(source.manifest), tile, route, travel);
     scaleCitizens(village.scene, Number(params.get('citizens') ?? 400));
     await bakeSceneActors(atlas, village.scene, setStatus);
     atlas.finalize();

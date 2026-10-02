@@ -1,4 +1,4 @@
-// Three-band observer tests: spatial continuity, selection, follow, and the
+// Four-band observer tests: spatial continuity, selection, follow, and the
 // independence of presentation positions from the camera.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,10 +27,10 @@ after(async () => {
   server?.close();
 });
 
-test('zooming keeps the ground point under the cursor fixed through all three bands', async () => {
+test('zooming keeps the ground point under the cursor fixed through all four bands', async () => {
   const r = await page.evaluate(() => {
     const o = window.__observer;
-    o.viewVillage(0.02);
+    o.viewVillage(o.zoomForTilePx(120));
     const cx = 610;
     const cy = 330;
     const start = o.canvasToPlane(cx, cy);
@@ -44,7 +44,7 @@ test('zooming keeps the ground point under the cursor fixed through all three ba
     }
     return { bands: [...bands], worst };
   });
-  assert.deepEqual(r.bands, ['atlas', 'regional', 'settlement']);
+  assert.deepEqual(r.bands, ['atlas', 'regional', 'local', 'settlement']);
   assert.ok(r.worst < 0.01, `cursor point drifted ${r.worst} m`);
 });
 
@@ -123,39 +123,64 @@ test('repeated clicks in a crowd cycle through the people there', async () => {
   );
 });
 
-test('follow keeps the selected courier across a chunk boundary', async () => {
+test('follow keeps the selected courier across a chunk boundary, days into the journey', async () => {
   const r = await page.evaluate(() => {
     const o = window.__observer;
     const id = o.courierId();
-    // At 40 s the courier is on the village roads, walking out toward a tile in another chunk.
-    const t = 40;
-    o.setTime(t);
+    const centre = [640, (720 - 72) / 2];
+    const lagOf = () => {
+      const p = o.positionOf(id);
+      const at = o.planeToCanvas(p.x, p.y, 1);
+      return Math.hypot(at.x - centre[0], at.y - centre[1]);
+    };
+    const key = (c) => `${c.cq},${c.cr}`;
+    // At 40 s the courier is still on the village roads.
+    o.setTime(40);
     o.select(id);
     o.follow(true);
     o.viewVillage(0.8);
-    const chunks = [];
+    for (let i = 0; i < 20; i += 1) o.step(0.5);
+    const first = key(o.cameraChunk());
+    // Jump to five minutes before the courier reaches the far tile, days later.
+    const plan = o.courierPlan();
+    const arrive = plan.legs.at(-1).arriveT;
+    o.setTime(arrive - 300);
     let maxLag = 0;
-    for (let i = 0; i < 400; i += 1) {
-      o.step(1);
-      const c = o.cameraChunk();
-      const key = `${c.cq},${c.cr}`;
-      if (chunks[chunks.length - 1] !== key) chunks.push(key);
-      const p = o.positionOf(id);
-      const at = o.planeToCanvas(p.x, p.y, 1);
-      if (i > 20) maxLag = Math.max(maxLag, Math.hypot(at.x - 640, at.y - (720 - 72) / 2));
-      if (chunks.length >= 2 && i > 30) break;
+    for (let i = 0; i < 60; i += 1) {
+      o.step(0.5);
+      if (i >= 40) maxLag = Math.max(maxLag, lagOf());
     }
+    const second = key(o.cameraChunk());
+    // An hour after arriving the courier waits at the far tile's centre.
+    o.setTime(arrive + 3600);
+    const p = o.positionOf(id);
     const info = o.villageInfo();
-    const chunkOf = ([q, r]) => `${Math.floor(q / 8)},${Math.floor(r / 8)}`;
-    const expected = [chunkOf(info.tile), chunkOf(info.courierTile)];
-    return { chunks, expected, selection: o.selection(), maxLag, personChunk: o.chunkOfPerson(id) };
+    const far = info.courierTile;
+    return {
+      first,
+      second,
+      expected: [
+        `${Math.floor(info.tile[0] / 8)},${Math.floor(info.tile[1] / 8)}`,
+        `${Math.floor(far[0] / 8)},${Math.floor(far[1] / 8)}`,
+      ],
+      lastLeg: [plan.legs.at(-1).q, plan.legs.at(-1).r],
+      far,
+      days: arrive / 86400,
+      selection: o.selection(),
+      maxLag,
+      waiting: o.activityOf(id),
+      fromCentre: o.distanceToHexCentre(p.x, p.y, far[0], far[1]),
+    };
   });
-  assert.ok(r.chunks.length >= 2, `camera stayed in ${r.chunks}`);
   assert.notEqual(r.expected[0], r.expected[1]);
-  assert.equal(r.chunks[0], r.expected[0]);
-  assert.equal(r.chunks[1], r.expected[1]);
+  assert.equal(r.first, r.expected[0]);
+  assert.equal(r.second, r.expected[1]);
+  assert.deepEqual(r.lastLeg, r.far);
+  assert.ok(r.days > 1, `the journey took only ${r.days} days`);
   assert.deepEqual(r.selection, { id: await page.evaluate(() => window.__observer.courierId()), following: true });
   assert.ok(r.maxLag < 200, `camera lagged ${r.maxLag}px behind the courier`);
+  assert.ok(r.fromCentre < 30, `the waiting courier is ${r.fromCentre} m from the far tile centre`);
+  assert.match(r.waiting, /^Waiting/);
 });
 
 test('camera, zoom and follow never change presentation positions; pause freezes them', async () => {

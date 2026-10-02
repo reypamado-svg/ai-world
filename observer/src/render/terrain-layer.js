@@ -15,21 +15,24 @@ import {
   chunkScreenBounds,
   hexCentre,
   hexCorners,
+  hexRadiusOf,
   planeToHex,
   sharedCorners,
   screenBoundsOfTiles,
   worldScreenBounds,
+  zoomForTilePx,
 } from '../world/hex.js';
 import { paintHexDetail } from './hex-detail.js';
 import { ChunkLoader, LruCache } from '../world/chunks.js';
 import { hash2 } from '../sim/rng.js';
 import { css, mix } from './art/paint/color.js';
 
-/** Texture pixels per world-screen pixel, coarse to fine. */
-export const CHUNK_LEVELS = [0.0125, 0.025, 0.05, 0.1];
-/** From this zoom on, each visible tile gets its own detailed texture. */
-export const HEX_MODE_ZOOM = 0.1;
-export const HEX_LEVELS = [0.2, 0.4, 0.8];
+/** Chunk texture resolutions, as screen pixels per tile, coarse to fine. */
+export const CHUNK_TILE_PX = [32, 64, 128, 256];
+/** From this tile size on screen, each visible tile gets its own detailed texture. */
+export const HEX_MODE_TILE_PX = 256;
+/** Per-tile texture resolutions, as pixels per tile. */
+export const HEX_TILE_PX = [512, 1024];
 const MAX_DETAIL_HEXES = 120;
 
 const LAND = {
@@ -62,7 +65,11 @@ export class TerrainLayer {
   constructor({ PIXI, source, gpuBytes = 96e6, gpuEntries = 96, cpuBytes = 24e6, maxInFlight = 4, bakesPerFrame = 3 }) {
     this.PIXI = PIXI;
     this.source = source;
-    this.R = source.manifest.presentation.hex_radius_m;
+    this.R = hexRadiusOf(source.manifest);
+    // Texture pixels per world-screen pixel for each level; the same tile sizes at any scale.
+    this.chunkLevels = CHUNK_TILE_PX.map((px) => zoomForTilePx(px, this.R));
+    this.hexModeZoom = zoomForTilePx(HEX_MODE_TILE_PX, this.R);
+    this.hexLevels = HEX_TILE_PX.map((px) => zoomForTilePx(px, this.R));
     this.ct = source.manifest.presentation.chunk_tiles;
     this.width = source.width;
     this.height = source.height;
@@ -84,7 +91,7 @@ export class TerrainLayer {
     this.liveTextures = 0;
     this.baked = 0;
     this.visibleKeys = [];
-    this.level = CHUNK_LEVELS[0];
+    this.level = this.chunkLevels[0];
     this.complete = false;
     this.world = worldScreenBounds(this.width, this.height, this.R);
     this.boundsCache = new Map();
@@ -132,14 +139,14 @@ export class TerrainLayer {
   }
 
   levelFor(zoom) {
-    return CHUNK_LEVELS.find((s) => s >= zoom) ?? CHUNK_LEVELS[CHUNK_LEVELS.length - 1];
+    return this.chunkLevels.find((s) => s >= zoom) ?? this.chunkLevels[this.chunkLevels.length - 1];
   }
 
   update(view, zoom) {
     this.lastView = view;
-    this.hexMode = zoom >= HEX_MODE_ZOOM;
+    this.hexMode = zoom >= this.hexModeZoom;
     // In hex mode the chunk textures are only a coarse base under the tiles.
-    this.level = this.hexMode ? 0.05 : this.levelFor(zoom);
+    this.level = this.hexMode ? this.chunkLevels[2] : this.levelFor(zoom);
     const keys = this.visibleChunks(view);
     this.visibleKeys = keys;
     this.loader.want(keys);
@@ -163,8 +170,8 @@ export class TerrainLayer {
       } else {
         complete = false;
         // Fallback: the finest other level already cached for this chunk.
-        for (let i = CHUNK_LEVELS.length - 1; i >= 0; i -= 1) {
-          const alt = `${key}@${CHUNK_LEVELS[i]}`;
+        for (let i = this.chunkLevels.length - 1; i >= 0; i -= 1) {
+          const alt = `${key}@${this.chunkLevels[i]}`;
           if (this.textures.has(alt)) {
             show.add(alt);
             break;
@@ -207,7 +214,7 @@ export class TerrainLayer {
   }
 
   _updateHexes(view, zoom, show, pinned) {
-    const s = HEX_LEVELS.find((l) => l >= zoom * 0.8) ?? HEX_LEVELS[HEX_LEVELS.length - 1];
+    const s = this.hexLevels.find((l) => l >= zoom * 0.8) ?? this.hexLevels[this.hexLevels.length - 1];
     this.hexLevel = s;
     const hexes = this.visibleHexes(view);
     this.visibleHexCount = hexes.length;
@@ -229,7 +236,7 @@ export class TerrainLayer {
         show.add(key);
       } else {
         complete = false;
-        for (const alt of HEX_LEVELS)
+        for (const alt of this.hexLevels)
           if (alt !== s && this.textures.has(`h${q},${r}@${alt}`)) show.add(`h${q},${r}@${alt}`);
       }
     }
@@ -264,14 +271,14 @@ export class TerrainLayer {
     canvas.height = h;
     const ctx = canvas.getContext('2d');
     ctx.setTransform(s, 0, 0, s, -x0 * s, -y0 * s);
-    paintHexDetail(ctx, tile, this.R, s, { glyphs: s < 0.8, riverEdges: this._riverEdges(q, r) });
+    paintHexDetail(ctx, tile, this.R, s, { glyphs: true, riverEdges: this._riverEdges(q, r) });
     const texture = new PIXI.Texture({
       source: new PIXI.CanvasSource({ resource: canvas, autoGenerateMipmaps: true, scaleMode: 'linear' }),
     });
     const sprite = new PIXI.Sprite(texture);
     sprite.position.set(x0, y0);
     sprite.scale.set(1 / s);
-    sprite.zIndex = 10 + HEX_LEVELS.indexOf(s);
+    sprite.zIndex = 10 + this.hexLevels.indexOf(s);
     this.container.addChild(sprite);
     this.sprites.set(key, sprite);
     this.liveTextures += 1;
@@ -311,7 +318,7 @@ export class TerrainLayer {
     const sprite = new PIXI.Sprite(texture);
     sprite.position.set(b.x0 - 1 / s, b.y0 - 1 / s);
     sprite.scale.set(1 / s);
-    sprite.zIndex = CHUNK_LEVELS.indexOf(s);
+    sprite.zIndex = this.chunkLevels.indexOf(s);
     this.container.sortableChildren = true;
     this.container.addChild(sprite);
     const texKey = `${key}@${s}`;

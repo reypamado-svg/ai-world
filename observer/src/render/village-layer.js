@@ -1,7 +1,10 @@
 // The SAMPLE village inside the world camera, with level-of-detail bands:
-//  - atlas (zoom < 0.06): a badge only;
-//  - regional (0.06 - 0.5): buildings as small sprites, people as group dots;
+//  - atlas (tiles under 256 px across): terrain chunks; the village is a badge;
+//  - regional (to zoom 0.02): one detailed texture per tile; badge and markers;
+//  - local (0.02 - 0.5): buildings as small sprites, people as group dots;
 //  - settlement (> 0.5): full sprites and animated citizens.
+// The village itself is ~110 m across, so its own crossfades (buildings 0.04 -
+// 0.08, people 0.4 - 0.6) sit inside the local band.
 // Bands crossfade, and the selected person stays identifiable in every band
 // (ring when drawn, pin otherwise).
 
@@ -9,7 +12,7 @@ import { project, unproject } from '../world/coords.js';
 import { SceneRenderer } from './scene-renderer.js';
 import { CIV_COLORS } from './art/registry.js';
 
-export const BANDS = { atlasMax: 0.06, settlementMin: 0.5 };
+export const BANDS = { localMin: 0.02, settlementMin: 0.5 };
 
 function smooth(a, b, x) {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
@@ -20,9 +23,11 @@ function hexNum(css) {
   return parseInt(css.replace('#', ''), 16);
 }
 
-export function bandOf(zoom) {
-  if (zoom < BANDS.atlasMax) return 'atlas';
-  if (zoom < BANDS.settlementMin) return 'regional';
+/** The band at a zoom; `atlasMax` is where per-tile textures begin (it depends on tile size). */
+export function bandOf(zoom, atlasMax) {
+  if (zoom < atlasMax) return 'atlas';
+  if (zoom < BANDS.localMin) return 'regional';
+  if (zoom < BANDS.settlementMin) return 'local';
   return 'settlement';
 }
 

@@ -12,8 +12,9 @@ export class SyntheticSource {
     this.maxLatency = maxLatency;
     this.manifest = {
       source: 'synthetic (test only)',
-      engine: { seed, width, height },
-      presentation: { hex_radius_m: 64, chunk_tiles: chunkTiles, chunks: [Math.ceil(width / chunkTiles), Math.ceil(height / chunkTiles)] },
+      // The same world rule as the engine: tile centres a day's walk (25 km) apart.
+      engine: { seed, width, height, travel: { tile_spacing_m: 25000, day_tenths: 10 } },
+      presentation: { chunk_tiles: chunkTiles, chunks: [Math.ceil(width / chunkTiles), Math.ceil(height / chunkTiles)] },
     };
     this.rivers = indexHydrology(null, chunkTiles);
     this.rng = mulberry32(seed);

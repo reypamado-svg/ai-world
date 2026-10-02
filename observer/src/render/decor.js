@@ -53,7 +53,8 @@ export class DecorLayer {
   }
 
   update(zoom) {
-    const show = this.terrain.hexMode && this.terrain.hexLevel >= 0.8;
+    // Upright trees and rocks only once single trees are worth drawing (a few metres on screen).
+    const show = this.terrain.hexMode && zoom >= 0.2;
     this.container.visible = show;
     if (!show) return;
     const wanted = new Set();

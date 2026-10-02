@@ -34,6 +34,8 @@ async function countsFor(query) {
       [400, 0.6],
       [700, 0.2],
       [900, 0.03],
+      [1200, 0.004],
+      [1500, 0.0002],
     ]) {
       o.setTime(t);
       o.viewVillage(zoom);

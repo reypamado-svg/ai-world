@@ -9,6 +9,7 @@
 
 import { hexCentre, hexDistance } from '../../world/hex.js';
 import { makeSchedule } from '../../sim/paths.js';
+import { planJourney } from '../../sim/travel-plan.js';
 import { personLabel } from '../naming.js';
 import { villageScene } from '../../proof/scene-village.js';
 
@@ -48,11 +49,15 @@ export function chooseCourierRoute(tile, { landAt, deepBetween, chunkTiles, widt
   return null;
 }
 
-export function observerVillage(footprintOf, R, tile, route = null) {
+/** The SAMPLE village's own size: it was laid out to fill a 64 m hex, whatever the tile size. */
+export const VILLAGE_RADIUS_M = 64;
+
+export function observerVillage(footprintOf, R, tile, route = null, travel = null) {
   const scene = villageScene(footprintOf);
   const [q, r] = tile;
+  // The village stands at the centre of its 25 km tile (a presentation choice).
   const origin = hexCentre(q, r, R);
-  const inradius = (R * Math.sqrt(3)) / 2;
+  const inradius = (VILLAGE_RADIUS_M * Math.sqrt(3)) / 2;
   const inside = (x, y, margin) => hexDistance(x, y) <= inradius - margin;
   const before = scene.statics.length;
   scene.statics = scene.statics.filter((s) => {
@@ -67,27 +72,64 @@ export function observerVillage(footprintOf, R, tile, route = null) {
   const dropped = before - scene.statics.length;
 
   // A SAMPLE courier who walks out of the village a few tiles (across a chunk
-  // boundary) and back. Positions are local to the village.
-  // With no checked route out (water or deep rivers all round), they stay in the village.
+  // boundary), waits a day for a reply and walks back. Positions are local to
+  // the village. Across country they keep the engine's pace: each tile takes its
+  // entry cost in days, each day 5 hours on foot and then a camp (a visual
+  // approximation). With no checked route out (water or deep rivers all round),
+  // they stay in the village.
   const [tq, tr] = route ? [q + route.dq * route.steps, r + route.dr * route.steps] : [q, r];
-  const far = hexCentre(tq, tr, R);
-  const dest = route ? [far.x - origin.x, far.y - origin.y] : [30, 0];
-  // Out along village roads (hall door, plaza, east lane), then cross-country.
-  const out = [[6, -19.6], [6, -18.6], [10.4, -18.6], [10.4, 0], ...(dest[0] > 0 ? [[56, 0]] : []), dest];
   const id = 'sample-person-0900';
+  const roads = [[6, -19.6], [6, -18.6], [10.4, -18.6], [10.4, 0]];
+  const local = (cq, cr) => {
+    const c = hexCentre(cq, cr, R);
+    return [c.x - origin.x, c.y - origin.y];
+  };
+  let segments;
+  let plan = null;
+  if (route) {
+    // Out along village roads (hall door, plaza, east lane), then cross-country.
+    const exit = local(q + route.dq, r + route.dr)[0] > 0 ? [56, 0] : roads[roads.length - 1];
+    const path = [...roads, ...(exit === roads[roads.length - 1] ? [] : [exit])];
+    const tiles = Array.from({ length: route.steps + 1 }, (_, k) => {
+      const [cq, cr] = [q + route.dq * k, r + route.dr * k];
+      return { q: cq, r: cr, centre: local(cq, cr) };
+    });
+    const rules = travel?.rules ?? { day_tenths: 10, entry_cost_tenths: {}, crossing_cost_tenths: {}, stream_flow: 4, deep_flow: 10 };
+    const terrainAt = travel?.terrainAt ?? (() => 'grassland');
+    const flowBetween = travel?.flowBetween ?? (() => 0);
+    const grass = { ...rules, entry_cost_tenths: { grassland: 10, ...rules.entry_cost_tenths } };
+    const outbound = planJourney({ start: exit, tiles, terrainAt, flowBetween, rules: grass });
+    const back = [...tiles].reverse();
+    back[back.length - 1] = { ...back[back.length - 1], centre: exit };
+    const inbound = planJourney({ start: tiles[tiles.length - 1].centre, tiles: back, terrainAt, flowBetween, rules: grass });
+    const dest = tiles[tiles.length - 1].centre;
+    const toExit = { type: 'walk', path, speed: 1.6, anim: 'walk', activity: 'Carrying a message to a neighbouring tile', destination: `Tile (${tq}, ${tr})` };
+    const wait = { type: 'work', at: dest, face: [dest[0] - 1, dest[1] + 1], anim: 'idle', period: 2, dur: 86400, activity: 'Waiting a day for a reply' };
+    const home = { type: 'walk', path: path.slice().reverse(), speed: 1.6, anim: 'walk', activity: 'Returning to the village', destination: 'Village' };
+    const report = { type: 'inside', building: 'b-hall', at: [6, -19.6], dur: 3600, activity: 'Reporting in the community hall' };
+    segments = [toExit, ...outbound.segments, wait, ...inbound.segments, home, report];
+    // Times along the whole schedule, for the inspector and tests.
+    const roadsT = path.reduce((sum, p, i) => (i ? sum + Math.hypot(p[0] - path[i - 1][0], p[1] - path[i - 1][1]) : 0), 0) / 1.6;
+    plan = {
+      legs: outbound.legs.map((leg) => ({ ...leg, arriveT: roadsT + leg.arriveT })),
+      camps: outbound.camps.map((c) => ({ ...c, t0: roadsT + c.t0 })),
+      fords: outbound.fords.map((f) => ({ ...f, t0: roadsT + f.t0 })),
+      departHomeT: roadsT + outbound.duration + 86400,
+    };
+  } else {
+    const dest = [30, 0];
+    segments = [
+      { type: 'walk', path: [...roads, dest], speed: 1.6, anim: 'walk', activity: 'Carrying a message within the village', destination: 'Village' },
+      { type: 'work', at: dest, face: [dest[0] - 1, dest[1] + 1], anim: 'idle', period: 2, dur: 20, activity: 'Waiting for a reply' },
+      { type: 'walk', path: [dest, ...roads.slice().reverse()], speed: 1.6, anim: 'walk', activity: 'Returning to the village', destination: 'Village' },
+      { type: 'inside', building: 'b-hall', at: [6, -19.6], dur: 30, activity: 'Reporting in the community hall' },
+    ];
+  }
   scene.people.push({
     id,
     civ: 0,
     appearance: 4,
-    schedule: makeSchedule(
-      [
-        { type: 'walk', path: out, speed: 1.6, anim: 'walk', activity: route ? 'Carrying a message to a neighbouring tile' : 'Carrying a message within the village', destination: route ? `Tile (${tq}, ${tr})` : 'Village' },
-        { type: 'work', at: dest, face: [dest[0] - 1, dest[1] + 1], anim: 'idle', period: 2, dur: 20, activity: 'Waiting for a reply' },
-        { type: 'walk', path: out.slice().reverse(), speed: 1.6, anim: 'walk', activity: 'Returning to the village', destination: 'Village' },
-        { type: 'inside', building: 'b-hall', at: [6, -19.6], dur: 30, activity: 'Reporting in the community hall' },
-      ],
-      0,
-    ),
+    schedule: makeSchedule(segments, 0),
     record: {
       label: personLabel(id),
       sex: 'female',
@@ -101,6 +143,7 @@ export function observerVillage(footprintOf, R, tile, route = null) {
   });
 
   const alpha = (x, y) => Math.max(0, Math.min(1, (inradius - hexDistance(x, y)) / 6));
-  const groundBounds = { x0: -R, y0: -R, x1: R, y1: R };
-  return { scene, origin, tile, alpha, groundBounds, dropped, courierId: id, courierTile: [tq, tr] };
+  const ground = VILLAGE_RADIUS_M;
+  const groundBounds = { x0: -ground, y0: -ground, x1: ground, y1: ground };
+  return { scene, origin, tile, alpha, groundBounds, dropped, courierId: id, courierTile: [tq, tr], courierPlan: plan };
 }

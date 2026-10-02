@@ -1,12 +1,12 @@
 // Hex layout for engine tiles, in presentation metres.
 //
 // Engine tiles are axial (q, r). The observer lays them out as pointy-top
-// hexes of radius R metres (a PRESENTATION constant from the export
-// manifest) in a hex frame (u, v), rotated 45 degrees onto the ground plane
+// hexes of radius R metres (the engine's tile spacing / sqrt(3), a world
+// rule) in a hex frame (u, v), rotated 45 degrees onto the ground plane
 // so that, after the 2:1 isometric projection, tile rows are horizontal on
 // screen. Rotation preserves distances, so metres mean the same everywhere.
 
-import { project } from './coords.js';
+import { K, project } from './coords.js';
 
 const S2 = Math.SQRT2;
 const SQ3 = Math.sqrt(3);
@@ -129,4 +129,21 @@ export function sharedCorners(aq, ar, bq, br, R) {
   return hexCorners(aq, ar, R).filter((p) =>
     theirs.some((o) => Math.abs(o.x - p.x) < eps && Math.abs(o.y - p.y) < eps),
   );
+}
+
+/** The hex radius in metres: tile centres lie the engine's tile spacing apart (a world rule). */
+export function hexRadiusOf(manifest) {
+  const spacing = manifest?.engine?.travel?.tile_spacing_m;
+  if (!spacing) throw new Error('the terrain manifest has no engine.travel.tile_spacing_m');
+  return spacing / Math.sqrt(3);
+}
+
+/** Screen width of one tile, in world-screen pixels at zoom 1. */
+export function tileScreenPx(R) {
+  return R * Math.sqrt(3) * Math.SQRT2 * K;
+}
+
+/** The zoom at which one tile is `px` screen pixels wide. */
+export function zoomForTilePx(px, R) {
+  return px / tileScreenPx(R);
 }

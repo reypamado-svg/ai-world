@@ -353,6 +353,13 @@ export class SceneRenderer {
     return { x: s.x, y: s.y, inside: s.inside, anim: s.anim, phase: s.phase };
   }
 
+  /** What a person is doing at time t (presentation schedule). */
+  activityAt(id, t) {
+    const o = this.byId.get(id);
+    const sched = o.person.caravan ? this.caravan.data.schedule : o.person.schedule;
+    return sampleSchedule(sched, t).activity ?? null;
+  }
+
   // ------------------------------------------------------------ view
   /** Root offset in world screen pixels (zoom 1). */
   get offset() {

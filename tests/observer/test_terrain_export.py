@@ -10,6 +10,14 @@ from sovereign_world.config import CURRENT_GENERATOR, WorldConfig
 from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.observer.terrain_export import TILE_FIELDS, export_terrain
 from sovereign_world.rng import StableRng
+from sovereign_world.travel import (
+    CROSSING_COST,
+    DAY,
+    DEEP_FLOW,
+    ENTRY_COST,
+    STREAM_FLOW,
+    TILE_SPACING_M,
+)
 from sovereign_world.worldgen import generate_world
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "sovereign_world"
@@ -70,7 +78,17 @@ def test_day0_matches_the_engine_starts(tmp_path: Path) -> None:
     assert tiles == sorted((s.center.q, s.center.r) for s in generated.starts)
     assert all(c["founders"] == 32 for c in day0["civilizations"])
     assert all(c["capital"]["founded_day"] == 0 for c in day0["civilizations"])
-    assert manifest["presentation"]["hex_radius_m"] == 64
+    assert "hex_radius_m" not in manifest["presentation"], "the scale is an engine rule now"
+    assert manifest["export_version"] == 3
+    assert manifest["engine"]["travel"] == {
+        "note": manifest["engine"]["travel"]["note"],
+        "tile_spacing_m": TILE_SPACING_M,
+        "day_tenths": DAY,
+        "entry_cost_tenths": {terrain.value: cost for terrain, cost in ENTRY_COST.items()},
+        "crossing_cost_tenths": dict(CROSSING_COST),
+        "stream_flow": STREAM_FLOW,
+        "deep_flow": DEEP_FLOW,
+    }
     assert "no simulation meaning" in manifest["presentation"]["note"]
     assert set(manifest) >= {"engine", "engine_day0", "presentation"}
 

@@ -7,10 +7,11 @@ output directory.
 
 Two kinds of numbers are kept apart in the manifest:
 
-- ``engine`` and ``engine_day0`` are authoritative engine data: axial hex
+- ``engine`` and ``engine_day0`` are authoritative engine data, including the
+  world rule for tile spacing and travel costs (``engine.travel``): axial hex
   tiles, 0-1000 attributes, and the settlements and founders that exist on
   day 0 before any day is simulated.
-- ``presentation`` holds display constants (metres per hex, projection). They
+- ``presentation`` holds display constants (projection, chunking). They
   have no simulation meaning.
 """
 
@@ -28,7 +29,14 @@ from sovereign_world.config import CURRENT_GENERATOR, RunManifest, WorldConfig
 from sovereign_world.hexmap import HexCoord, Terrain, Tile, WorldMap
 from sovereign_world.rng import StableRng
 from sovereign_world.state import build_initial_state
-from sovereign_world.travel import DEEP_FLOW
+from sovereign_world.travel import (
+    CROSSING_COST,
+    DAY,
+    DEEP_FLOW,
+    ENTRY_COST,
+    STREAM_FLOW,
+    TILE_SPACING_M,
+)
 from sovereign_world.worldgen import generate_world
 
 TERRAIN_CODES: tuple[Terrain, ...] = tuple(Terrain)
@@ -45,9 +53,8 @@ TILE_FIELDS: tuple[str, ...] = (
     "ore",
     "river",
 )
-HEX_RADIUS_M = 64
 OVERVIEW_MAX = 256
-EXPORT_VERSION = 2
+EXPORT_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +234,20 @@ def export_terrain(
                 ),
                 "time_step": "one day",
                 "start_centres": [[s.center.q, s.center.r] for s in generated.starts],
+                "travel": {
+                    "note": (
+                        "world rule: tile centres lie a day's walk apart; costs are in tenths"
+                        " of a day, null where it cannot be done on foot"
+                    ),
+                    "tile_spacing_m": TILE_SPACING_M,
+                    "day_tenths": DAY,
+                    "entry_cost_tenths": {
+                        terrain.value: ENTRY_COST[terrain] for terrain in TERRAIN_CODES
+                    },
+                    "crossing_cost_tenths": dict(CROSSING_COST),
+                    "stream_flow": STREAM_FLOW,
+                    "deep_flow": DEEP_FLOW,
+                },
             },
             "engine_day0": {
                 "file": "day0.json",
@@ -236,7 +257,6 @@ def export_terrain(
             },
             "presentation": {
                 "note": "Display constants only. They have no simulation meaning.",
-                "hex_radius_m": HEX_RADIUS_M,
                 "frame": "rotated-45",
                 "K": 16,
                 "KZ": 14,
