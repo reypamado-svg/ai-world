@@ -583,7 +583,7 @@ ruff check .
 mypy src
 pytest -m "not soak" -v
 pytest -m soak -v
-sovereign-world init work/demo-world --seed 21
+sovereign-world init work/demo-world --seed 21 --width 48 --height 48
 sovereign-world run work/demo-world --days 3650
 sovereign-world verify work/demo-world
 ~~~

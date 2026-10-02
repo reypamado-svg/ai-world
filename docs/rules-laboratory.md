@@ -30,12 +30,12 @@ If `py` is unavailable, use any installed Python 3.12 executable in the first co
 ## Create and run a world
 
 ```powershell
-& .venv\Scripts\sovereign-world.exe init work\demo-world --seed 21
+& .venv\Scripts\sovereign-world.exe init work\demo-world --seed 21 --width 48 --height 48
 & .venv\Scripts\sovereign-world.exe run work\demo-world --days 3650
 & .venv\Scripts\sovereign-world.exe inspect work\demo-world
 ```
 
-Initialization fixes the manifest, seed, terrain, start packages, and founders. After launch, the CLI offers no command that edits people, resources, terrain, or outcomes.
+Without `--width` and `--height`, a world is 100 × 100 tiles (each 25 km across, a day's walk) and takes about two seconds to generate; the demo uses a smaller 48 × 48 world. Initialization fixes the manifest, seed, terrain, start packages, and founders. After launch, the CLI offers no command that edits people, resources, terrain, or outcomes.
 
 `run` resumes the latest verified journal state, advances the requested number of daily ticks, and saves a new checkpoint. Repeating `run` continues the same world.
 

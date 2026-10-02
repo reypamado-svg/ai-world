@@ -51,8 +51,8 @@ def _settings(path: str | None) -> dict[str, object]:
 def initialize(
     directory: Path,
     seed: int = typer.Option(..., help="Deterministic world seed."),
-    width: int = typer.Option(24, min=24),
-    height: int = typer.Option(24, min=24),
+    width: int = typer.Option(100, min=24, help="Tiles across; each is 25 km."),
+    height: int = typer.Option(100, min=24, help="Tiles down; each is 25 km."),
     sovereigns: str | None = typer.Option(
         None, help="TOML file of sovereign assignments and budgets, frozen for the run."
     ),

@@ -192,7 +192,19 @@ def test_the_command_line_runs_records_verifies_and_forks(tmp_path: Path) -> Non
     world = tmp_path / "world"
     assert (
         runner.invoke(
-            app, ["init", str(world), "--seed", "21", "--sovereigns", str(settings)]
+            app,
+            [
+                "init",
+                str(world),
+                "--seed",
+                "21",
+                "--width",
+                "24",
+                "--height",
+                "24",
+                "--sovereigns",
+                str(settings),
+            ],
         ).exit_code
         == 0
     )

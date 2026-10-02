@@ -326,3 +326,33 @@ The user asked for a third-party model to review the phase. Draft PR #35 (base `
 - **The baseline survey** stops short of known water and known deep rivers.
 
 **Tests.** `tests/test_crossings.py` has 9 tests. The full suite passed (462 passed, 2 skipped) once three expedition tests were changed to choose a neighbour that really is one day away. The soak seed matrix passed 100/100.
+
+## G4 bridges and G5 world rule, as built
+
+**G4: road crews bridge rivers** (`bridges.py`, Fable 5.1 detailed design).
+- **What gets bridged.** A crew raising a road to graded or better bridges every river border on its route, from the near bank, before crossing.
+
+  | River | Labour | Materials | Crew needs |
+  |---|---|---|---|
+  | Stream or river | 60 person-days | 20 timber | — |
+  | Deep river | 150 person-days | 40 timber + 20 stone | a living stoneworker |
+
+  Any traveller then crosses at plain cost. A crew without what it needs stops with `materials` or `no_stoneworker`, as for roads.
+- **Travel functions.** `entry_cost`, `passable`, `travel_days`, `way_to`, `detour`, `influence_field`, `supply_connected` and the day functions for journeys, ambassadors and expeditions take an optional set of bridged borders. The engine passes every bridge that stands; commands pass only those the civilization knows (its own, or in sight today).
+- **Old saves keep their hash.**
+  - `WorldState.bridges` is left out of saves while empty.
+  - A crew's part-built bridge is counted in `work_done` with `work_grade` set to None, so the `Journey` schema is unchanged.
+  - One deliberate departure from the design: leftover tile labour is not zeroed at the target grade. Zeroing it would change saved crew records and so the hashes of re-run old runs.
+- **Planning and reporting.**
+  - Estimates count bridge labour and materials; crews walk home over their own bridges.
+  - A `bridge_built` event records each bridge.
+  - Council reports list known bridges.
+- **Learning about others' bridges.** Learning of rival bridges by exploring or exchanging maps is deferred, because it needs a persisted knowledge field. Until then a civilization only plans over bridges it can see, which errs on the safe side.
+
+**G5: the world rule.**
+- **Scale.** `travel.TILE_SPACING_M = 25_000`: neighbouring tile centres lie 25 km apart, a day's walk with rest and sleep, so a grassland tile takes one day.
+- **Spec text.** The world design spec (§5.1, §6) states the scale, the terrain regions, the day costs, river crossings and bridges. The civilization-layer spec ties delivery to them.
+- **Charter `council-3`.** Sovereigns now read a travel rule in their charter, generated from the travel and bridge tables. `SovereignConfig().prompt_version` is `council-3`. A manifest recorded with `council-2` keeps its hash, and continuing it with a model sovereign requires a fork, as designed.
+- **Default size.** `init` now makes a 100 × 100 world by default (about 2,500 km across). The demo docs and the two tests that relied on the old default pass explicit sizes.
+
+**Tests.** `tests/test_bridges.py` (7) and `tests/test_charter.py` (3).

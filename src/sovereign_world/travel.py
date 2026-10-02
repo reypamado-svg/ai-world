@@ -13,6 +13,10 @@ from sovereign_world.roads import RoadGrade, road_cost
 DAY = 10
 """One day of travel, in tenths of a day."""
 
+TILE_SPACING_M = 25_000
+"""Metres between neighbouring tile centres: a day's walk with rest and sleep, so entering a
+grassland tile (``ENTRY_COST[GRASSLAND] == DAY``) takes one day. A world rule."""
+
 ENTRY_COST: dict[Terrain, int | None] = {
     Terrain.GRASSLAND: 10,
     Terrain.FOREST: 15,

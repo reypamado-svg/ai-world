@@ -92,6 +92,8 @@ During a live run the observer can pause and resume processing, adjust display s
 
 The first playable world is a finite two-dimensional hex grid generated from a stored seed. It includes elevation, water, rivers, coasts, climate, soil, biomes, seasonal weather, hazards, ruins, renewable resources, and nonrenewable deposits.
 
+Tiles are hexagons whose centres lie 25 km apart: a day's walk with rest and sleep. Terrain forms regions — mountain ranges with snow on the coldest peaks, hills, forests, grasslands, deserts, tundra, lakes and seas — and neighbouring tiles follow from one another. Entering grassland takes a day; forest, desert and tundra a day and a half; hills two days; mountains three; snow five. Water cannot be entered on foot. Rivers run along the borders between tiles from high ground to a lake, the sea or the map's edge, and deepen as tributaries join: a stream adds half a day to cross, a river a day, and a deep river cannot be waded. Road crews building a graded road or better bridge the rivers on their way, and anyone then crosses at no extra cost.
+
 Four starting regions are geographically separated far enough to prevent immediate contact. The generator validates that each region provides adequate initial food and water, a viable construction path, one regional advantage, one significant constraint, and eventual access to routes leading toward other societies.
 
 No civilization begins with a global map. Knowledge of a location records who observed it, when it was observed, and the confidence of the report.
@@ -108,7 +110,7 @@ Territory is a derived fact rather than a painted claim. Effective control comes
 
 ## 6. Time and Turns
 
-The engine advances the world in daily ticks. Routine individual needs, movement, work, construction, health, and local events resolve at this level.
+The engine advances the world in daily ticks. Routine individual needs, movement, work, construction, health, and local events resolve at this level. A party moves from tile to tile at the terrain and river costs of §5.1.
 
 Each sovereign normally receives one council turn per in-world month. Standing decrees and ongoing projects remain active between council turns. A material crisis may trigger an additional decision opportunity, including an invasion, epidemic, disaster, leadership request, first contact, or proposed treaty.
 

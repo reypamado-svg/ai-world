@@ -10,7 +10,9 @@ runner = CliRunner()
 def test_cli_run_can_be_inspected_replayed_and_verified(tmp_path: Path) -> None:
     world = tmp_path / "world"
 
-    initialized = runner.invoke(app, ["init", str(world), "--seed", "21"])
+    initialized = runner.invoke(
+        app, ["init", str(world), "--seed", "21", "--width", "24", "--height", "24"]
+    )
     assert initialized.exit_code == 0
     assert "initialized day 0" in initialized.stdout
 
