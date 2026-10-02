@@ -34,7 +34,7 @@ from sovereign_world.diplomacy import (
 from sovereign_world.endings import Ending, Ruin, RuinView
 from sovereign_world.espionage import CaughtSpy, SpyReport
 from sovereign_world.exploration import Expedition, ExpeditionStatus, Observation
-from sovereign_world.hexmap import HexCoord, WorldMap
+from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
 from sovereign_world.ids import EntityId, IdAllocator
 from sovereign_world.institutions import Institution
 from sovereign_world.logistics import (
@@ -48,6 +48,7 @@ from sovereign_world.research import ResearchAssignment
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView
+from sovereign_world.sites import Site
 from sovereign_world.stores import (
     FOUNDING_GRADE,
     Storehouse,
@@ -153,6 +154,9 @@ class WorldState(BaseModel):
     """The last-civilization and no-civilization endings, each recorded once."""
     joined_roads: tuple[EntityId, ...] = ()
     """Trade treaties whose partners' settlements a continuous road now links."""
+    sites: tuple[Site, ...] = ()
+    """Ore deposits, quarries, ancient ruins and troves placed when the world was made, by tile;
+    worlds from before them have none."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(
@@ -170,8 +174,9 @@ class WorldState(BaseModel):
                 for tile in world_map.get("tiles", ()):
                     if isinstance(tile, dict) and not tile.get("cover"):
                         tile.pop("cover", None)
-            if not dumped.get("bridges"):
-                dumped.pop("bridges", None)
+            for key in ("bridges", "sites"):
+                if not dumped.get(key):
+                    dumped.pop(key, None)
         return dumped
 
 
@@ -275,6 +280,7 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
         config=manifest.config,
         world_map=generated.world_map,
         civilizations=civilizations,
+        sites=generated.sites,
     )
 
 
@@ -602,6 +608,18 @@ def validate_world(state: WorldState) -> None:
     }
     if any(ruin.tile in settled for ruin in ruins):
         raise ValueError("a ruin is not a living settlement")
+    sites = state.sites
+    if sites != tuple(sorted(sites, key=lambda item: item.tile)):
+        raise ValueError("sites must be sorted by tile")
+    if len({site.tile for site in sites}) != len(sites):
+        raise ValueError("a tile holds at most one site")
+    if len({site.site_id for site in sites}) != len(sites):
+        raise ValueError("site ids must be unique")
+    for site in sites:
+        if state.world_map.tile(site.tile).terrain is Terrain.WATER:
+            raise ValueError("a site lies on land")
+        if site.remaining > site.richness:
+            raise ValueError("a site cannot hold more than it started with")
     occupations = state.occupations
     if occupations != tuple(sorted(occupations, key=lambda item: item.occupation_id)):
         raise ValueError("occupations must be sorted")

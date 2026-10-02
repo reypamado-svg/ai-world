@@ -6,7 +6,13 @@ from enum import StrEnum
 from itertools import pairwise
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
 
 from sovereign_world.armoury import (
     MAX_CRAFT_QUANTITY,
@@ -83,6 +89,7 @@ from sovereign_world.roads import (
     RoadView,
     materials_for,
 )
+from sovereign_world.sites import SiteKind
 from sovereign_world.state import CivilizationState, WorldState
 from sovereign_world.stores import (
     STOREHOUSE_GRADES,
@@ -367,6 +374,20 @@ class RiverView(BaseModel):
     depth: Literal["stream", "river", "deep"]
 
 
+class SiteView(BaseModel):
+    """An ore deposit, quarry, ancient ruin or trove on a tile this civilization has seen,
+    as it was when last seen."""
+
+    model_config = ConfigDict(frozen=True)
+
+    site_id: EntityId
+    tile: HexCoord
+    kind: SiteKind
+    richness: int
+    remaining: int
+    as_of_day: int
+
+
 class CouncilReport(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -378,6 +399,8 @@ class CouncilReport(BaseModel):
     known_tiles: tuple[HexCoord, ...]
     known_terrain: tuple[tuple[HexCoord, Terrain], ...] = ()
     known_rivers: tuple[RiverView, ...] = ()
+    known_sites: tuple[SiteView, ...] = ()
+    """Sites on tiles this civilization has seen; left out of the report while there are none."""
     """Rivers along the borders of known tiles."""
     inventory: dict[Resource, int]
     """The capital's store."""
@@ -447,6 +470,14 @@ class CouncilReport(BaseModel):
     research: tuple[ResearchAssignment, ...] = ()
     research_points: dict[CapabilityId, int] = Field(default_factory=dict)
     recent_events: tuple[DomainEvent, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
+        # Reports from worlds without sites read, and so prompt, exactly as before.
+        dumped = handler(self)
+        if isinstance(dumped, dict) and not dumped.get("known_sites"):
+            dumped.pop("known_sites", None)
+        return dumped
 
 
 def _blend(civilization: CivilizationState) -> dict[str, Any]:
@@ -598,6 +629,7 @@ def build_council_report(
             (tile, state.world_map.tile(tile).terrain) for tile in sorted(civilization.known_tiles)
         ),
         known_rivers=known_rivers(state.world_map, frozenset(civilization.known_tiles)),
+        known_sites=known_sites(state, civilization),
         inventory=dict(civilization.inventory.quantities),
         stores={
             settlement_id: dict(sorted(inventory.quantities.items()))
@@ -690,6 +722,29 @@ def trade_partners(state: WorldState, civilization_id: EntityId) -> frozenset[En
         if treaty.in_force
         and treaty.kind is TreatyKind.TRADE
         and civilization_id in {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
+    )
+
+
+def known_sites(state: WorldState, civilization: CivilizationState) -> tuple[SiteView, ...]:
+    """The sites on tiles a civilization knows, as of the day it last saw each tile."""
+    if not state.sites:
+        return ()
+    known = set(civilization.known_tiles)
+    seen: dict[HexCoord, int] = {}
+    for observation in civilization.observations:
+        if observation.tile in known:
+            seen[observation.tile] = max(seen.get(observation.tile, 0), observation.observed_day)
+    return tuple(
+        SiteView(
+            site_id=site.site_id,
+            tile=site.tile,
+            kind=site.kind,
+            richness=site.richness,
+            remaining=site.remaining,
+            as_of_day=seen.get(site.tile, 0),
+        )
+        for site in state.sites
+        if site.tile in known
     )
 
 

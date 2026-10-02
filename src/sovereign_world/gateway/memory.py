@@ -43,6 +43,7 @@ TRIMMED_LAST = (
     "known_roads",
     "known_bridges",
     "known_tolls",
+    "known_sites",
 )
 """Map fields cut back, farthest from home first, when the state layer is too long."""
 

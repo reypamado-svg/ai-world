@@ -13,6 +13,7 @@ from sovereign_world.config import CURRENT_GENERATOR, WorldConfig
 from sovereign_world.cover import generate_cover
 from sovereign_world.hexmap import HexCoord, Terrain, Tile, WorldMap
 from sovereign_world.rng import StableRng
+from sovereign_world.sites import Site, place_sites
 from sovereign_world.travel import DEEP_FLOW
 
 LOWLAND_STARTS = frozenset({Terrain.GRASSLAND, Terrain.FOREST})
@@ -50,6 +51,8 @@ class GeneratedWorld:
     starts: tuple[StartingRegion, ...]
     start_spacing: int = 12
     """The least distance between starts the generator held to."""
+    sites: tuple[Site, ...] = ()
+    """Ore deposits, quarries, ruins and troves (version 3 on)."""
 
 
 class WorldGenerationError(RuntimeError):
@@ -241,7 +244,7 @@ def _spaced_starts(
     world_map: WorldMap,
     count: int,
     floor: int,
-) -> tuple[list[StartingRegion], int, list[str]]:
+) -> tuple[list[StartingRegion], int, list[str], frozenset[HexCoord]]:
     """Version 3: starts as far apart as the land allows, among good sites.
 
     It aims for the spacing the land supports (`start_spacing_target`) and steps down by two
@@ -252,7 +255,7 @@ def _spaced_starts(
     """
     candidates, landmass = _candidates(world_map, 3)
     if not candidates:
-        return [], floor, ["viability"]
+        return [], floor, ["viability"], landmass
     q = np.array([center.q for _, center in candidates], dtype=np.int64)
     r = np.array([center.r for _, center in candidates], dtype=np.int64)
     score = np.array([viability.score for viability, _ in candidates], dtype=np.int64)
@@ -288,8 +291,8 @@ def _spaced_starts(
                         )
                         for index, item in enumerate(chosen)
                     ]
-                    return starts, spacing, []
-    return [], floor, ["separation"]
+                    return starts, spacing, [], landmass
+    return [], floor, ["separation"], landmass
 
 
 def generate_world(
@@ -319,10 +322,17 @@ def generate_world(
         if generator_version >= 3:
             world_map = generate_cover(world_map, rng, attempt)
         spacing = min_start_distance
+        sites: tuple[Site, ...] = ()
         if generator_version >= 3:
-            starts, spacing, reasons = _spaced_starts(
+            starts, spacing, reasons, landmass = _spaced_starts(
                 world_map, count=config.civilizations, floor=min_start_distance
             )
+            if len(starts) == config.civilizations:
+                placed = place_sites(world_map, tuple(start.center for start in starts), landmass)
+                if placed is None:
+                    failures["sites"] += 1
+                    continue
+                sites = placed
         else:
             starts, reasons = _select_starts(
                 world_map,
@@ -331,7 +341,9 @@ def generate_world(
                 generator_version=generator_version,
             )
         if len(starts) == config.civilizations:
-            return GeneratedWorld(world_map=world_map, starts=tuple(starts), start_spacing=spacing)
+            return GeneratedWorld(
+                world_map=world_map, starts=tuple(starts), start_spacing=spacing, sites=sites
+            )
         failures.update(reasons)
     raise WorldGenerationError(
         config.seed, max_attempts, dict(failures), count=config.civilizations

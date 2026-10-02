@@ -127,6 +127,8 @@ def hide_unseen(state: WorldState, civilization_id: EntityId) -> WorldState:
         treaties.append(treaty)
     world.active_treaties = tuple(treaties)
     world.battles = ()
+    known = set(own.known_tiles)
+    world.sites = tuple(site for site in world.sites if site.tile in known)
     world.wars = tuple(
         war
         for war in world.wars
