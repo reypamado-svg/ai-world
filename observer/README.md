@@ -42,7 +42,7 @@ python -m http.server 8765 -d observer
 
 Then open:
 
-- `http://127.0.0.1:8765/index.html` — the observer prototype (world atlas →
+- `http://127.0.0.1:8765/` (or `/index.html`) — the observer prototype (world atlas →
   regional → local → settlement in one camera).
   - `?citizens=2000` (up to 5000) adds SAMPLE residents to load the renderer.
   - `?quality=high|medium|low|auto` (default auto).

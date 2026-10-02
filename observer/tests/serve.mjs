@@ -17,7 +17,8 @@ const types = {
 export function serve(port = 0) {
   const server = createServer(async (req, res) => {
     const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^([/\\])+/, '');
-    const file = join(root, path || 'proof.html');
+    // The plain address opens the observer; the O1a art proof is at /proof.html.
+    const file = join(root, path || 'index.html');
     if (!file.startsWith(root)) {
       res.writeHead(403).end();
       return;
@@ -38,5 +39,5 @@ export function serve(port = 0) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.argv[2] ?? 8765);
-  serve(port).then(() => console.log(`Observer prototype: http://127.0.0.1:${port}/proof.html`));
+  serve(port).then(() => console.log(`Observer: http://127.0.0.1:${port}/  (art proof: /proof.html)`));
 }
