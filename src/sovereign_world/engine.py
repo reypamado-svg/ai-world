@@ -88,6 +88,7 @@ from sovereign_world.exploration import (
     advance_expeditions,
 )
 from sovereign_world.hexmap import HexCoord
+from sovereign_world.housing import founding_housing, slots_of
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import (
     HEALING_FACTOR,
@@ -140,6 +141,7 @@ from sovereign_world.research import (
 from sovereign_world.resources import Inventory, InventoryDelta, Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView, grade_below, grades_of
+from sovereign_world.rules import rules_for
 from sovereign_world.scripted import Sovereign
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.stores import (
@@ -345,6 +347,16 @@ def _settle_arrival(state: WorldState, journey: Journey, provisions: int) -> lis
         civilization.settlements = tuple(
             sorted((*civilization.settlements, settlement), key=lambda item: item.settlement_id)
         )
+        if rules_for(state.rules_version).houses:
+            # Settlers raise huts as they arrive.
+            civilization.housing = dict(
+                sorted(
+                    {
+                        **civilization.housing,
+                        settlement.settlement_id: founding_housing(len(arrivals)),
+                    }.items()
+                )
+            )
         ruin = next((item for item in state.ruins if item.tile == destination), None)
         if ruin is not None:
             _resettle(state, civilization_id, settlement.settlement_id, ruin)
@@ -833,6 +845,9 @@ def _cede(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
         )
     )
     giver.walls = tuple(item for item in giver.walls if item.settlement_id != sid)
+    if sid in giver.housing:
+        taker.housing = dict(sorted({**taker.housing, sid: giver.housing[sid]}.items()))
+        giver.housing = {key: value for key, value in giver.housing.items() if key != sid}
     giver.storehouse_jobs = tuple(
         item for item in giver.storehouse_jobs if item.settlement_id != sid
     )
@@ -3232,6 +3247,7 @@ def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent
         }
     )
     civilization.settlements = ()
+    civilization.housing = {}
     civilization.stores = {}
     civilization.inventory = Inventory(capacity=0)
     civilization.storehouses = ()
@@ -5853,6 +5869,24 @@ def advance_day(
             "population_growth_policy",
             0,
         )
+        eligible_mothers: frozenset[EntityId] | None = None
+        if rules_for(candidate.rules_version).houses:
+            # A settlement's women conceive only with a house for everyone it already feeds
+            # and three months' food in its store.
+            mothers: set[EntityId] = set()
+            if growth_policy > 0:
+                for store_id in sorted(residents):
+                    local = residents[store_id]
+                    food_here = store(civilization, store_id).quantities.get(Resource.FOOD, 0)
+                    if food_here // max(1, len(local)) >= 90 and slots_of(
+                        civilization, store_id
+                    ) >= len(local):
+                        mothers.update(
+                            person_id
+                            for person_id in local
+                            if person_id in civilization.population.people
+                        )
+            eligible_mothers = frozenset(mothers)
         population_result = advance_population_day(
             civilization.population,
             day=candidate.day,
@@ -5860,6 +5894,7 @@ def advance_day(
             food_days=food_days,
             shelter_slots=current_living + 64 if growth_policy > 0 else 0,
             in_place=True,
+            eligible_mothers=eligible_mothers,
         )
         civilization.population = population_result.population
         _keep_archive(candidate, civilization_id, institution_away)

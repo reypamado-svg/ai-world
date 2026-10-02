@@ -265,11 +265,16 @@ def advance_population_day(
     food_days: int = 0,
     shelter_slots: int = 0,
     in_place: bool = False,
+    eligible_mothers: frozenset[EntityId] | None = None,
 ) -> PopulationDayResult:
     """Births, aging, deaths and conceptions for one day.
 
     With `in_place` the population itself is updated (the engine passes its own
     working copy); otherwise a copy is, and the population passed in is left alone.
+
+    Under houses (rules version 2) the engine decides room and food settlement by
+    settlement and passes `eligible_mothers`: only these women may conceive, and
+    `food_days` and `shelter_slots` are not consulted.
     """
     candidate = population if in_place else population.model_copy(deep=True)
     births: list[BirthRecord] = []
@@ -332,10 +337,18 @@ def advance_population_day(
             person.death_day = day
             deaths.append(DeathRecord(person_id=person_id, cause=cause))
 
-    if day % 30 == 0 and food_days >= 90 and shelter_slots >= len(candidate.living_ids):
+    if eligible_mothers is None:
+        conceiving = (
+            day % 30 == 0 and food_days >= 90 and shelter_slots >= len(candidate.living_ids)
+        )
+    else:
+        conceiving = day % 30 == 0 and bool(eligible_mothers)
+    if conceiving:
         already_expectant = {birth.parent_ids[0] for birth in candidate.scheduled_births}
         for female, male in _eligible_pairs(candidate.people):
             if female.person_id in already_expectant:
+                continue
+            if eligible_mothers is not None and female.person_id not in eligible_mothers:
                 continue
             if int(rng.integers(0, 1_000_000)) < 40_000:
                 pending.append(

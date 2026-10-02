@@ -35,6 +35,7 @@ from sovereign_world.endings import Ending, Ruin, RuinView
 from sovereign_world.espionage import CaughtSpy, SpyReport
 from sovereign_world.exploration import Expedition, ExpeditionStatus, Observation
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
+from sovereign_world.housing import Housing, founding_housing
 from sovereign_world.ids import EntityId, IdAllocator
 from sovereign_world.institutions import Institution
 from sovereign_world.logistics import (
@@ -121,6 +122,8 @@ class CivilizationState(BaseModel):
     """Progress toward each topic not yet discovered."""
     war_reports: tuple[BattleReport, ...] = ()
     """Battles as this civilization's own survivors told them."""
+    housing: dict[EntityId, Housing] = Field(default_factory=dict)
+    """Each settlement's houses, by settlement id (rules version 2)."""
 
 
 _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
@@ -292,6 +295,11 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
                     discovered_day=0,
                 ),
             ),
+            housing=(
+                {capital_id: founding_housing(manifest.config.founders_per_civilization)}
+                if manifest.rules_version >= 2
+                else {}
+            ),
         )
     return WorldState(
         run_id=manifest.run_id,
@@ -415,6 +423,8 @@ def validate_world(state: WorldState) -> None:
         settlement_ids = {item.settlement_id for item in settlements}
         if any(item.settlement_id not in settlement_ids for item in houses):
             raise ValueError("a storehouse stands in one of its civilization's settlements")
+        if not set(civilization.housing) <= settlement_ids:
+            raise ValueError("houses stand in their civilization's own settlements")
         walled = [item.settlement_id for item in civilization.walls]
         if walled != sorted(set(walled)) or not set(walled) <= settlement_ids:
             raise ValueError("each settlement has at most one set of walls, sorted")

@@ -48,6 +48,7 @@ from sovereign_world.espionage import MAX_SPIES, MAX_WATCH_DAYS, CaughtSpy, SpyR
 from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
+from sovereign_world.housing import HouseGrade, best_grade, residents_by_settlement
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import (
     INSTITUTIONS,
@@ -89,6 +90,7 @@ from sovereign_world.roads import (
     RoadView,
     materials_for,
 )
+from sovereign_world.rules import rules_for
 from sovereign_world.sites import SiteKind
 from sovereign_world.state import CivilizationState, WorldState
 from sovereign_world.stores import (
@@ -388,6 +390,28 @@ class SiteView(BaseModel):
     as_of_day: int
 
 
+class HousingView(BaseModel):
+    """A settlement's houses, the room they give, and who it has to house."""
+
+    model_config = ConfigDict(frozen=True)
+
+    houses: dict[HouseGrade, int]
+    slots: int
+    residents: int
+    """Its people at home and on its fields, and the captives held there."""
+    buildable: HouseGrade
+    """The best house this civilization knows how to build."""
+
+
+_REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
+    ("known_sites", []),
+    ("rules_version", 1),
+    ("housing", {}),
+)
+"""Report fields added since council-3, and the value at which each is left out, so reports
+from older worlds read, and so prompt, exactly as before."""
+
+
 class CouncilReport(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -470,14 +494,37 @@ class CouncilReport(BaseModel):
     research: tuple[ResearchAssignment, ...] = ()
     research_points: dict[CapabilityId, int] = Field(default_factory=dict)
     recent_events: tuple[DomainEvent, ...] = ()
+    rules_version: int = 1
+    """The rules this world runs under; version 2 adds houses, ranks and civil research."""
+    housing: dict[EntityId, HousingView] = Field(default_factory=dict)
+    """Each settlement's houses (rules version 2)."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
-        # Reports from worlds without sites read, and so prompt, exactly as before.
         dumped = handler(self)
-        if isinstance(dumped, dict) and not dumped.get("known_sites"):
-            dumped.pop("known_sites", None)
+        if isinstance(dumped, dict):
+            for key, empty in _REPORT_ADDITIONS:
+                if key in dumped and dumped[key] in (empty, None, ()):
+                    dumped.pop(key)
         return dumped
+
+
+def _housing_views(state: WorldState, civilization_id: EntityId) -> dict[EntityId, HousingView]:
+    if not rules_for(state.rules_version).houses:
+        return {}
+    civilization = state.civilizations[civilization_id]
+    residents = residents_by_settlement(state, civilization_id)
+    buildable = best_grade(civilization.capabilities)
+    views: dict[EntityId, HousingView] = {}
+    for settlement in civilization.settlements:
+        housing = civilization.housing.get(settlement.settlement_id)
+        views[settlement.settlement_id] = HousingView(
+            houses={} if housing is None else dict(housing.houses),
+            slots=0 if housing is None else housing.slots,
+            residents=len(residents.get(settlement.settlement_id, ())),
+            buildable=buildable,
+        )
+    return views
 
 
 def _blend(civilization: CivilizationState) -> dict[str, Any]:
@@ -630,6 +677,8 @@ def build_council_report(
         ),
         known_rivers=known_rivers(state.world_map, frozenset(civilization.known_tiles)),
         known_sites=known_sites(state, civilization),
+        rules_version=state.rules_version,
+        housing=_housing_views(state, civilization_id),
         inventory=dict(civilization.inventory.quantities),
         stores={
             settlement_id: dict(sorted(inventory.quantities.items()))
