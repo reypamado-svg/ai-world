@@ -6,7 +6,8 @@ import json
 import os
 from pathlib import Path
 
-from sovereign_world.config import WorldConfig
+from sovereign_world.config import CURRENT_GENERATOR, WorldConfig
+from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.observer.terrain_export import TILE_FIELDS, export_terrain
 from sovereign_world.rng import StableRng
 from sovereign_world.worldgen import generate_world
@@ -95,3 +96,28 @@ def test_engine_never_imports_the_observer_and_the_exporter_avoids_persistence()
         assert "sovereign_world.observer" not in path.read_text(), path
     exporter = (SRC / "observer" / "terrain_export.py").read_text()
     assert "persistence" not in exporter
+
+
+def test_hydrology_matches_the_engine_rivers(tmp_path: Path) -> None:
+    export_terrain(9, 48, 48, tmp_path)
+    world = generate_world(WorldConfig(seed=9, width=48, height=48), StableRng(9)).world_map
+    hydrology = json.loads((tmp_path / "hydrology.json").read_text())
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+
+    rows = [dict(zip(hydrology["fields"], row, strict=True)) for row in hydrology["edges"]]
+    assert world.rivers
+    assert len(rows) == len(world.rivers)
+    for row, edge in zip(rows, world.rivers, strict=True):
+        assert (row["aq"], row["ar"], row["bq"], row["br"]) == (
+            edge.a.q,
+            edge.a.r,
+            edge.b.q,
+            edge.b.r,
+        )
+        assert row["flow"] == edge.flow
+        down = None if edge.downstream is None else (edge.downstream.q, edge.downstream.r)
+        assert (None if row["down_q"] is None else (row["down_q"], row["down_r"])) == down
+    lakes = {tuple(coord) for coord in hydrology["lakes"]}
+    assert all(world.tile(HexCoord(q, r)).terrain is Terrain.WATER for q, r in lakes)
+    assert manifest["engine"]["generator_version"] == CURRENT_GENERATOR
+    assert manifest["files"]["hydrology"] == "hydrology.json"

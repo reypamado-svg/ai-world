@@ -43,7 +43,10 @@ const LAND = {
 };
 
 function tileColor(terrain, elevation, q, r, lake = false) {
-  if (terrain === 0) return lake ? mix('#2f6f8a', '#4f97ad', Math.min(1, elevation / 150)) : mix('#1f4670', '#3f76a6', Math.min(1, elevation / 150));
+  if (terrain === 0)
+    return lake
+      ? mix('#2f6f8a', '#4f97ad', Math.min(1, elevation / 150))
+      : mix('#1f4670', '#3f76a6', Math.min(1, elevation / 150));
   if (terrain === 7) return css(LAND[7], 0.94 + (hash2(q, r, 5) - 0.5) * 0.06);
   const base = LAND[terrain] ?? '#888';
   const f = 0.84 + (elevation / 1000) * 0.3 + (hash2(q, r, 5) - 0.5) * 0.06;
@@ -281,7 +284,13 @@ export class TerrainLayer {
     const rivers = this.source.rivers;
     return (rivers?.byTile.get(`${q},${r}`) ?? []).map((edge) => {
       const [p1, p2] = sharedCorners(edge.aq, edge.ar, edge.bq, edge.br, this.R);
-      return { p1, p2, flow: edge.flow, deep: edge.flow >= rivers.deepFlow, key: `${edge.aq},${edge.ar},${edge.bq},${edge.br}` };
+      return {
+        p1,
+        p2,
+        flow: edge.flow,
+        deep: edge.flow >= rivers.deepFlow,
+        key: `${edge.aq},${edge.ar},${edge.bq},${edge.br}`,
+      };
     });
   }
 
@@ -353,7 +362,15 @@ export class TerrainLayer {
       const r = c.r[i];
       const centre = hexCentre(q, r, R);
       const count =
-        t === 2 ? 5 + Math.floor(c.timber[i] / 200) : t === 1 && c.timber[i] > 650 ? 2 : t === 3 || t === 7 ? 2 : t === 6 ? 3 : 0;
+        t === 2
+          ? 5 + Math.floor(c.timber[i] / 200)
+          : t === 1 && c.timber[i] > 650
+            ? 2
+            : t === 3 || t === 7
+              ? 2
+              : t === 6
+                ? 3
+                : 0;
       for (let k = 0; k < count; k += 1) {
         const a = hash2(q * 7 + k, r, 11) * Math.PI * 2;
         const d = Math.sqrt(hash2(q, r * 5 + k, 12)) * R * 0.55;

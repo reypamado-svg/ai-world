@@ -8,7 +8,7 @@ import { project, unproject } from './world/coords.js';
 import { hexCentre, worldScreenBounds, chunkScreenBounds, planeToHex, chunkOf } from './world/hex.js';
 import { TerrainSource } from './data/terrain-source.js';
 import { SyntheticSource } from './data/synthetic-source.js';
-import { observerVillage } from './data/sample/village.js';
+import { chooseCourierRoute, observerVillage } from './data/sample/village.js';
 import { TerrainLayer } from './render/terrain-layer.js';
 import { DecorLayer } from './render/decor.js';
 import { VillageLayer, bandOf } from './render/village-layer.js';
@@ -82,12 +82,14 @@ class ObserverApp {
     this.bounds = worldScreenBounds(source.width, source.height, this.R);
     const { width, height } = pixi.screen;
     const fit = Math.min(width / (this.bounds.x1 - this.bounds.x0), height / (this.bounds.y1 - this.bounds.y0)) * 0.95;
-    const budgetZoom = chunkBudgetZoom(source, width, height, 64);
+    // Engine worlds may show every chunk at once (169 at 100 x 100); the synthetic
+    // streaming test world keeps the tighter budget it was written for.
+    const budgetZoom = chunkBudgetZoom(source, width, height, source instanceof TerrainSource ? 192 : 64);
     this.camera = new Camera({
       x: (this.bounds.x0 + this.bounds.x1) / 2,
       y: (this.bounds.y0 + this.bounds.y1) / 2,
       zoom: Math.max(fit, budgetZoom),
-      minZoom: Math.max(Math.min(fit * 0.8, 0.02), budgetZoom),
+      minZoom: Math.max(fit * 0.8, budgetZoom),
       maxZoom: 2.6,
       clamp: (cam) => {
         cam.x = Math.max(this.bounds.x0, Math.min(this.bounds.x1, cam.x));
@@ -489,6 +491,37 @@ function buildApi(app) {
   };
 }
 
+/** The SAMPLE courier's route, read from the engine tiles around the capital. */
+async function courierRoute(source, tile) {
+  const ct = source.manifest.presentation.chunk_tiles;
+  const chunks = new Map();
+  const tileAt = async (q, r) => {
+    const key = `${Math.floor(q / ct)},${Math.floor(r / ct)}`;
+    if (!chunks.has(key)) chunks.set(key, await source.load(Math.floor(q / ct), Math.floor(r / ct)));
+    const c = chunks.get(key);
+    for (let i = 0; i < c.n; i += 1) if (c.q[i] === q && c.r[i] === r) return c.terrain[i];
+    return 0;
+  };
+  const land = new Map();
+  const [q0, r0] = tile;
+  for (let dr = -4; dr <= 4; dr += 1)
+    for (let dq = -4; dq <= 4; dq += 1) {
+      const [q, r] = [q0 + dq, r0 + dr];
+      if (q >= 0 && r >= 0 && q < source.width && r < source.height) land.set(`${q},${r}`, (await tileAt(q, r)) !== 0);
+    }
+  const rivers = source.rivers;
+  return chooseCourierRoute(tile, {
+    landAt: (q, r) => land.get(`${q},${r}`) ?? false,
+    deepBetween: ([aq, ar], [bq, br]) =>
+      (rivers.byTile.get(`${aq},${ar}`) ?? []).some(
+        (e) => e.flow >= rivers.deepFlow && ((e.bq === bq && e.br === br) || (e.aq === bq && e.ar === br)),
+      ),
+    chunkTiles: ct,
+    width: source.width,
+    height: source.height,
+  });
+}
+
 async function main() {
   const stageEl = $('stage');
   const pixi = new PIXI.Application();
@@ -521,7 +554,8 @@ async function main() {
     const { assetInfo } = await bakeStaticAssets(atlas, CIV_COLORS[0], setStatus);
     const footprintOf = (asset) => assetInfo.get(asset).footprint;
     const tile = day0.civilizations[0].capital.tile;
-    const village = observerVillage(footprintOf, source.manifest.presentation.hex_radius_m, tile);
+    const route = await courierRoute(source, tile);
+    const village = observerVillage(footprintOf, source.manifest.presentation.hex_radius_m, tile, route);
     scaleCitizens(village.scene, Number(params.get('citizens') ?? 400));
     await bakeSceneActors(atlas, village.scene, setStatus);
     atlas.finalize();

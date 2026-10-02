@@ -126,5 +126,7 @@ export function hexDistance(dx, dy) {
 export function sharedCorners(aq, ar, bq, br, R) {
   const theirs = hexCorners(bq, br, R);
   const eps = R * 1e-6;
-  return hexCorners(aq, ar, R).filter((p) => theirs.some((o) => Math.abs(o.x - p.x) < eps && Math.abs(o.y - p.y) < eps));
+  return hexCorners(aq, ar, R).filter((p) =>
+    theirs.some((o) => Math.abs(o.x - p.x) < eps && Math.abs(o.y - p.y) < eps),
+  );
 }

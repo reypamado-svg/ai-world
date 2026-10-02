@@ -25,10 +25,10 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from sovereign_world.config import CURRENT_GENERATOR, RunManifest, WorldConfig
-from sovereign_world.hexmap import Terrain, Tile
+from sovereign_world.hexmap import HexCoord, Terrain, Tile, WorldMap
 from sovereign_world.rng import StableRng
 from sovereign_world.state import build_initial_state
-from sovereign_world.worldgen import generate_world
+from sovereign_world.worldgen import DEEP_FLOW, generate_world
 
 TERRAIN_CODES: tuple[Terrain, ...] = tuple(Terrain)
 TILE_FIELDS: tuple[str, ...] = (
@@ -46,7 +46,7 @@ TILE_FIELDS: tuple[str, ...] = (
 )
 HEX_RADIUS_M = 64
 OVERVIEW_MAX = 256
-EXPORT_VERSION = 1
+EXPORT_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +97,50 @@ def _overview(tiles: tuple[Tile, ...], width: int, height: int) -> dict[str, Any
         "step": step,
         "terrain_codes": [terrain.value for terrain in TERRAIN_CODES],
         "codes": "".join(str(code) for code in codes),
+    }
+
+
+def _lakes(world_map: WorldMap) -> list[list[int]]:
+    """Water tiles in bodies that do not reach the map edge, as [q, r]."""
+    water = {tile.coord for tile in world_map.tiles if tile.terrain is Terrain.WATER}
+    lakes: list[HexCoord] = []
+    unvisited = set(water)
+    for origin in sorted(water):
+        if origin not in unvisited:
+            continue
+        body = [origin]
+        unvisited.discard(origin)
+        frontier = [origin]
+        while frontier:
+            coord = frontier.pop()
+            for neighbour in world_map.neighbors(coord):
+                if neighbour in unvisited:
+                    unvisited.discard(neighbour)
+                    body.append(neighbour)
+                    frontier.append(neighbour)
+        edge = any(len(world_map.neighbors(coord)) < 6 for coord in body)
+        if not edge:
+            lakes.extend(body)
+    return [[coord.q, coord.r] for coord in sorted(lakes)]
+
+
+def _hydrology(world_map: WorldMap) -> dict[str, Any]:
+    return {
+        "fields": ["aq", "ar", "bq", "br", "flow", "down_q", "down_r"],
+        "edges": [
+            [
+                edge.a.q,
+                edge.a.r,
+                edge.b.q,
+                edge.b.r,
+                edge.flow,
+                None if edge.downstream is None else edge.downstream.q,
+                None if edge.downstream is None else edge.downstream.r,
+            ]
+            for edge in world_map.rivers
+        ],
+        "deep_flow": DEEP_FLOW,
+        "lakes": _lakes(world_map),
     }
 
 
@@ -157,6 +201,7 @@ def export_terrain(
     day0 = {"advanced_days": 0, "source": "build_initial_state", "civilizations": civilizations}
     _dump(out_dir / "day0.json", day0)
     _dump(out_dir / "overview.json", _overview(tiles, width, height))
+    _dump(out_dir / "hydrology.json", _hydrology(generated.world_map))
 
     chunk_counts = (-(-width // chunk_tiles), -(-height // chunk_tiles))
     _dump(
@@ -172,7 +217,13 @@ def export_terrain(
                 "tile_index": "r * width + q",
                 "attribute_range": [0, 1000],
                 "terrains": [terrain.value for terrain in TERRAIN_CODES],
-                "river": "per-tile flag; rivers have no edges or direction",
+                "generator_version": manifest.generator_version,
+                "river": (
+                    "a tile's river flag means a river runs along at least one of its borders;"
+                    " hydrology.json lists each river border (between tiles a and b), its flow,"
+                    " and the tile at the corner it flows toward; flow at or above deep_flow"
+                    " is a deep river"
+                ),
                 "time_step": "one day",
                 "start_centres": [[s.center.q, s.center.r] for s in generated.starts],
             },
@@ -191,18 +242,22 @@ def export_terrain(
                 "chunk_tiles": chunk_tiles,
                 "chunks": list(chunk_counts),
             },
-            "files": {"chunks": "chunks/c{cq}_{cr}.json", "overview": "overview.json"},
+            "files": {
+                "chunks": "chunks/c{cq}_{cr}.json",
+                "overview": "overview.json",
+                "hydrology": "hydrology.json",
+            },
         },
     )
-    files += ["day0.json", "overview.json", "manifest.json"]
+    files += ["day0.json", "overview.json", "hydrology.json", "manifest.json"]
     return ExportSummary(out_dir=out_dir, tiles=len(tiles), chunks=len(chunks), files=tuple(files))
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Export engine terrain for the observer.")
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--width", type=int, default=48)
-    parser.add_argument("--height", type=int, default=48)
+    parser.add_argument("--width", type=int, default=100)
+    parser.add_argument("--height", type=int, default=100)
     parser.add_argument("--chunk-tiles", type=int, default=8)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)

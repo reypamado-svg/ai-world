@@ -5,10 +5,11 @@ O1a close-zoom art proof).
 
 Everything on screen says where it comes from:
 
-- **ENGINE TERRAIN · DAY 0.** Terrain and the four capitals are the engine's
-  own world generation for seed 21 (48 × 48 tiles), exported by
-  `python -m sovereign_world.observer.terrain_export`. No day has been
-  simulated. The 64 m per tile is a display scale, not engine data.
+- **ENGINE TERRAIN · DAY 0.** Terrain, rivers, lakes and the four capitals
+  are the engine's own world generation (generator version 2) for seed 21
+  (100 × 100 tiles), exported by `python -m sovereign_world.observer.terrain_export`.
+  No day has been simulated. Rivers run along tile borders, as the engine
+  records them. The 64 m per tile is a display scale, not engine data.
 - **SAMPLE VILLAGE.** The village, its buildings, citizens and routines are
   invented for visual review and placed on the first civilization's capital
   tile. They prove nothing about what the simulation records or supports.
@@ -57,6 +58,7 @@ node --test --test-concurrency=1 tests/*.test.mjs      # browser tests, one file
 node tests/measure.mjs captures                        # rendering measurements (400 / 2,000 / 5,000)
 node tests/capture-observer.mjs captures --clip        # review stills and zoom-through clip
 node tests/capture.mjs captures --depth --clip         # art-proof stills, depth sheet, clip
+node tests/capture-geography.mjs captures              # terrain stills: world, range, river, desert, lake
 ```
 
 | Test file                 | What it proves                                                                                                                                                    |
@@ -73,7 +75,7 @@ node tests/capture.mjs captures --depth --clip         # art-proof stills, depth
 | Path                                                           | Purpose                                                                                  |
 | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `vendor/pixi/`                                                 | PixiJS 8.21.0 (MIT), vendored unmodified from the npm package                            |
-| `data/terrain/`                                                | Committed engine export for seed 21 (chunks, overview, day-0 capitals)                   |
+| `data/terrain/`                                                | Committed engine export for seed 21 (chunks, overview, rivers and lakes, day-0 capitals) |
 | `src/main.js`, `index.html`                                    | The observer prototype                                                                   |
 | `src/world/`                                                   | Projection, hex layout, chunk loader and bounded LRU caches                              |
 | `src/data/`                                                    | Terrain source (and the TEST ONLY synthetic source), naming, SAMPLE village and citizens |

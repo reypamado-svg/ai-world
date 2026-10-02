@@ -252,3 +252,51 @@ O1 was planned with Fable 5.1 (decisions below) and built in seven steps, one co
 Real-hardware numbers come from the user's machine, via the Measurements panel or `measure.mjs`.
 
 **Measurements: simulation (Python).** `tests/observer/throughput.py` used a disposable scripted world (seed 21, 48×48, no providers). It ran 365 days in 33 s, about 11 days per second, including process start-up and journal writes; 141 people were alive at the end.
+
+## Geography G1–G2 as built
+
+The user reviewed O1 and asked for realistic terrain: tiles generated from their surroundings, regions such as mountain ranges, logical transitions, snow, deserts and rocky ground, rivers that run across many tiles, and water that cannot be crossed without a boat (shallow rivers excepted). That is an engine change, so it comes before the O1b day-scale work. The plan (Fable 5.1) is in the session plan; user decisions:
+- Snow is passable at 5 days per tile.
+- Rivers run along tile borders.
+- This round adds fords and bridges; rafts come later.
+- Forest may border mountains.
+
+**G1: world generator version 2** (`src/sovereign_world/geography.py`).
+- **Regions.** The map is split into regions, each with one dominant landscape (highland, plains, woodland, dry basin, cold upland, sea).
+- **Fields.** Elevation, temperature and moisture are smooth integer value-noise fields over those regions:
+  - temperature falls with elevation and runs from cold north to hot south;
+  - a west-wind rain shadow dries the lee of ranges.
+- **Two new terrains:** hills and snow. Snow lies only on high, cold mountains.
+- **Neighbour table.** A pass removes every pairing that cannot sit side by side. Ranges step down through hills, tundra or forest, never straight onto grassland or desert, and desert never touches forest. Tests assert zero forbidden pairs.
+- **Rivers.** They start on wet high ground and follow drainage links found by flood-filling corner heights from the sea, lakes and the map edge.
+  - They run along tile borders and join into larger rivers.
+  - Flow adds up downstream; at `DEEP_FLOW = 10` a river is deep.
+  - A tile's `river` flag now means a river runs along one of its borders, so food, water and forage rules keep their meaning.
+- **Resources follow the land:** timber in forest, stone in mountains and hills, and soil in lowland and along rivers.
+- **Capitals** go on grassland or forest, all reachable from each other on foot, with riverside sites preferred. Version 2 also tries each good site as a first pick, because regional terrain clusters good sites together.
+- **Speed:** a 100×100 world generates in about 1.5 s, against 13–16 s before. The start-region scan now uses precomputed offsets, which also speeds up version 1.
+
+**Old runs stay valid.**
+- `RunManifest.generator_version` defaults to 1 and is left out of the hash at 1, so every old manifest keeps its hash. New runs record 2, and forks copy their parent's version.
+- Version 1 still rebuilds the original worlds; seed 21 at 48×48 gives the same four capitals.
+- River borders live in `WorldMap.rivers`, which is left out of saved state when empty, so maps from before keep their state hash.
+
+**G2: preview.**
+- **Export.** Version 2 adds `hydrology.json` (river borders with flow and direction, lake tiles, the deep-flow line) and records the generator version. Seed 21 is re-exported at 100×100: 169 chunks, 732 KB.
+- **Observer painting:**
+  - hills (rolling rises), snowfields, snow on cold peaks, and lakes in a tint of their own;
+  - rivers along tile borders, wider downstream, meandering identically from both sides so tiles join up.
+- **Courier route.** It is now chosen from engine data: the first straight direction that stays on land, never crosses a deep river, and enters another chunk.
+- **Zoom.** The whole engine world can be shown: the old 0.02 zoom floor is gone, and the visible-chunk budget for engine worlds is 192.
+
+**Tests.** `tests/test_geography.py` covers:
+- the share of tiles alike their neighbours, and that no forbidden pairs exist;
+- that mountains form ranges, the terrain mix is plausible, and snow lies only on high cold ground;
+- resource correlation;
+- rivers: continuous to water or the edge, mostly downhill, never looping, long courses, deep stretches, and riverside flags that match;
+- lowland, reachable starts for seeds 0–11 at 24 and 48;
+- determinism and generation time;
+- the version 1 golden starts, and that old manifests and river-less maps keep their hashes;
+- that malformed rivers are refused.
+
+The exporter test checks `hydrology.json` against the engine. The full suite passed with one expected fix: a test that built its "defaults" manifest with `RunManifest.new`.
