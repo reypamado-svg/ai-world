@@ -437,6 +437,18 @@ function buildApi(app) {
     R: () => app.R,
     /** The SAMPLE courier's journey: arrival at each tile, camps and fords, in schedule time. */
     courierPlan: () => app.villageData?.courierPlan ?? null,
+    /** Largest local coordinate drawn by the village's Graphics (dots, pin), after a frame. */
+    graphicsExtent: () => {
+      app.frame(0, false);
+      const reach = (g) => {
+        if (!g.context?.instructions?.length) return 0;
+        const b = g.getLocalBounds();
+        return Math.max(Math.abs(b.minX), Math.abs(b.maxX), Math.abs(b.minY), Math.abs(b.maxY));
+      };
+      const dots = reach(v.dots);
+      const pin = reach(v.pin);
+      return { dots, pin, max: Math.max(dots, pin) };
+    },
     /** How many times citizens' schedules have been recomputed for drawing. */
     animRecomputes: () => app.village?.renderer.recomputes ?? 0,
     /** Run frames until every visible chunk is loaded and baked at the wanted level. */

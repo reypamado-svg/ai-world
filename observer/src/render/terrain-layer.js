@@ -8,6 +8,10 @@
 // Decoration (tree, hill and peak glyphs) is seeded per tile and only appears
 // where the tile's own values support it. Rivers run along tile borders, as
 // the engine records them, wider where more water has gathered.
+//
+// Local-origin rule: canvas paths are float32, so every bake paints relative
+// to its own anchor (the chunk's or tile's centre) and the sprite, positioned
+// in float64, carries the anchor. Far tiles then paint exactly like near ones.
 
 import { project, unproject } from '../world/coords.js';
 import {
@@ -23,6 +27,7 @@ import {
   zoomForTilePx,
 } from '../world/hex.js';
 import { paintHexDetail } from './hex-detail.js';
+import { riverEdgesOf, riverLine, riverWidthM } from '../world/rivers.js';
 import { ChunkLoader, LruCache } from '../world/chunks.js';
 import { hash2 } from '../sim/rng.js';
 import { css, mix } from './art/paint/color.js';
@@ -56,9 +61,9 @@ function tileColor(terrain, elevation, q, r, lake = false) {
   return terrain === 3 ? mix(base, '#b8b0a2', Math.max(0, (elevation - 820) / 180)).map((c) => c * f) : css(base, f);
 }
 
-/** River ribbon width in world-screen pixels at zoom 1 (presentation). */
-export function riverWidth(flow, R) {
-  return R * 16 * (0.035 + 0.022 * Math.log2(1 + flow));
+/** Thinnest a river is drawn on the map, in texture pixels: 1 for a stream, up to 3 for the largest. */
+export function riverMinPx(flow) {
+  return 1 + 2 * Math.min(1, Math.log2(1 + flow) / Math.log2(110));
 }
 
 export class TerrainLayer {
@@ -71,6 +76,7 @@ export class TerrainLayer {
     this.hexModeZoom = zoomForTilePx(HEX_MODE_TILE_PX, this.R);
     this.hexLevels = HEX_TILE_PX.map((px) => zoomForTilePx(px, this.R));
     this.ct = source.manifest.presentation.chunk_tiles;
+    this.streamFlow = source.manifest.engine.travel.stream_flow;
     this.width = source.width;
     this.height = source.height;
     this.container = new PIXI.Container();
@@ -270,8 +276,12 @@ export class TerrainLayer {
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
-    ctx.setTransform(s, 0, 0, s, -x0 * s, -y0 * s);
-    paintHexDetail(ctx, tile, this.R, s, { glyphs: true, riverEdges: this._riverEdges(q, r) });
+    // Anchor: the tile centre. Canvas coordinates are relative to it.
+    const origin = hexCentre(q, r, this.R);
+    const A = project(origin.x, origin.y);
+    ctx.setTransform(s, 0, 0, s, -(x0 - A.x) * s, -(y0 - A.y) * s);
+    const edges = riverEdgesOf(q, r, this.source.rivers, this.R, this.streamFlow);
+    paintHexDetail(ctx, tile, this.R, s, { glyphs: true, riverEdges: edges, origin });
     const texture = new PIXI.Texture({
       source: new PIXI.CanvasSource({ resource: canvas, autoGenerateMipmaps: true, scaleMode: 'linear' }),
     });
@@ -286,21 +296,6 @@ export class TerrainLayer {
     this.textures.set(key, { sprite, texture }, w * h * 4 * 1.34, pinned);
   }
 
-  /** The river borders of one tile, as plane-space segments. */
-  _riverEdges(q, r) {
-    const rivers = this.source.rivers;
-    return (rivers?.byTile.get(`${q},${r}`) ?? []).map((edge) => {
-      const [p1, p2] = sharedCorners(edge.aq, edge.ar, edge.bq, edge.br, this.R);
-      return {
-        p1,
-        p2,
-        flow: edge.flow,
-        deep: edge.flow >= rivers.deepFlow,
-        key: `${edge.aq},${edge.ar},${edge.bq},${edge.br}`,
-      };
-    });
-  }
-
   _bake(key, chunk, s, pinned) {
     const { PIXI } = this;
     const b = this.chunkBounds(chunk.cq, chunk.cr);
@@ -310,8 +305,11 @@ export class TerrainLayer {
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
-    ctx.setTransform(s, 0, 0, s, -b.x0 * s + 1, -b.y0 * s + 1);
-    this.paintChunk(ctx, chunk, s);
+    // Anchor: the centre tile of the chunk. Canvas coordinates are relative to it.
+    const mid = hexCentre(chunk.cq * this.ct + this.ct / 2, chunk.cr * this.ct + this.ct / 2, this.R);
+    const A = project(mid.x, mid.y);
+    ctx.setTransform(s, 0, 0, s, -(b.x0 - A.x) * s + 1, -(b.y0 - A.y) * s + 1);
+    this.paintChunk(ctx, chunk, s, A);
     const texture = new PIXI.Texture({
       source: new PIXI.CanvasSource({ resource: canvas, autoGenerateMipmaps: true, scaleMode: 'linear' }),
     });
@@ -328,14 +326,21 @@ export class TerrainLayer {
     this.textures.set(texKey, { sprite, texture }, w * h * 4 * 1.34, pinned);
   }
 
-  /** Paint a chunk's hexes in world-screen coordinates (the caller scales). */
-  paintChunk(ctx, c, s) {
+  /**
+   * Paint a chunk's hexes in world-screen units relative to the anchor `A`
+   * (a world-screen point; the caller scales and places it).
+   */
+  paintChunk(ctx, c, s, A = { x: 0, y: 0 }) {
     const R = this.R;
     const px = 1 / s; // one texture pixel in world-screen units
+    const P = (x, y) => {
+      const p = project(x, y);
+      return { x: p.x - A.x, y: p.y - A.y };
+    };
     for (let i = 0; i < c.n; i += 1) {
       const q = c.q[i];
       const r = c.r[i];
-      const pts = hexCorners(q, r, R).map((p) => project(p.x, p.y));
+      const pts = hexCorners(q, r, R).map((p) => P(p.x, p.y));
       ctx.beginPath();
       pts.forEach((p, k) => (k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
       ctx.closePath();
@@ -350,14 +355,16 @@ export class TerrainLayer {
     // Rivers: along the borders the engine records, wider downstream.
     ctx.lineCap = 'round';
     const rivers = this.source.rivers;
+    ctx.lineJoin = 'round';
     for (const edge of rivers?.byChunk.get(`${c.cq},${c.cr}`) ?? []) {
-      const [p1, p2] = sharedCorners(edge.aq, edge.ar, edge.bq, edge.br, R).map((p) => project(p.x, p.y));
+      const [p1, p2] = sharedCorners(edge.aq, edge.ar, edge.bq, edge.br, R);
       if (!p2) continue;
+      const line = riverLine({ p1, p2, key: `${edge.aq},${edge.ar},${edge.bq},${edge.br}` }, 8).map((p) => P(p.x, p.y));
       ctx.strokeStyle = edge.flow >= rivers.deepFlow ? '#2f6b9e' : '#4f8fbf';
-      ctx.lineWidth = Math.max(riverWidth(edge.flow, R), 1.4 * px);
+      const metres = riverWidthM(edge.flow, { streamFlow: this.streamFlow, deepFlow: rivers.deepFlow });
+      ctx.lineWidth = Math.max(metres * 16 * 1.1, riverMinPx(edge.flow) * px);
       ctx.beginPath();
-      ctx.moveTo(p1.x, p1.y);
-      ctx.lineTo(p2.x, p2.y);
+      line.forEach((p, k) => (k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
       ctx.stroke();
     }
     // Glyphs where a hex is big enough to read them (>= ~18 texture px).
@@ -381,7 +388,7 @@ export class TerrainLayer {
       for (let k = 0; k < count; k += 1) {
         const a = hash2(q * 7 + k, r, 11) * Math.PI * 2;
         const d = Math.sqrt(hash2(q, r * 5 + k, 12)) * R * 0.55;
-        const p = project(centre.x + Math.cos(a) * d, centre.y + Math.sin(a) * d);
+        const p = P(centre.x + Math.cos(a) * d, centre.y + Math.sin(a) * d);
         const size = R * 16 * (0.8 + hash2(q, k, 13) * 0.4);
         if (t === 3 || t === 7) this._peak(ctx, p, size * 0.28, t === 7 || c.temperature[i] < 200);
         else if (t === 6) this._hill(ctx, p, size * 0.16);

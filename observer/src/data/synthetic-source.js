@@ -13,7 +13,7 @@ export class SyntheticSource {
     this.manifest = {
       source: 'synthetic (test only)',
       // The same world rule as the engine: tile centres a day's walk (25 km) apart.
-      engine: { seed, width, height, travel: { tile_spacing_m: 25000, day_tenths: 10 } },
+      engine: { seed, width, height, travel: { tile_spacing_m: 25000, day_tenths: 10, stream_flow: 4, deep_flow: 10 } },
       presentation: { chunk_tiles: chunkTiles, chunks: [Math.ceil(width / chunkTiles), Math.ceil(height / chunkTiles)] },
     };
     this.rivers = indexHydrology(null, chunkTiles);

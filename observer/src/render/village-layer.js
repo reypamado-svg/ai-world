@@ -50,6 +50,9 @@ export class VillageLayer {
     this.badge.addChild(g, text);
     const o = project(village.origin.x, village.origin.y);
     this.badge.position.set(o.x - 100, o.y + 60);
+    // Graphics are tessellated in float32: draw them relative to the village origin.
+    this.dots.position.set(o.x, o.y);
+    this.pin.position.set(o.x, o.y);
     this.container.addChild(this.renderer.root, this.dots, this.pin, this.badge);
   }
 
@@ -120,7 +123,6 @@ export class VillageLayer {
     const g = this.dots;
     g.clear();
     if (alpha * regional < 0.02) return;
-    const off = this.offset;
     const groups = new Map();
     for (const o of this.renderer.people) {
       if (o.hidden) continue;
@@ -134,7 +136,7 @@ export class VillageLayer {
     for (const e of groups.values()) {
       const p = project(e.x / e.n, e.y / e.n);
       const rad = (2.5 + Math.sqrt(e.n) * 1.6) / zoom;
-      g.circle(p.x + off.x, p.y + off.y, rad)
+      g.circle(p.x, p.y, rad)
         .fill({ color: hexNum(CIV_COLORS[e.civ]), alpha: alpha * regional })
         .stroke({ width: 1 / zoom, color: 0xffffff, alpha: alpha * regional });
     }
@@ -148,8 +150,9 @@ export class VillageLayer {
     const pos = this.worldPosition(selected);
     if (!pos) return;
     const s = 1 / zoom;
-    const x = pos.x;
-    const y = pos.y;
+    // Relative to the village origin, where the pin's container sits.
+    const x = pos.x - this.pin.position.x;
+    const y = pos.y - this.pin.position.y;
     g.poly([x, y, x - 7 * s, y - 14 * s, x + 7 * s, y - 14 * s]).fill(0xffd84a);
     g.circle(x, y - 18 * s, 9 * s)
       .fill(0xffd84a)
