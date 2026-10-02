@@ -37,6 +37,7 @@ from sovereign_world.roads import (
 )
 from sovereign_world.tolls import TollGate, TollRules, cargo_charge, detour, food_charge
 from sovereign_world.travel import (
+    CROSSING_COST,
     DAY,
     ENTRY_COST,
     MAX_PROGRESS,
@@ -152,6 +153,9 @@ class StopReason(StrEnum):
     NO_STONEWORKER = "no_stoneworker"
     MATERIALS = "materials"
     TOLL = "toll"
+    RIVER = "river"
+    """A deep river with no bridge lies across the route (saves from before the crossing
+    rule only; new routes are refused at dispatch)."""
 
 
 class Journey(BaseModel):
@@ -932,7 +936,21 @@ def _walk(
             world_map, journey.route[ahead], grades, origin=journey.route[index], bridges=spans
         )
         if cost is None:
-            raise ValueError("a journey route cannot enter impassable terrain")
+            cost = _legacy_crossing(world_map, journey.route[index], journey.route[ahead], grades)
+            if outbound:
+                # Only a party dispatched before deep rivers blocked travel meets one here:
+                # it cannot cross, so it turns for home (a crew stops) without a crash.
+                halted = journey.model_copy(
+                    update={"route_index": index, "travel_progress": min(progress, DAY - 1)}
+                )
+                if crew:
+                    return stop(halted, StopReason.RIVER), False
+                return halted.model_copy(
+                    update={
+                        "phase": JourneyPhase.RETURNING,
+                        "outcome": JourneyOutcome.TURNED_BACK,
+                    }
+                ), False
         if journey.kind is JourneyKind.CAMPAIGN and slows(journey.cargo):
             cost = slowed(cost)
         if progress < cost:
@@ -986,6 +1004,22 @@ def _walk(
         progress = min(progress, DAY - 1)
     moved = journey.model_copy(update={"route_index": index, "travel_progress": progress})
     return moved, reached
+
+
+def _legacy_crossing(
+    world_map: WorldMap, here: HexCoord, ahead: HexCoord, grades: dict[HexCoord, RoadGrade]
+) -> int:
+    """The cost of fording a deep river a party already crossed before the crossing rule.
+
+    Saves made before deep rivers blocked travel can hold parties on the far bank; they wade
+    home the way they came, as if the river were an ordinary one, rather than being stranded.
+    """
+    cost = entry_cost(world_map, ahead, grades)
+    if cost is None or world_map.river_between(here, ahead) is None:
+        raise ValueError("a journey route cannot enter impassable terrain")
+    river = CROSSING_COST["river"]
+    assert river is not None
+    return cost + river
 
 
 def _pass_toll(
@@ -1051,16 +1085,18 @@ def _pass_toll(
                 if not tolls.exempt(payer, known.owner) and known.food_per_head
             }
         )
+        # A way round is planned over the bridges the payer's civilization knows of.
+        known_spans = tolls.known_bridges.get(payer, NO_BRIDGES)
         rerouted = detour(
             world_map,
             tolls.known_tiles.get(payer, frozenset()),
             journey.route,
             index,
             avoid,
-            bridges=spans,
+            bridges=known_spans,
         )
         if rerouted is not None:
-            days = _days_left(rerouted, index, journey.kind, world_map, grades, spans)
+            days = _days_left(rerouted, index, journey.kind, world_map, grades, known_spans)
             if len(living) * days <= journey.provisions:
                 encounters.append(_encounter(journey, gate, ahead, {}, avoided=True))
                 return journey.model_copy(update={"route": rerouted})

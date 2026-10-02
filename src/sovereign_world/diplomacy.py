@@ -14,7 +14,15 @@ from sovereign_world.languages import fidelity, render
 from sovereign_world.people import Person
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
-from sovereign_world.travel import DAY, MAX_PROGRESS, NO_BRIDGES, Bridges, Roads, entry_cost
+from sovereign_world.travel import (
+    CROSSING_COST,
+    DAY,
+    MAX_PROGRESS,
+    NO_BRIDGES,
+    Bridges,
+    Roads,
+    entry_cost,
+)
 
 
 class MissionStatus(StrEnum):
@@ -317,6 +325,16 @@ def advance_diplomacy_day(
             cost = entry_cost(
                 world_map, mission.route[route_index], roads, origin=origin, bridges=bridges
             )
+            if cost is None and origin is not None:
+                # Only a mission sent before deep rivers blocked travel meets one here; the
+                # ambassador fords it as an ordinary river rather than stranding the message.
+                cost = entry_cost(world_map, mission.route[route_index], roads)
+                river = CROSSING_COST["river"]
+                if cost is not None and river is not None:
+                    if world_map.river_between(origin, mission.route[route_index]) is None:
+                        cost = None
+                    else:
+                        cost += river
             if cost is None:
                 raise ValueError("an ambassador route cannot enter impassable terrain")
             if progress < cost:

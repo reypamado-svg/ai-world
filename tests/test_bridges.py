@@ -11,6 +11,7 @@ from logistics_helpers import (
     flatten,
     linked_world,
     river,
+    treaty_world,
 )
 
 from sovereign_world.bridges import BRIDGE_LABOUR, Bridge, bridge_materials, bridged_edges
@@ -20,10 +21,11 @@ from sovereign_world.commands import (
     build_council_report,
     validate_envelope,
 )
+from sovereign_world.diplomacy import TreatyKind
 from sovereign_world.engine import TransitionResult, advance_day
 from sovereign_world.hexmap import HexCoord, edge_key
 from sovereign_world.ids import EntityId
-from sovereign_world.logistics import JourneyOutcome, roadwork_days
+from sovereign_world.logistics import JourneyOutcome, JourneyPhase, roadwork_days
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import RoadGrade
@@ -234,3 +236,90 @@ def test_reports_list_own_and_seen_bridges_only() -> None:
     assert [(bridge.a, bridge.b) for bridge in own.known_bridges] == [(a, b)]
     seen_by_rival = build_council_report(state, rival)
     assert (c, d) in {(bridge.a, bridge.b) for bridge in seen_by_rival.known_bridges}
+
+
+def test_reported_bridges_show_only_where_they_stand() -> None:
+    state, home, rival, route = _world()
+    river(state, route[0], route[1], 1)
+    a, b = edge_key(route[0], route[1])
+    state.bridges = (Bridge(a=a, b=b, civilization_id=rival, built_day=3),)
+
+    [view] = build_council_report(state, home).known_bridges
+
+    assert (view.a, view.b) == (a, b)
+    assert set(type(view).model_fields) == {"a", "b"}, "no builder or build day is revealed"
+
+
+def _migration(state: WorldState, home: EntityId, rival: EntityId, route) -> DirectOrder:
+    return DirectOrder(
+        command_id="migrate:old",
+        kind=DirectOrderKind.DISPATCH_MIGRATION,
+        journey_id=EntityId(clear_journey_id("old", days=12)),
+        treaty_id=EntityId("treaty:migration"),
+        recipient_civilization_id=rival,
+        traveller_ids=state.civilizations[home].population.living_ids[-2:],
+        route=route,
+    )
+
+
+def test_a_party_from_an_old_save_meeting_a_deep_river_turns_home_without_a_crash() -> None:
+    state, home, rival, route = treaty_world(TreatyKind.MIGRATION, distance=4)
+    flatten(state, route)
+    order = _migration(state, home, rival, route)
+    assert validate_envelope(envelope(state, home, order), state).errors == ()
+    state, _ = _run(state, 1, {home: OneShotSovereign(order)})
+    # As if the save were made before deep rivers blocked travel: one now lies ahead.
+    river(state, route[2], route[3], DEEP_FLOW)
+
+    state, _ = _run(state, 10)
+
+    [journey] = state.journeys
+    assert journey.outcome is JourneyOutcome.TURNED_BACK
+    people = state.civilizations[home].population.people
+    assert all(people[person].location == route[0] for person in journey.traveller_ids)
+    validate_world(state)
+
+
+def test_an_old_crew_meeting_a_deep_river_stops() -> None:
+    state, home, _, route = _world()
+    order = _road_order(state, home, route[:4], RoadGrade.FOOTPATH, clear_journey_id("x", days=20))
+    assert validate_envelope(envelope(state, home, order), state).errors == ()
+    state, _ = _run(state, 1, {home: OneShotSovereign(order)})
+    river(state, route[2], route[3], DEEP_FLOW)
+
+    state, results = _run(state, 20)
+
+    reasons = [event.payload["reason"] for event in _events(results, "road_work_stopped")]
+    assert reasons == ["river"]
+
+
+def test_a_party_from_an_old_save_fords_home_across_a_river_it_already_crossed() -> None:
+    state, home, rival, route = treaty_world(TreatyKind.TRADE, distance=3)
+    flatten(state, route)
+    order = DirectOrder(
+        command_id="ship:old",
+        kind=DirectOrderKind.DISPATCH_SHIPMENT,
+        journey_id=EntityId(clear_journey_id("ship", days=16)),
+        treaty_id=EntityId("treaty:trade"),
+        recipient_civilization_id=rival,
+        traveller_ids=state.civilizations[home].population.living_ids[:2],
+        route=route,
+        cargo={Resource.TIMBER: 10},
+    )
+    assert validate_envelope(envelope(state, home, order), state).errors == ()
+    state, _ = _run(state, 1, {home: OneShotSovereign(order)})
+    for _ in range(12):
+        [journey] = state.journeys
+        if journey.phase is JourneyPhase.RETURNING and journey.route_index >= 2:
+            break
+        state, _ = _run(state, 1)
+    assert journey.phase is JourneyPhase.RETURNING, "the goods are delivered beyond the river"
+    # As if the save were made before deep rivers blocked travel: one lies on the way home.
+    river(state, route[0], route[1], DEEP_FLOW)
+
+    state, _ = _run(state, 12)
+
+    [journey] = state.journeys
+    assert not journey.active
+    people = state.civilizations[home].population.people
+    assert all(people[person].location == route[0] for person in journey.traveller_ids)

@@ -90,6 +90,8 @@ class TollRules:
     """Pairs of civilizations whose parties pass each other's tolls free."""
     known_gates: Mapping[EntityId, Mapping[HexCoord, TollGate]] = field(default_factory=dict)
     known_tiles: Mapping[EntityId, frozenset[HexCoord]] = field(default_factory=dict)
+    known_bridges: Mapping[EntityId, Bridges] = field(default_factory=dict)
+    """The bridged river borders each civilization knows of; detours are planned over these."""
 
     def exempt(self, payer: EntityId, owner: EntityId) -> bool:
         return payer == owner or frozenset({payer, owner}) in self.free_passage

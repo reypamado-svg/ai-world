@@ -45,6 +45,7 @@ from sovereign_world.commands import (
     crisis_council_due,
     journey_supplies,
     known_roads,
+    known_spans,
     known_tolls,
     sight_of,
     trade_partners,
@@ -170,7 +171,7 @@ from sovereign_world.territory import (
     visible_tiles,
 )
 from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
-from sovereign_world.travel import travel_days, way_to
+from sovereign_world.travel import crossing, travel_days, way_to
 from sovereign_world.walls import (
     WALL_GRADES,
     WALL_HIT,
@@ -1371,6 +1372,10 @@ def _toll_rules(state: WorldState) -> TollRules:
             civilization_id: frozenset(civilization.known_tiles)
             for civilization_id, civilization in state.civilizations.items()
         },
+        known_bridges={
+            civilization_id: known_spans(state, civilization_id)
+            for civilization_id in state.civilizations
+        },
     )
 
 
@@ -1751,6 +1756,7 @@ def _share_maps(state: WorldState, treaty: ActiveTreaty) -> None:
 def _joined_roads(state: WorldState) -> list[DomainEvent]:
     """Note when a continuous road first links a settlement of each trade partner."""
     road_tiles = {road.tile for road in state.roads}
+    spans = bridged_edges(state.bridges)
     joined: list[EntityId] = []
     events: list[DomainEvent] = []
     for treaty in state.active_treaties:
@@ -1777,6 +1783,10 @@ def _joined_roads(state: WorldState) -> list[DomainEvent]:
                 break
             for neighbor in sorted(tile.neighbors()):
                 if neighbor in road_tiles and neighbor not in seen:
+                    # A road is continuous only where a traveller can cross: a deep river
+                    # between two road tiles joins them only once it is bridged.
+                    if crossing(state.world_map, tile, neighbor, spans) is None:
+                        continue
                     seen.add(neighbor)
                     length[neighbor] = length[tile] + 1
                     frontier.append(neighbor)

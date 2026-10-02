@@ -347,6 +347,15 @@ class CommandValidation(BaseModel):
     errors: tuple[CommandError, ...]
 
 
+class BridgeView(BaseModel):
+    """A bridge a civilization knows of: only where it stands, never who built it or when."""
+
+    model_config = ConfigDict(frozen=True)
+
+    a: HexCoord
+    b: HexCoord
+
+
 class RiverView(BaseModel):
     """A river a civilization knows of: it runs along the border between a known tile and
     its neighbour across, and is a stream, a river, or too deep to wade."""
@@ -394,7 +403,7 @@ class CouncilReport(BaseModel):
     settlements: tuple[Settlement, ...] = ()
     garrisons: tuple[Garrison, ...] = ()
     known_roads: tuple[RoadView, ...] = ()
-    known_bridges: tuple[Bridge, ...] = ()
+    known_bridges: tuple[BridgeView, ...] = ()
     """Bridges this civilization built or can see."""
     toll_posts: tuple[TollPost, ...] = ()
     known_tolls: tuple[TollView, ...] = ()
@@ -625,7 +634,9 @@ def build_council_report(
         settlements=civilization.settlements,
         garrisons=civilization.garrisons,
         known_roads=known_roads(state, civilization_id),
-        known_bridges=known_bridges(state, civilization_id),
+        known_bridges=tuple(
+            BridgeView(a=bridge.a, b=bridge.b) for bridge in known_bridges(state, civilization_id)
+        ),
         toll_posts=civilization.toll_posts,
         known_tolls=known_tolls(state, civilization_id),
         occupations=tuple(
