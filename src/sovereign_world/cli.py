@@ -8,7 +8,13 @@ from uuid import uuid4
 
 import typer
 
-from sovereign_world.config import BudgetConfig, RunManifest, SovereignConfig, WorldConfig
+from sovereign_world.config import (
+    CURRENT_GENERATOR,
+    BudgetConfig,
+    RunManifest,
+    SovereignConfig,
+    WorldConfig,
+)
 from sovereign_world.engine import advance_day
 from sovereign_world.gateway.factory import build_sovereigns
 from sovereign_world.gateway.records import journal_councils, recorded_councils
@@ -56,8 +62,9 @@ def initialize(
     manifest = RunManifest.model_validate(
         {
             "run_id": uuid4(),
-            "engine_version": "0.1.0",
+            "engine_version": "0.2.0",
             "config": config,
+            "generator_version": CURRENT_GENERATOR,
             **_settings(sovereigns),
         }
     )
@@ -166,6 +173,7 @@ def fork(
             "config": parent.config,
             "parent_run_id": parent.run_id,
             "forked_at_day": state.day,
+            "generator_version": parent.generator_version,
             **_settings(sovereigns),
         }
     )

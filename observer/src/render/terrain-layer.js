@@ -5,9 +5,9 @@
 // on eviction. While a finer texture is missing, any coarser one already
 // cached for that chunk is shown instead, so zooming never opens holes.
 //
-// Terrain values are independent per engine tile; the painter never smooths
-// across tiles. Decoration (tree and peak glyphs) is seeded per tile and only
-// appears where the tile's own values support it.
+// Decoration (tree, hill and peak glyphs) is seeded per tile and only appears
+// where the tile's own values support it. Rivers run along tile borders, as
+// the engine records them, wider where more water has gathered.
 
 import { project, unproject } from '../world/coords.js';
 import {
@@ -16,6 +16,7 @@ import {
   hexCentre,
   hexCorners,
   planeToHex,
+  sharedCorners,
   screenBoundsOfTiles,
   worldScreenBounds,
 } from '../world/hex.js';
@@ -36,14 +37,22 @@ const LAND = {
   2: '#4c7a3a', // forest
   3: '#8c8476', // mountain
   4: '#d2b97f', // desert
-  5: '#c9cfc8', // tundra
+  5: '#b9bfa8', // tundra
+  6: '#9c9461', // hills
+  7: '#e9edf0', // snow
 };
 
-function tileColor(terrain, elevation, q, r) {
-  if (terrain === 0) return mix('#264f78', '#4a80ae', Math.min(1, elevation / 120));
+function tileColor(terrain, elevation, q, r, lake = false) {
+  if (terrain === 0) return lake ? mix('#2f6f8a', '#4f97ad', Math.min(1, elevation / 150)) : mix('#1f4670', '#3f76a6', Math.min(1, elevation / 150));
+  if (terrain === 7) return css(LAND[7], 0.94 + (hash2(q, r, 5) - 0.5) * 0.06);
   const base = LAND[terrain] ?? '#888';
   const f = 0.84 + (elevation / 1000) * 0.3 + (hash2(q, r, 5) - 0.5) * 0.06;
   return terrain === 3 ? mix(base, '#b8b0a2', Math.max(0, (elevation - 820) / 180)).map((c) => c * f) : css(base, f);
+}
+
+/** River ribbon width in world-screen pixels at zoom 1 (presentation). */
+export function riverWidth(flow, R) {
+  return R * 16 * (0.035 + 0.022 * Math.log2(1 + flow));
 }
 
 export class TerrainLayer {
@@ -238,7 +247,9 @@ export class TerrainLayer {
       soil: chunk.soil[i],
       timber: chunk.timber[i],
       stone: chunk.stone[i],
+      temperature: chunk.temperature[i],
       river: !!chunk.river[i],
+      lake: !!this.source.rivers?.lakes.has(`${q},${r}`),
     };
     const pad = 0.04 * (b.x1 - b.x0);
     const x0 = b.x0 - pad;
@@ -250,7 +261,7 @@ export class TerrainLayer {
     canvas.height = h;
     const ctx = canvas.getContext('2d');
     ctx.setTransform(s, 0, 0, s, -x0 * s, -y0 * s);
-    paintHexDetail(ctx, tile, this.R, s, { glyphs: s < 0.8, riverNeighbours: this._riverNeighbours(chunk, q, r) });
+    paintHexDetail(ctx, tile, this.R, s, { glyphs: s < 0.8, riverEdges: this._riverEdges(q, r) });
     const texture = new PIXI.Texture({
       source: new PIXI.CanvasSource({ resource: canvas, autoGenerateMipmaps: true, scaleMode: 'linear' }),
     });
@@ -265,28 +276,13 @@ export class TerrainLayer {
     this.textures.set(key, { sprite, texture }, w * h * 4 * 1.34, pinned);
   }
 
-  /** Which column neighbours (r - 1, r + 1) also carry a river, when known. */
-  _riverNeighbours(chunk, q, r) {
-    const out = [];
-    for (const dr of [-1, 1]) {
-      const nr = r + dr;
-      if (nr < 0 || nr >= this.height) continue;
-      let known = false;
-      for (let j = 0; j < chunk.n; j += 1) {
-        if (chunk.q[j] === q && chunk.r[j] === nr) {
-          known = true;
-          if (chunk.river[j]) out.push(dr);
-        }
-      }
-      if (!known) {
-        const other = this.chunks.get(`${chunkOf(q, nr, this.ct).cq},${chunkOf(q, nr, this.ct).cr}`);
-        if (other) {
-          for (let j = 0; j < other.n; j += 1)
-            if (other.q[j] === q && other.r[j] === nr && other.river[j]) out.push(dr);
-        } else out.push(dr);
-      }
-    }
-    return out;
+  /** The river borders of one tile, as plane-space segments. */
+  _riverEdges(q, r) {
+    const rivers = this.source.rivers;
+    return (rivers?.byTile.get(`${q},${r}`) ?? []).map((edge) => {
+      const [p1, p2] = sharedCorners(edge.aq, edge.ar, edge.bq, edge.br, this.R);
+      return { p1, p2, flow: edge.flow, deep: edge.flow >= rivers.deepFlow, key: `${edge.aq},${edge.ar},${edge.bq},${edge.br}` };
+    });
   }
 
   _bake(key, chunk, s, pinned) {
@@ -320,8 +316,6 @@ export class TerrainLayer {
   paintChunk(ctx, c, s) {
     const R = this.R;
     const px = 1 / s; // one texture pixel in world-screen units
-    const index = new Map();
-    for (let i = 0; i < c.n; i += 1) index.set(`${c.q[i]},${c.r[i]}`, i);
     for (let i = 0; i < c.n; i += 1) {
       const q = c.q[i];
       const r = c.r[i];
@@ -329,7 +323,7 @@ export class TerrainLayer {
       ctx.beginPath();
       pts.forEach((p, k) => (k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
       ctx.closePath();
-      const col = tileColor(c.terrain[i], c.elevation[i], q, r);
+      const col = tileColor(c.terrain[i], c.elevation[i], q, r, this.source.rivers?.lakes.has(`${q},${r}`));
       ctx.fillStyle = typeof col === 'string' ? col : `rgb(${col.map(Math.round).join(',')})`;
       ctx.fill();
       // Hex grid line, about one texture pixel.
@@ -337,28 +331,18 @@ export class TerrainLayer {
       ctx.lineWidth = px;
       ctx.stroke();
     }
-    // Rivers: a ribbon inside flagged tiles only, joined to river neighbours along the column.
+    // Rivers: along the borders the engine records, wider downstream.
     ctx.lineCap = 'round';
-    for (let i = 0; i < c.n; i += 1) {
-      if (!c.river[i]) continue;
-      const q = c.q[i];
-      const r = c.r[i];
-      const centre = hexCentre(q, r, R);
-      const pc = project(centre.x, centre.y);
-      ctx.strokeStyle = '#4f86b4';
-      ctx.lineWidth = Math.max(R * 0.2 * 16, 1.5 * px);
-      for (const dr of [-1, 1]) {
-        const nr = r + dr;
-        if (nr < 0 || nr >= this.height) continue;
-        const j = index.get(`${q},${nr}`);
-        if (j !== undefined && !c.river[j]) continue;
-        const nb = hexCentre(q, nr, R);
-        const mid = project((centre.x + nb.x) / 2, (centre.y + nb.y) / 2);
-        ctx.beginPath();
-        ctx.moveTo(pc.x, pc.y);
-        ctx.lineTo(mid.x, mid.y);
-        ctx.stroke();
-      }
+    const rivers = this.source.rivers;
+    for (const edge of rivers?.byChunk.get(`${c.cq},${c.cr}`) ?? []) {
+      const [p1, p2] = sharedCorners(edge.aq, edge.ar, edge.bq, edge.br, R).map((p) => project(p.x, p.y));
+      if (!p2) continue;
+      ctx.strokeStyle = edge.flow >= rivers.deepFlow ? '#2f6b9e' : '#4f8fbf';
+      ctx.lineWidth = Math.max(riverWidth(edge.flow, R), 1.4 * px);
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
     }
     // Glyphs where a hex is big enough to read them (>= ~18 texture px).
     const hexPx = R * Math.sqrt(3) * Math.SQRT2 * 16 * s;
@@ -368,12 +352,15 @@ export class TerrainLayer {
       const q = c.q[i];
       const r = c.r[i];
       const centre = hexCentre(q, r, R);
-      const count = t === 2 ? 5 + Math.floor(c.timber[i] / 200) : t === 1 && c.timber[i] > 650 ? 2 : t === 3 ? 2 : 0;
+      const count =
+        t === 2 ? 5 + Math.floor(c.timber[i] / 200) : t === 1 && c.timber[i] > 650 ? 2 : t === 3 || t === 7 ? 2 : t === 6 ? 3 : 0;
       for (let k = 0; k < count; k += 1) {
         const a = hash2(q * 7 + k, r, 11) * Math.PI * 2;
         const d = Math.sqrt(hash2(q, r * 5 + k, 12)) * R * 0.55;
         const p = project(centre.x + Math.cos(a) * d, centre.y + Math.sin(a) * d);
-        if (t === 3) this._peak(ctx, p, R * 0.28 * 16 * (0.8 + hash2(q, k, 13) * 0.4), c.elevation[i] > 900);
+        const size = R * 16 * (0.8 + hash2(q, k, 13) * 0.4);
+        if (t === 3 || t === 7) this._peak(ctx, p, size * 0.28, t === 7 || c.temperature[i] < 200);
+        else if (t === 6) this._hill(ctx, p, size * 0.16);
         else this._tree(ctx, p, R * 0.09 * 16 * (0.8 + hash2(k, r, 14) * 0.4));
       }
     }
@@ -387,6 +374,17 @@ export class TerrainLayer {
     ctx.fillStyle = '#5f8a42';
     ctx.beginPath();
     ctx.ellipse(p.x - size * 0.25, p.y - size * 1.1, size * 0.55, size * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  _hill(ctx, p, size) {
+    ctx.fillStyle = '#7d7650';
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, size * 1.2, size * 0.7, 0, Math.PI, 0);
+    ctx.fill();
+    ctx.fillStyle = '#a9a274';
+    ctx.beginPath();
+    ctx.ellipse(p.x - size * 0.3, p.y - size * 0.1, size * 0.6, size * 0.45, 0, Math.PI, 0);
     ctx.fill();
   }
 

@@ -43,6 +43,8 @@ FORAGE_TERRAIN_BP: dict[Terrain, int] = {
     Terrain.TUNDRA: 1_000,
     Terrain.MOUNTAIN: 800,
     Terrain.DESERT: 500,
+    Terrain.HILLS: 1_500,
+    Terrain.SNOW: 0,
 }
 
 

@@ -1,9 +1,10 @@
 // Detailed painting of one engine tile (PROTOTYPE ARTWORK).
 //
 // Everything drawn comes from the tile's own engine values: terrain type,
-// elevation, timber (tree density), stone (rock outcrops) and the river
-// flag. Decoration is seeded per tile, so the same tile always looks the
-// same, and nothing implies a resource the tile does not have.
+// elevation, temperature (snow on cold peaks), timber (tree density), stone
+// (rock outcrops) and the river borders the engine records. Decoration is
+// seeded per tile, so the same tile always looks the same, and nothing implies
+// a resource the tile does not have.
 
 import { project } from '../world/coords.js';
 import { hexCentre, hexCorners } from '../world/hex.js';
@@ -18,7 +19,9 @@ const BASE = {
   2: '#4f6b34',
   3: '#8a8072',
   4: '#cfb47a',
-  5: '#c6ccc2',
+  5: '#b9bfa8',
+  6: '#958d5c',
+  7: '#e6eaee',
 };
 
 function hexPath(ctx, q, r, R, grow = 1) {
@@ -151,7 +154,9 @@ function groundPattern(terrain) {
     2: ['#3a5228', '#5f7a3a'],
     3: ['#7a7166', '#a0978a'],
     4: ['#bfa36c', '#dcc48e'],
-    5: ['#b5bbb2', '#dde1da'],
+    5: ['#a7ad98', '#cfd4c4'],
+    6: ['#7f7850', '#aaa274'],
+    7: ['#d3dae2', '#f6f8fa'],
   };
   const [lo, hi] = palettes[terrain] ?? palettes[1];
   const a = [parseInt(lo.slice(1, 3), 16), parseInt(lo.slice(3, 5), 16), parseInt(lo.slice(5, 7), 16)];
@@ -195,7 +200,7 @@ function groundPattern(terrain) {
  * transform scaling by `s` (texture px per world-screen px).
  * opts.glyphs: draw trees and rocks (false when sprites provide them).
  */
-export function paintHexDetail(ctx, t, R, s, { glyphs = true, riverNeighbours = [] } = {}) {
+export function paintHexDetail(ctx, t, R, s, { glyphs = true, riverEdges = [] } = {}) {
   const rng = mulberry32(hashString(`tile:${t.q},${t.r}`));
   const px = 1 / s;
   ctx.save();
@@ -205,7 +210,8 @@ export function paintHexDetail(ctx, t, R, s, { glyphs = true, riverNeighbours = 
   const cp = project(c.x, c.y);
   const span = R * K * 1.8;
   let base = BASE[t.terrain] ?? '#888';
-  if (t.terrain !== 0) base = rgbToCss(mix(base, '#a0a070', (t.elevation / 1000) * 0.15));
+  if (t.terrain === 0 && t.lake) base = '#3f7f98';
+  else if (t.terrain !== 0 && t.terrain !== 7) base = rgbToCss(mix(base, '#a0a070', (t.elevation / 1000) * 0.15));
   ctx.fillStyle = base;
   ctx.fillRect(cp.x - span, cp.y - span, span * 2, span * 2);
   // Close views: a fine tiling ground texture instead of coarse mottling.
@@ -247,6 +253,37 @@ export function paintHexDetail(ctx, t, R, s, { glyphs = true, riverNeighbours = 
     ctx.strokeStyle = 'rgba(214,200,150,0.55)';
     ctx.lineWidth = R * K * 0.08;
     ctx.stroke();
+  } else if (t.terrain === 6) {
+    // Hills: rolling rises, light on the north-west slope, shaded to the south-east.
+    const rises = 7 + Math.floor(t.elevation / 120);
+    const hills = [];
+    for (let i = 0; i < rises; i += 1) hills.push(pointIn(rng, t.q, t.r, R, 0.85));
+    hills.sort((a, b) => a.y - b.y);
+    for (const p of hills) {
+      const w = R * K * (0.12 + rng() * 0.08);
+      ctx.fillStyle = 'rgba(70,64,36,0.35)';
+      ctx.beginPath();
+      ctx.ellipse(p.x + w * 0.15, p.y, w, w * 0.45, 0, Math.PI, 0);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(200,192,140,0.35)';
+      ctx.beginPath();
+      ctx.ellipse(p.x - w * 0.2, p.y - w * 0.08, w * 0.6, w * 0.3, 0, Math.PI, 0);
+      ctx.fill();
+    }
+  } else if (t.terrain === 7) {
+    // Snowfield: blue-grey wind ridges and a few dark rock peaks breaking through.
+    ctx.strokeStyle = 'rgba(120,140,170,0.25)';
+    ctx.lineWidth = 3 * px;
+    for (let i = 0; i < 50; i += 1) {
+      const p = pointIn(rng, t.q, t.r, R, 0.95);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, R * K * 0.08, Math.PI * 1.1, Math.PI * 1.7);
+      ctx.stroke();
+    }
+    const peaks = [];
+    for (let i = 0; i < 4; i += 1) peaks.push(pointIn(rng, t.q, t.r, R, 0.65));
+    peaks.sort((a, b) => a.y - b.y);
+    for (const p of peaks) peak(ctx, p, R * K * (0.24 + rng() * 0.12), true);
   } else if (t.terrain === 3) {
     ctx.strokeStyle = 'rgba(60,50,40,0.25)';
     ctx.lineWidth = 3 * px;
@@ -257,11 +294,12 @@ export function paintHexDetail(ctx, t, R, s, { glyphs = true, riverNeighbours = 
       ctx.lineTo(p.x + R * K * 0.08, p.y - R * K * 0.02);
       ctx.stroke();
     }
-    const n = 3 + Math.floor((t.elevation - 820) / 45);
+    const n = 3 + Math.max(0, Math.floor((t.elevation - 800) / 45));
     const peaks = [];
     for (let i = 0; i < n; i += 1) peaks.push(pointIn(rng, t.q, t.r, R, 0.7));
     peaks.sort((a, b) => a.y - b.y);
-    for (const p of peaks) peak(ctx, p, R * K * (0.22 + rng() * 0.12), t.elevation > 900);
+    const snowy = t.temperature !== undefined ? t.temperature < 220 : t.elevation > 900;
+    for (const p of peaks) peak(ctx, p, R * K * (0.22 + rng() * 0.12), snowy);
   } else if (t.terrain === 4) {
     ctx.strokeStyle = 'rgba(150,110,60,0.3)';
     ctx.lineWidth = 3 * px;
@@ -295,25 +333,23 @@ export function paintHexDetail(ctx, t, R, s, { glyphs = true, riverNeighbours = 
       }
     }
   }
-  // River: a ribbon along the tile column, only where the engine flags one.
-  if (t.river) {
-    const ends = riverNeighbours.length ? riverNeighbours : [0];
-    for (const dr of ends) {
-      const n = hexCentre(t.q, t.r + (dr || 1), R);
-      const target = dr ? project((c.x + n.x) / 2, (c.y + n.y) / 2) : cp;
-      for (const [w, col] of [
-        [R * K * 0.26, 'rgba(120,100,60,0.55)'],
-        [R * K * 0.2, '#4f86b4'],
-        [R * K * 0.08, 'rgba(160,200,230,0.45)'],
-      ]) {
-        ctx.strokeStyle = col;
-        ctx.lineWidth = w;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(cp.x, cp.y);
-        ctx.lineTo(target.x, target.y);
-        ctx.stroke();
-      }
+  // Rivers: along the tile's borders where the engine records one, meandering
+  // the same way from both sides so neighbouring tiles join up.
+  for (const edge of riverEdges) {
+    const line = meander(edge, R);
+    const width = R * K * (0.035 + 0.022 * Math.log2(1 + edge.flow));
+    for (const [w, col] of [
+      [width * 1.5, 'rgba(120,100,60,0.5)'],
+      [width, edge.deep ? '#2f6b9e' : '#4f8fbf'],
+      [width * 0.35, 'rgba(170,205,235,0.45)'],
+    ]) {
+      ctx.strokeStyle = col;
+      ctx.lineWidth = w;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      line.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      ctx.stroke();
     }
   }
   if (glyphs) {
@@ -341,6 +377,24 @@ export function paintHexDetail(ctx, t, R, s, { glyphs = true, riverNeighbours = 
   ctx.strokeStyle = 'rgba(20,24,20,0.12)';
   ctx.lineWidth = 1.5 * px;
   ctx.stroke();
+}
+
+/** A gently curving screen polyline along a river border, the same from either tile. */
+function meander(edge, R) {
+  const { p1, p2 } = edge;
+  const rng = mulberry32(hashString(`river:${edge.key}`));
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const nx = -dy;
+  const ny = dx;
+  const amp = (0.05 + rng() * 0.05) * (rng() < 0.5 ? -1 : 1);
+  const out = [];
+  for (let i = 0; i <= 12; i += 1) {
+    const f = i / 12;
+    const off = Math.sin(f * Math.PI) * amp + Math.sin(f * Math.PI * 3) * amp * 0.35;
+    out.push(project(p1.x + dx * f + nx * off, p1.y + dy * f + ny * off));
+  }
+  return out;
 }
 
 /** Decoration plan for a tile, shared with the settlement-band sprite layer. */

@@ -9,6 +9,9 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+CURRENT_GENERATOR = 2
+"""The world generator new runs use; see ``RunManifest.generator_version``."""
+
 
 class WorldConfig(BaseModel):
     """Rules that define one Rules Laboratory world."""
@@ -77,10 +80,17 @@ class RunManifest(BaseModel):
     parent_run_id: UUID | None = None
     """The run this one was forked from, when its sovereigns or budgets were changed."""
     forked_at_day: int | None = Field(default=None, ge=0)
+    generator_version: int = Field(default=1, ge=1, le=CURRENT_GENERATOR)
+    """Which world generator built the map. Runs from before versions were recorded used 1."""
 
     @classmethod
     def new(cls, config: WorldConfig, engine_version: str) -> RunManifest:
-        return cls(run_id=uuid4(), engine_version=engine_version, config=config)
+        return cls(
+            run_id=uuid4(),
+            engine_version=engine_version,
+            config=config,
+            generator_version=CURRENT_GENERATOR,
+        )
 
     def content_hash(self) -> str:
         dumped = self.model_dump(mode="json")
@@ -90,6 +100,7 @@ class RunManifest(BaseModel):
             "budgets": BudgetConfig().model_dump(mode="json"),
             "parent_run_id": None,
             "forked_at_day": None,
+            "generator_version": 1,
         }
         for key, default in defaults.items():
             if dumped.get(key) == default:

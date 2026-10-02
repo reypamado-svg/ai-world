@@ -17,6 +17,8 @@ ENTRY_COST: dict[Terrain, int | None] = {
     Terrain.DESERT: 15,
     Terrain.TUNDRA: 15,
     Terrain.MOUNTAIN: 30,
+    Terrain.HILLS: 20,
+    Terrain.SNOW: 50,
     Terrain.WATER: None,
 }
 """Cost of entering a tile, in tenths of a day; None means impassable."""

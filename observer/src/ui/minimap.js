@@ -4,7 +4,7 @@
 import { project } from '../world/coords.js';
 import { hexCentre, worldScreenBounds } from '../world/hex.js';
 
-const COLORS = ['#3a6e9e', '#86a24f', '#4c7a3a', '#8c8476', '#d2b97f', '#c9cfc8'];
+const COLORS = ['#3a6e9e', '#86a24f', '#4c7a3a', '#8c8476', '#d2b97f', '#b9bfa8', '#9c9461', '#e9edf0'];
 
 export class Minimap {
   constructor(canvas, { width, height, R, overview, onJump }) {

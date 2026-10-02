@@ -6,7 +6,14 @@ import hashlib
 import json
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+)
 
 from sovereign_world.armoury import CraftJob
 from sovereign_world.capabilities import (
@@ -144,6 +151,16 @@ class WorldState(BaseModel):
     joined_roads: tuple[EntityId, ...] = ()
     """Trade treaties whose partners' settlements a continuous road now links."""
 
+    @field_serializer("world_map", mode="wrap")
+    def _omit_empty_rivers(
+        self, world_map: WorldMap, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ) -> object:
+        # Maps from before rivers had courses have none; leaving the key out keeps their hash.
+        dumped = handler(world_map)
+        if isinstance(dumped, dict) and not dumped.get("rivers"):
+            dumped.pop("rivers", None)
+        return dumped
+
 
 def _canonical_payload(state: WorldState) -> str:
     return json.dumps(
@@ -159,7 +176,9 @@ def state_hash(state: WorldState) -> str:
 
 def build_initial_state(manifest: RunManifest) -> WorldState:
     stable_rng = StableRng(manifest.config.seed)
-    generated = generate_world(manifest.config, stable_rng)
+    generated = generate_world(
+        manifest.config, stable_rng, generator_version=manifest.generator_version
+    )
     civilization_ids = IdAllocator("civilization")
     person_ids = IdAllocator("person")
     civilizations: dict[EntityId, CivilizationState] = {}

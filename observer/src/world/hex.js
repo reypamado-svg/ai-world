@@ -121,3 +121,10 @@ export function hexDistance(dx, dy) {
   const { u, v } = planeToUV(dx, dy);
   return Math.max(Math.abs(u), (Math.abs(u) + SQ3 * Math.abs(v)) / 2);
 }
+
+/** The two plane corners on the border between neighbouring tiles a and b. */
+export function sharedCorners(aq, ar, bq, br, R) {
+  const theirs = hexCorners(bq, br, R);
+  const eps = R * 1e-6;
+  return hexCorners(aq, ar, R).filter((p) => theirs.some((o) => Math.abs(o.x - p.x) < eps && Math.abs(o.y - p.y) < eps));
+}

@@ -2,6 +2,7 @@
 // It is labelled synthetic everywhere and never stands for engine data.
 
 import { fbm, hash2, mulberry32 } from '../sim/rng.js';
+import { indexHydrology } from './terrain-source.js';
 
 export class SyntheticSource {
   constructor({ width = 4096, height = 4096, chunkTiles = 8, minLatency = 0, maxLatency = 400, seed = 99 } = {}) {
@@ -14,6 +15,7 @@ export class SyntheticSource {
       engine: { seed, width, height },
       presentation: { hex_radius_m: 64, chunk_tiles: chunkTiles, chunks: [Math.ceil(width / chunkTiles), Math.ceil(height / chunkTiles)] },
     };
+    this.rivers = indexHydrology(null, chunkTiles);
     this.rng = mulberry32(seed);
     this.loads = 0;
   }

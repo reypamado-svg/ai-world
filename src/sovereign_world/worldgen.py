@@ -7,9 +7,24 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from sovereign_world.config import WorldConfig
+from sovereign_world import geography
+from sovereign_world.config import CURRENT_GENERATOR, WorldConfig
 from sovereign_world.hexmap import HexCoord, Terrain, Tile, WorldMap
 from sovereign_world.rng import StableRng
+
+DEEP_FLOW = 10
+"""River flow at which a river is too deep to wade; travel's crossing rule uses the same line."""
+
+LOWLAND_STARTS = frozenset({Terrain.GRASSLAND, Terrain.FOREST})
+"""Where a version-2 world may place a capital."""
+
+_REGION_RADIUS = 4
+_REGION_OFFSETS = tuple(
+    (dq, dr)
+    for dq in range(-_REGION_RADIUS, _REGION_RADIUS + 1)
+    for dr in range(-_REGION_RADIUS, _REGION_RADIUS + 1)
+    if (abs(dq) + abs(dr) + abs(dq + dr)) // 2 <= _REGION_RADIUS
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,11 +112,16 @@ def _generate_map(config: WorldConfig, rng: StableRng, attempt: int) -> WorldMap
     return WorldMap(width=config.width, height=config.height, tiles=tuple(tiles))
 
 
-def _region_tiles(world_map: WorldMap, center: HexCoord, radius: int = 4) -> tuple[Tile, ...]:
-    return tuple(tile for tile in world_map.tiles if center.distance(tile.coord) <= radius)
+def _region_tiles(world_map: WorldMap, center: HexCoord) -> tuple[Tile, ...]:
+    """Tiles within four steps of a centre, in map order."""
+    coords = sorted(
+        (HexCoord(center.q + dq, center.r + dr) for dq, dr in _REGION_OFFSETS),
+        key=lambda coord: (coord.r, coord.q),
+    )
+    return tuple(world_map.tile(coord) for coord in coords if world_map.contains(coord))
 
 
-def _viability(world_map: WorldMap, center: HexCoord) -> StartViability:
+def _viability(world_map: WorldMap, center: HexCoord, generator_version: int = 1) -> StartViability:
     tiles = _region_tiles(world_map, center)
     has_water = any(tile.has_water for tile in tiles)
     food = sum((tile.soil // 200) + (2 if tile.has_water else 0) for tile in tiles)
@@ -114,9 +134,13 @@ def _viability(world_map: WorldMap, center: HexCoord) -> StartViability:
     }
     strength = max(resources, key=lambda name: (resources[name], name))
     vulnerability = min(resources, key=lambda name: (resources[name], name))
-    harsh_terrain = {Terrain.DESERT, Terrain.TUNDRA, Terrain.MOUNTAIN}
+    harsh_terrain = {Terrain.DESERT, Terrain.TUNDRA, Terrain.MOUNTAIN, Terrain.SNOW}
     hazard = sum(tile.terrain in harsh_terrain for tile in tiles)
     score = food * 4 + construction * 2 + (200 if has_water else 0) - hazard * 3
+    if generator_version >= 2 and any(
+        tile.river for tile in tiles if tile.coord.distance(center) <= 1
+    ):
+        score += 150
     return StartViability(
         has_water=has_water,
         food_units_per_day=food,
@@ -153,16 +177,22 @@ def _select_starts(
     world_map: WorldMap,
     count: int,
     min_distance: int,
+    generator_version: int = 1,
 ) -> tuple[list[StartingRegion], list[str]]:
     candidates: list[tuple[StartViability, HexCoord]] = []
     # Settle only on land that every other start can reach on foot.
-    landmass = _largest_landmass(world_map)
+    if generator_version >= 2:
+        landmass = geography.foot_component(world_map, DEEP_FLOW)
+    else:
+        landmass = _largest_landmass(world_map)
     for r in range(4, world_map.height - 4):
         for q in range(4, world_map.width - 4):
             center = HexCoord(q, r)
             if center not in landmass:
                 continue
-            viability = _viability(world_map, center)
+            if generator_version >= 2 and world_map.tile(center).terrain not in LOWLAND_STARTS:
+                continue
+            viability = _viability(world_map, center, generator_version)
             if (
                 viability.has_water
                 and viability.food_units_per_day >= 64
@@ -171,18 +201,23 @@ def _select_starts(
                 candidates.append((viability, center))
 
     candidates.sort(key=lambda item: (-item[0].score, item[1].q, item[1].r))
+    # Version 1 picks greedily from the best site; version 2 also tries each next-best site as
+    # the first pick, since regional terrain clusters good sites together.
+    firsts = range(len(candidates)) if generator_version >= 2 else range(min(1, len(candidates)))
     selected: list[StartingRegion] = []
-    for viability, center in candidates:
-        if all(center.distance(existing.center) >= min_distance for existing in selected):
-            selected.append(
-                StartingRegion(
-                    civilization_index=len(selected),
-                    center=center,
-                    viability=viability,
+    for first in firsts:
+        selected = []
+        for viability, center in (candidates[first], *candidates):
+            if all(center.distance(existing.center) >= min_distance for existing in selected):
+                selected.append(
+                    StartingRegion(
+                        civilization_index=len(selected),
+                        center=center,
+                        viability=viability,
+                    )
                 )
-            )
-            if len(selected) == count:
-                return selected, []
+                if len(selected) == count:
+                    return selected, []
 
     reasons = ["separation"] if candidates else ["viability"]
     return selected, reasons
@@ -193,16 +228,28 @@ def generate_world(
     rng: StableRng,
     max_attempts: int = 100,
     min_start_distance: int = 12,
+    generator_version: int = CURRENT_GENERATOR,
 ) -> GeneratedWorld:
+    """Make a world and its starting regions.
+
+    Version 1 is the original generator, kept so a run made with it can be rebuilt from its
+    manifest; version 2 makes regional terrain with logical neighbours and flowing rivers.
+    """
     if max_attempts < 1:
         raise ValueError("max_attempts must be positive")
+    if not 1 <= generator_version <= CURRENT_GENERATOR:
+        raise ValueError(f"unknown world generator version {generator_version}")
     failures: Counter[str] = Counter()
     for attempt in range(max_attempts):
-        world_map = _generate_map(config, rng, attempt)
+        if generator_version == 1:
+            world_map = _generate_map(config, rng, attempt)
+        else:
+            world_map = geography.generate_map(config.width, config.height, rng, attempt)
         starts, reasons = _select_starts(
             world_map,
             count=config.civilizations,
             min_distance=min_start_distance,
+            generator_version=generator_version,
         )
         if len(starts) == config.civilizations:
             return GeneratedWorld(world_map=world_map, starts=tuple(starts))
