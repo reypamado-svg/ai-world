@@ -239,6 +239,14 @@ export class SceneRenderer {
   }
 
   update(t) {
+    // Schedules are a pure function of time, so an update with nothing changed
+    // (same time, band and crowd split) is skipped; quality sets how often time
+    // advances for drawing.
+    const f = this.crowdFocus ?? { x: 0, y: 0 };
+    const key = `${t}|${this.flat}|${this.drawActors}|${this.crowdBudget}|${Math.round(f.x / 8)},${Math.round(f.y / 8)}`;
+    if (key === this._updateKey) return;
+    this._updateKey = key;
+    this.recomputes = (this.recomputes ?? 0) + 1;
     this.occupancy.clear();
     const states = this.people.map((o) => sampleSchedule(o.person.schedule, t));
     let simple = null;
@@ -448,6 +456,7 @@ export class SceneRenderer {
 
   setFlat(on) {
     this.flat = on;
+    this._updateKey = null; // sprites must be re-placed with the other textures
     this.groundLayer.visible = !on;
     this.shadowLayer.visible = !on;
     this.overlay.visible = !on;

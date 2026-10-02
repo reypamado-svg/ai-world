@@ -68,3 +68,27 @@ for (const [label, query, n] of [
     }
   });
 }
+
+test('lower quality refreshes citizen animation less often', async () => {
+  const recomputes = async (quality) => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+    await page.goto(`http://127.0.0.1:${server.address().port}/index.html?citizens=400&quality=${quality}`);
+    await page.waitForFunction(() => window.__observer?.ready || window.__observerError, null, { timeout: 300000 });
+    const n = await page.evaluate(() => {
+      const o = window.__observer;
+      o.setPaused(true);
+      o.setTime(100);
+      o.viewVillage(1.0);
+      const start = o.animRecomputes();
+      // One second of 60 Hz frames with the camera still.
+      for (let i = 0; i < 60; i += 1) o.step(1 / 60);
+      return o.animRecomputes() - start;
+    });
+    await page.close();
+    return n;
+  };
+  const high = await recomputes('high');
+  const low = await recomputes('low');
+  assert.ok(high >= 55, `high quality recomputed ${high} times in 60 frames`);
+  assert.ok(low <= 17, `low quality (15 Hz) recomputed ${low} times in 60 frames`);
+});

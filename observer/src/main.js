@@ -167,11 +167,17 @@ class ObserverApp {
     this.camera.zoom = zoom;
   }
 
+  /** Display time for drawing citizens, stepped at the quality's animation rate. */
+  get animT() {
+    const hz = this.settings?.animHz ?? 60;
+    return Math.floor(this.t * hz) / hz;
+  }
+
   frame(deltaMS, advance = !this.paused) {
     const t0 = performance.now();
     if (advance) this.t += (deltaMS / 1000) * this.speed;
     if (this.village && this.follow && this.selected) {
-      this.village.renderer.update(this.t);
+      this.village.renderer.update(this.animT);
       const target = this.village.worldPosition(this.selected);
       if (target) this.camera.followTowards(target, deltaMS);
     }
@@ -184,7 +190,7 @@ class ObserverApp {
     this.decor?.update(this.camera.zoom);
     if (this.village) {
       const margin = this.camera.viewRect(this.world, width, height, 80);
-      this.village.update(this.t, margin, this.camera.zoom, {
+      this.village.update(this.animT, margin, this.camera.zoom, {
         selected: this.selected,
         showFootprints: this.showFootprints,
         crowdBudget: this.settings?.crowdBudget ?? Infinity,
@@ -417,6 +423,8 @@ function buildApi(app) {
       app.t += dt;
       app.frame(dt * 1000, false);
     },
+    /** How many times citizens' schedules have been recomputed for drawing. */
+    animRecomputes: () => app.village?.renderer.recomputes ?? 0,
     /** Run frames until every visible chunk is loaded and baked at the wanted level. */
     settle: async (maxFrames = 600) => {
       for (let f = 0; f < maxFrames; f += 1) {

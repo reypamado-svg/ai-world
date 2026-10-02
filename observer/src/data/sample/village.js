@@ -39,10 +39,16 @@ export function chooseCourierRoute(tile, { landAt, deepBetween, chunkTiles, widt
       if (ok && chunk(q + dq * steps, r + dr * steps) !== chunk(q, r)) return { dq, dr, steps };
     }
   }
-  return { dq: 1, dr: 0, steps: 2 };
+  // No route leaves the chunk: settle for the nearest checked neighbour, or none.
+  for (const [dq, dr] of DIRECTIONS) {
+    const [bq, br] = [q + dq, r + dr];
+    if (bq >= 0 && br >= 0 && bq < width && br < height && landAt(bq, br) && !deepBetween([q, r], [bq, br]))
+      return { dq, dr, steps: 1 };
+  }
+  return null;
 }
 
-export function observerVillage(footprintOf, R, tile, route = { dq: 1, dr: 0, steps: 4 }) {
+export function observerVillage(footprintOf, R, tile, route = null) {
   const scene = villageScene(footprintOf);
   const [q, r] = tile;
   const origin = hexCentre(q, r, R);
@@ -62,9 +68,10 @@ export function observerVillage(footprintOf, R, tile, route = { dq: 1, dr: 0, st
 
   // A SAMPLE courier who walks out of the village a few tiles (across a chunk
   // boundary) and back. Positions are local to the village.
-  const [tq, tr] = [q + route.dq * route.steps, r + route.dr * route.steps];
+  // With no checked route out (water or deep rivers all round), they stay in the village.
+  const [tq, tr] = route ? [q + route.dq * route.steps, r + route.dr * route.steps] : [q, r];
   const far = hexCentre(tq, tr, R);
-  const dest = [far.x - origin.x, far.y - origin.y];
+  const dest = route ? [far.x - origin.x, far.y - origin.y] : [30, 0];
   // Out along village roads (hall door, plaza, east lane), then cross-country.
   const out = [[6, -19.6], [6, -18.6], [10.4, -18.6], [10.4, 0], ...(dest[0] > 0 ? [[56, 0]] : []), dest];
   const id = 'sample-person-0900';
@@ -74,7 +81,7 @@ export function observerVillage(footprintOf, R, tile, route = { dq: 1, dr: 0, st
     appearance: 4,
     schedule: makeSchedule(
       [
-        { type: 'walk', path: out, speed: 1.6, anim: 'walk', activity: 'Carrying a message to a neighbouring tile', destination: `Tile (${tq}, ${tr})` },
+        { type: 'walk', path: out, speed: 1.6, anim: 'walk', activity: route ? 'Carrying a message to a neighbouring tile' : 'Carrying a message within the village', destination: route ? `Tile (${tq}, ${tr})` : 'Village' },
         { type: 'work', at: dest, face: [dest[0] - 1, dest[1] + 1], anim: 'idle', period: 2, dur: 20, activity: 'Waiting for a reply' },
         { type: 'walk', path: out.slice().reverse(), speed: 1.6, anim: 'walk', activity: 'Returning to the village', destination: 'Village' },
         { type: 'inside', building: 'b-hall', at: [6, -19.6], dur: 30, activity: 'Reporting in the community hall' },
