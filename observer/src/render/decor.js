@@ -17,16 +17,30 @@ import { LruCache } from '../world/chunks.js';
 import { riverLine } from '../world/rivers.js';
 import { hashString, mulberry32 } from '../sim/rng.js';
 import { ART } from './art/paint/iso.js';
+import { OPEN, ROCK, SCRUB, WOOD } from '../world/interior.js';
 
 /** Side of a decoration cell, in ground metres. */
 export const CELL_M = 50;
 /** Decoration shows from this zoom (a tree is then a few screen pixels tall). */
 export const DECOR_MIN_ZOOM = 0.2;
 
-/** What grows in a cell of this tile: counts of trees (and how many are pines), bushes and rocks. */
+/**
+ * What grows in a cell of this tile: counts of trees (and the share that are pines), bushes and
+ * rocks to try. With land cover each is tried at a full density and kept only where its cover
+ * class shows (trees in woods, rocks on rock, bushes on scrub and open ground), so how many
+ * appear follows the engine's shares.
+ */
 export function cellPlan(t) {
   const out = { trees: 0, pines: 0, bushes: 0, rocks: 0 };
   if (!t || t.terrain === 0) return out;
+  if (t.cover) {
+    const cold = t.terrain === 5 || t.terrain === 3 || t.terrain === 7;
+    out.trees = t.cover[WOOD] > 0 ? 14 : 0;
+    out.pines = cold ? 1 : t.terrain === 6 ? 0.5 : 0.3;
+    out.bushes = (t.cover[SCRUB] > 0 ? 3 : 0) + (t.cover[OPEN] >= 5000 ? 1 : 0);
+    out.rocks = t.cover[ROCK] > 0 ? 4 : 0;
+    return out;
+  }
   if (t.terrain === 2) {
     out.trees = 4 + Math.floor(t.timber / 100);
     out.pines = 0.3;
@@ -42,6 +56,14 @@ export function cellPlan(t) {
   if (t.stone > 600) out.rocks = Math.floor((t.stone - 600) / 200) + (t.terrain === 3 || t.terrain === 6 ? 1 : 0);
   return out;
 }
+
+/** The cover classes each kind of decoration stands on (nothing grows in wetland). */
+const GROWS_ON = {
+  oak: [WOOD],
+  pine: [WOOD],
+  bush: [SCRUB, OPEN],
+  rock: [ROCK],
+};
 
 /** Shortest distance from (x, y) to a polyline. */
 function distanceToLine(x, y, pts) {
@@ -138,6 +160,8 @@ export class DecorLayer {
       const y = y0 + rng() * CELL_M;
       const variant = Math.floor(rng() * variants);
       if (field.waterAt(x, y)) return;
+      const shown = field.classAt(x, y);
+      if (shown >= 0 && !GROWS_ON[kind].includes(shown)) return;
       if (rivers.some(({ e, pts }) => distanceToLine(x, y, pts) < e.widthM / 2 + 6)) return;
       items.push({ kind, variant, x, y });
     };

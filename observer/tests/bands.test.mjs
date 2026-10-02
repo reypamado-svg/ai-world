@@ -183,6 +183,28 @@ test('follow keeps the selected courier across a chunk boundary, days into the j
   assert.match(r.waiting, /^Waiting/);
 });
 
+test('speed buttons run from 1x to 100x, and the engine sites are loaded', async () => {
+  const r = await page.evaluate(() => {
+    const speeds = [...document.querySelectorAll('[data-speed]')].map((b) => Number(b.dataset.speed));
+    document.querySelector('[data-speed="100"]').click();
+    const fastest = window.__observer.speed();
+    document.querySelector('[data-speed="1"]').click();
+    const sites = window.__observer.sites();
+    return {
+      speeds,
+      fastest,
+      back: window.__observer.speed(),
+      sites: sites.length,
+      kinds: [...new Set(sites.map((s) => s.kind))].sort(),
+    };
+  });
+  assert.deepEqual(r.speeds, [1, 10, 25, 50, 100]);
+  assert.equal(r.fastest, 100);
+  assert.equal(r.back, 1);
+  assert.equal(r.sites, 24, 'six sites for each of four civilizations');
+  assert.deepEqual(r.kinds, ['ancient_ruin', 'ore_deposit', 'quarry', 'trove']);
+});
+
 test('ground patches and trees settle within their budgets while zooming into the village', async () => {
   const r = await page.evaluate(async () => {
     const o = window.__observer;

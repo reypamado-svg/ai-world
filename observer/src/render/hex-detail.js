@@ -249,8 +249,11 @@ export function paintHexDetail(
   }
   if (glyphs) {
     const items = [];
-    const trees =
-      t.terrain === 2
+    // Map symbols in proportion to the tile's wood and rock (land cover), or its timber and
+    // stone on tiles without cover.
+    const trees = t.cover
+      ? Math.floor(t.cover[1] / 250)
+      : t.terrain === 2
         ? 10 + Math.floor(t.timber / 25)
         : t.terrain === 1 && t.timber > 600
           ? Math.floor((t.timber - 600) / 50)
@@ -259,7 +262,11 @@ export function paintHexDetail(
             : 0;
     for (let i = 0; i < trees; i += 1)
       items.push({ kind: 'tree', p: pointIn(P, rng, t.q, t.r, R, 0.85), pine: t.terrain === 5 || rng() < 0.3 });
-    const rocks = t.terrain !== 0 && t.stone > 600 ? Math.floor((t.stone - 600) / 70) : 0;
+    const rocks = t.cover
+      ? Math.floor(t.cover[4] / 1200)
+      : t.terrain !== 0 && t.stone > 600
+        ? Math.floor((t.stone - 600) / 70)
+        : 0;
     for (let i = 0; i < rocks; i += 1) items.push({ kind: 'rock', p: pointIn(P, rng, t.q, t.r, R, 0.8) });
     items.sort((a, b) => a.p.y - b.p.y);
     for (const it of items) {
@@ -296,27 +303,4 @@ export function landOutline(q, r, landAt) {
     [0, -1],
   ];
   return towards.map(([dq, dr]) => landAt(q, r) && landAt(q + dq, r + dr));
-}
-
-/** Decoration plan for a tile, shared with the settlement-band sprite layer. */
-export function tileDecor(t, R) {
-  const rng = mulberry32(hashString(`decor:${t.q},${t.r}`));
-  const out = [];
-  const trees =
-    t.terrain === 2
-      ? 6 + Math.floor(t.timber / 60)
-      : t.terrain === 1 && t.timber > 600
-        ? Math.floor((t.timber - 600) / 80)
-        : 0;
-  const c = hexCentre(t.q, t.r, R);
-  const place = (frac) => {
-    const a = rng() * Math.PI * 2;
-    const d = Math.sqrt(rng()) * R * frac * 0.86;
-    return { x: c.x + Math.cos(a) * d, y: c.y + Math.sin(a) * d };
-  };
-  for (let i = 0; i < trees; i += 1)
-    out.push({ kind: rng() < 0.3 ? 'pine' : 'oak', variant: Math.floor(rng() * 6), ...place(0.85) });
-  const rocks = t.terrain !== 0 && t.stone > 600 ? Math.floor((t.stone - 600) / 90) : 0;
-  for (let i = 0; i < rocks; i += 1) out.push({ kind: 'rock', variant: Math.floor(rng() * 4), ...place(0.8) });
-  return out;
 }

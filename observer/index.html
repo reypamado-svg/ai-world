@@ -23,8 +23,10 @@
       <div class="group">
         <button id="btn-pause">❚❚ Pause</button>
         <button data-speed="1" class="on">1×</button>
-        <button data-speed="4">4×</button>
-        <button data-speed="16">16×</button>
+        <button data-speed="10">10×</button>
+        <button data-speed="25">25×</button>
+        <button data-speed="50">50×</button>
+        <button data-speed="100">100×</button>
       </div>
       <span class="chip" title="This prototype is not connected to a live run.">Prototype · no live run</span>
       <span class="chip persp" title="Only the observer perspective exists in this prototype."
@@ -56,9 +58,9 @@
       <button id="btn-measure" title="Show and copy performance measurements">Measurements</button>
       <span id="pick-note"></span>
       <span class="note" id="provenance"
-        >Terrain: engine worldgen. 25 km between tile centres is a world rule (travel.TILE_SPACING_M); travel days come
-        from the engine's travel tables. Village, fields, citizens and routines: SAMPLE. Movement: visual
-        approximation.</span
+        >Terrain, land cover and sites: engine worldgen (generator 3, day 0); their painting is a presentation. 25 km
+        between tile centres is a world rule (travel.TILE_SPACING_M); travel days come from the engine's travel tables.
+        Village, fields, citizens and routines: SAMPLE. Movement: visual approximation.</span
       >
     </div>
     <aside id="measure" hidden>

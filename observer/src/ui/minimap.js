@@ -52,8 +52,8 @@ export class Minimap {
     });
   }
 
-  addMarker(worldPoint, color) {
-    this.markers.push({ p: worldPoint, color });
+  addMarker(worldPoint, color, size = 3.5) {
+    this.markers.push({ p: worldPoint, color, size });
   }
 
   draw(view) {
@@ -63,7 +63,7 @@ export class Minimap {
       ctx.fillStyle = m.color;
       ctx.strokeStyle = '#000';
       ctx.beginPath();
-      ctx.arc(m.p.x * this.scale + this.ox, m.p.y * this.scale + this.oy, 3.5, 0, Math.PI * 2);
+      ctx.arc(m.p.x * this.scale + this.ox, m.p.y * this.scale + this.oy, m.size, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }

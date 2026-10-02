@@ -21,7 +21,7 @@ import { TerrainLayer } from './render/terrain-layer.js';
 import { PatchLayer } from './render/patch-layer.js';
 import { DecorLayer } from './render/decor.js';
 import { VillageLayer, bandOf } from './render/village-layer.js';
-import { CapitalMarkers } from './render/markers.js';
+import { CapitalMarkers, SiteMarkers } from './render/markers.js';
 import { Atlas } from './render/art/atlas.js';
 import { CIV_COLORS } from './render/art/registry.js';
 import { bakeSceneActors, bakeSceneGround, bakeStaticAssets } from './render/art/bake.js';
@@ -98,6 +98,9 @@ class ObserverApp {
     }
     this.markers = extras.day0 ? new CapitalMarkers(PIXI, extras.day0, this.R) : null;
     if (this.markers) this.world.addChild(this.markers.container);
+    // Sites: labels from where tiles are about 600 px across.
+    this.sites = source.sites?.length ? new SiteMarkers(PIXI, source.sites, this.R, zoomForTilePx(600, this.R)) : null;
+    if (this.sites) this.world.addChild(this.sites.container);
     this.bounds = worldScreenBounds(source.width, source.height, this.R);
     const { width, height } = pixi.screen;
     const fit = Math.min(width / (this.bounds.x1 - this.bounds.x0), height / (this.bounds.y1 - this.bounds.y0)) * 0.95;
@@ -143,6 +146,11 @@ class ObserverApp {
         this.camera.y = p.y;
       },
     });
+    // Sites as small neutral dots, under the capitals.
+    for (const site of source.sites ?? []) {
+      const c = hexCentre(site.q, site.r, this.R);
+      this.minimap.addMarker(project(c.x, c.y), '#d8cfb4', 1.6);
+    }
     if (extras.day0) {
       extras.day0.civilizations.forEach((civ, i) => {
         const c = hexCentre(civ.capital.tile[0], civ.capital.tile[1], this.R);
@@ -218,6 +226,7 @@ class ObserverApp {
       });
     }
     this.markers?.update(this.camera.zoom);
+    this.sites?.update(this.camera.zoom);
     this.minimap.draw(view);
     this.frameStats.push(performance.now() - t0);
   }
@@ -513,6 +522,10 @@ function buildApi(app) {
     },
     peopleIds: () => (v ? v.renderer.people.map((o) => o.id) : []),
     courierId: () => app.villageData?.courierId,
+    /** Display seconds per real second. */
+    speed: () => app.speed,
+    /** Engine sites (ore deposits, quarries, ruins, troves) from the export. */
+    sites: () => app.source.sites ?? [],
     pickAt: (cx, cy) => {
       const hit = app.pickAt(cx, cy);
       app.select(hit ? hit.hit.id : null);

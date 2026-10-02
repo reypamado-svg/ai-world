@@ -1,7 +1,10 @@
 // The ground inside a tile, as a colour field over the plane (PROTOTYPE ARTWORK).
 //
 // The engine gives each 25 km tile one set of values. The observer paints its
-// interior from those values only: meadow or steppe from moisture, canopy
+// interior from those values only. Tiles of generator 3 carry land cover
+// shares (open, wood, scrub, wetland, rock, sand, snowfield): the dominant one is
+// the ground, and the others form patches whose area follows their share. Older
+// tiles paint from their terrain: meadow or steppe from moisture, canopy
 // density from timber, a snow line on mountains from temperature, rock where
 // stone is high, and relief whose strength follows the terrain. Noise is in
 // world metres, so the field is continuous across texture and tile borders,
@@ -67,7 +70,132 @@ const C = {
   fieldB: rgb('#8fa548'),
   fieldC: rgb('#a5843f'),
   hedge: rgb('#3f5a2a'),
+  shrub: rgb('#7c7a48'),
+  marsh: rgb('#5e7b55'),
+  pond: rgb('#4a8199'),
 };
+
+// Land cover (generator 3): seven shares per tile, in the engine's class order.
+export const OPEN = 0;
+export const WOOD = 1;
+export const SCRUB = 2;
+export const WETLAND = 3;
+export const ROCK = 4;
+export const SAND = 5;
+export const SNOWFIELD = 6;
+
+/**
+ * Patches of each cover class: a smooth field in world metres (wavelength, seed).
+ * A class covers the points where its field falls below a threshold set by its
+ * share, so the area it takes follows the engine's share. Positions are
+ * presentation; the shares are engine data.
+ */
+const PATCH = [
+  [520, 61],
+  [450, 41],
+  [300, 47],
+  [380, 43],
+  [260, 53],
+  [700, 59],
+  [320, 67],
+];
+/** Hillshade strength by terrain code (relief is stronger where the land is rougher). */
+const RELIEF = [0, 0.15, 0.15, 1.0, 0.15, 0.15, 0.6, 0.8];
+
+/** Field value below which a class with this share (0..1) covers the ground. */
+function threshold(share) {
+  if (share <= 0) return -1;
+  if (share >= 1) return 2;
+  // A three-octave fbm is roughly bell-shaped around 0.5: a logistic quantile.
+  return 0.5 + 0.085 * Math.log(share / (1 - share));
+}
+
+/**
+ * How strongly each cover class shows at a point: the dominant class is the
+ * base (1), every other class its patch strength (0..1). Coarse sampling fades
+ * patches toward their share, so far views average instead of aliasing.
+ */
+function coverWeights(cover, x, y, res) {
+  let dominant = 0;
+  for (let c = 1; c < 7; c += 1) if (cover[c] > cover[dominant]) dominant = c;
+  const weights = new Array(7).fill(0);
+  weights[dominant] = 1;
+  for (let c = 0; c < 7; c += 1) {
+    if (c === dominant || cover[c] <= 0) continue;
+    const share = cover[c] / 10_000;
+    const [lambda, seed] = PATCH[c];
+    const field = fbm(x / lambda, y / lambda, seed, 3);
+    const sharp = smooth(clamp01((threshold(share) - field) / 0.025 + 0.5));
+    const k = keep(lambda, res);
+    weights[c] = sharp * k + share * (1 - k);
+  }
+  return { weights, dominant };
+}
+
+/** A cover class's own colour at a point, without relief. */
+function classColour(c, t, x, y, fine, res) {
+  switch (c) {
+    case OPEN:
+      if (t.terrain === 5) return mix(C.tundra, C.frost, fine * 0.4);
+      return scale(mix(C.steppe, C.meadow, clamp01((t.moisture - 300) / 200)), 0.9 + fine * 0.2);
+    case WOOD: {
+      const blobs = faded(fbm(x / 120, y / 120, 31, 3), keep(120, res));
+      return mix(C.floor, C.canopy, 0.55 + 0.45 * smooth(clamp01((blobs - 0.35) * 2.5)));
+    }
+    case SCRUB:
+      return scale(mix(C.shrub, C.steppe, fine * 0.5), 0.92 + fine * 0.12);
+    case WETLAND:
+      return mix(C.marsh, C.meadow, fine * 0.3);
+    case ROCK: {
+      const high = clamp01((t.elevation - 600) / 400);
+      return mix(C.rock, C.rockHigh, high * 0.5 + fine * 0.4);
+    }
+    case SAND: {
+      const warp = fbm(x / 900, y / 900, 71, 2) * 3;
+      const dune = faded(0.5 + 0.5 * Math.sin(((x * 0.8 + y * 0.6) / 300) * Math.PI * 2 + warp), keep(300, res));
+      return mix(C.sand, C.sandDark, dune * 0.5);
+    }
+    case SNOWFIELD:
+      return mix(C.snow, C.snowShade, fine * 0.35);
+    default:
+      return [128, 128, 128];
+  }
+}
+
+/** Ground colour of a tile with land cover: its dominant cover, with patches of the rest. */
+function coverColour(t, x, y, res) {
+  const fine = faded(fbm(x / 300, y / 300, 7, 3), keep(300, res));
+  const { weights, dominant } = coverWeights(t.cover, x, y, res);
+  let colour = classColour(dominant, t, x, y, fine, res);
+  // Lower classes first, so wood, wetland and snow sit on top.
+  for (const c of [OPEN, SCRUB, SAND, ROCK, WETLAND, WOOD, SNOWFIELD]) {
+    if (c === dominant || weights[c] <= 0.002) continue;
+    colour = mix(colour, classColour(c, t, x, y, fine, res), weights[c]);
+  }
+  // Ponds in the hearts of the wettest patches.
+  if (t.cover[WETLAND] > 0 && dominant !== WETLAND) {
+    const pond = pondDepth(t, x, y);
+    if (pond > 0) colour = mix(colour, C.pond, smooth(clamp01(pond / 0.02)) * keep(PATCH[WETLAND][0] / 3, res));
+  }
+  return scale(colour, hillshade(x, y, RELIEF[t.terrain] ?? 0.15, res));
+}
+
+/** How far inside a pond core a point is (> 0 inside), from the wetland patch field. */
+function pondDepth(t, x, y) {
+  const share = t.cover[WETLAND] / 10_000;
+  const [lambda, seed] = PATCH[WETLAND];
+  return threshold(share) - fbm(x / lambda, y / lambda, seed, 3) - 0.06;
+}
+
+/** The cover class showing at a point of a tile with cover (-1 without cover). */
+export function coverClassAt(t, x, y) {
+  if (!t?.cover) return -1;
+  const { weights, dominant } = coverWeights(t.cover, x, y, 0);
+  let shown = dominant;
+  for (const c of [OPEN, SCRUB, SAND, ROCK, WETLAND, WOOD, SNOWFIELD])
+    if (c !== dominant && weights[c] > 0.5) shown = c;
+  return shown;
+}
 
 /** Snow line for a mountain at this temperature (attribute units, 0..1000). */
 export function snowLine(temperature) {
@@ -103,6 +231,7 @@ function hillshade(x, y, strength, res) {
 
 /** Colour of a terrain at a plane point, from its tile's values only; `res` is the sample spacing in metres. */
 function terrainColour(t, x, y, lake, res) {
+  if (t.cover && t.terrain !== 0) return coverColour(t, x, y, res);
   const fine = faded(fbm(x / 300, y / 300, 7, 3), keep(300, res));
   switch (t.terrain) {
     case 0: {
@@ -228,11 +357,21 @@ export function makeInterior({ R, tileAt, lakes = new Set(), features = [] }) {
     return { h, t, d, ownWater, across };
   }
 
-  /** Whether a plane point is water (lake, sea or off the map), shorelines included. */
+  /** Whether a plane point is water (lake, sea, pond or off the map), shorelines included. */
   function waterAt(x, y) {
     const { t, ownWater, across } = locate(x, y);
     if (!t) return true;
-    return across && across.e < 0 ? !ownWater : ownWater;
+    if (across && across.e < 0) return !ownWater;
+    if (!ownWater && t.cover && t.cover[WETLAND] > 0 && coverClassAt(t, x, y) === WETLAND)
+      return pondDepth(t, x, y) > 0;
+    return ownWater;
+  }
+
+  /** The cover class showing at a plane point (-1 on water or tiles without cover). */
+  function classAt(x, y) {
+    const { t, ownWater, across } = locate(x, y);
+    if (!t || ownWater || (across && across.e < 0)) return -1;
+    return coverClassAt(t, x, y);
   }
 
   function sample(x, y, res = 0) {
@@ -276,11 +415,21 @@ export function makeInterior({ R, tileAt, lakes = new Set(), features = [] }) {
     return colour;
   }
 
-  return { sample, waterAt };
+  return { sample, waterAt, classAt };
 }
 
 /** A tile's flat colour for the map (its interior at the centre, without relief). */
 export function tileBaseColor(t, lake = false) {
+  if (t.cover && t.terrain !== 0) {
+    // The share-weighted mix of the cover classes' plain colours.
+    const out = [0, 0, 0];
+    for (let c = 0; c < 7; c += 1) {
+      if (!t.cover[c]) continue;
+      const colour = classColour(c, t, 0, 0, 0.5, 0);
+      for (let k = 0; k < 3; k += 1) out[k] += (colour[k] * t.cover[c]) / 10_000;
+    }
+    return out;
+  }
   const base = {
     0: lake ? C.lake : C.ocean,
     1: mix(C.steppe, C.meadow, clamp01((t.moisture - 300) / 200)),

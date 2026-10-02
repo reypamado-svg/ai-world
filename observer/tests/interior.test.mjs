@@ -137,3 +137,44 @@ test('every terrain has a base colour, lakes distinct from ocean', () => {
   for (let t = 0; t < 8; t += 1) assert.equal(tileBaseColor(tile(t)).length, 3);
   assert.notDeepEqual(tileBaseColor(tile(0), true), tileBaseColor(tile(0), false));
 });
+
+// Land cover (generator 3): the dominant class is the ground; the others form patches.
+const covered = (cover, extra = {}) => tile(1, { cover, ...extra });
+const shownShare = (field, cls, c) => {
+  let hits = 0;
+  for (let i = 0; i < 40; i += 1)
+    for (let j = 0; j < 40; j += 1) if (field.classAt(c.x + (i - 20) * 300, c.y + (j - 20) * 300) === cls) hits += 1;
+  return hits / 1600;
+};
+
+test('wood patches cover about their share of a tile, and none without wood', () => {
+  const c = hexCentre(50, 50, R);
+  const wooded = makeInterior({ R, tileAt: () => covered([6000, 3000, 500, 300, 200, 0, 0]) });
+  const bare = makeInterior({ R, tileAt: () => covered([9300, 0, 500, 0, 200, 0, 0]) });
+  const share = shownShare(wooded, 1, c);
+  assert.ok(share > 0.18 && share < 0.42, `wood shows on ${share} of a 30% wood tile`);
+  assert.equal(shownShare(bare, 1, c), 0);
+});
+
+test('wetland makes ponds; a desert without wetland has none', () => {
+  const c = hexCentre(60, 60, R);
+  const wet = makeInterior({ R, tileAt: () => covered([5500, 1500, 500, 2500, 0, 0, 0]) });
+  const dry = makeInterior({ R, tileAt: () => tile(4, { cover: [0, 0, 1000, 0, 2200, 6800, 0] }) });
+  let ponds = 0;
+  for (let i = 0; i < 60; i += 1)
+    for (let j = 0; j < 60; j += 1) if (wet.waterAt(c.x + (i - 30) * 200, c.y + (j - 30) * 200)) ponds += 1;
+  assert.ok(ponds > 0, 'some pond water in a quarter-wetland tile');
+  assert.equal(shownShare(dry, 3, c), 0);
+  assert.equal(dry.classAt(c.x, c.y) === 5 || dry.classAt(c.x, c.y) === 4 || dry.classAt(c.x, c.y) === 2, true);
+});
+
+test('tiles without cover paint as before and report no cover class', () => {
+  const plain = makeInterior({ R, tileAt: () => tile(1) });
+  const c = hexCentre(40, 40, R);
+  assert.equal(plain.classAt(c.x, c.y), -1);
+  assert.deepEqual(plain.sample(c.x + 10, c.y + 20), plain.sample(c.x + 10, c.y + 20));
+  const base = tileBaseColor(tile(1));
+  const withCover = tileBaseColor(covered([3000, 6000, 500, 300, 200, 0, 0]));
+  assert.equal(withCover.length, 3);
+  assert.ok(withCover[1] < base[1], 'a mostly wooded tile reads darker green on the map');
+});

@@ -5,9 +5,14 @@ tiles** (plus the O1a close-zoom art proof).
 
 Everything on screen says where it comes from:
 
-- **ENGINE TERRAIN · DAY 0.** Terrain, rivers, lakes and the four capitals
-  are the engine's own world generation (generator version 2) for seed 21
-  (100 × 100 tiles), exported by `python -m sovereign_world.observer.terrain_export`.
+- **ENGINE TERRAIN · DAY 0.** Terrain, rivers, lakes, land cover, the
+  capitals (two to four civilizations; seed 21 has four, 26 tiles apart) and
+  the ore deposits, quarries, ancient ruins and troves are the engine's own
+  world generation (generator version 3) for seed 21 (100 × 100 tiles),
+  exported by `python -m sovereign_world.observer.terrain_export`. Land cover
+  gives each tile's share of open ground, wood, scrub, wetland, rock, sand and
+  snowfield; where the groves, ponds and outcrops lie inside the tile is a
+  presentation, their area follows the shares.
   No day has been simulated. Rivers run along tile borders, as the engine
   records them. 25 km between tile centres is a world rule
   (`travel.TILE_SPACING_M`): a day's walk on open ground. The observer reads
@@ -50,6 +55,8 @@ people standing together. **Follow person** keeps the camera on them, also
 across tiles and while they are indoors. ⌖ goes to the village, ⌂ returns to
 the whole world, the minimap moves the camera. **Measurements** shows and
 copies frame times, counts, texture memory and loaded chunks for your machine.
+The speed buttons (1×, 10×, 25×, 50×, 100×) set how many seconds of sample time
+pass per real second; at 100× a day passes in about 14 minutes.
 
 ## Zoom bands
 
@@ -95,11 +102,11 @@ node tests/capture-geography.mjs captures              # terrain stills: world, 
 | `hex.test.mjs`            | Hex layout: round trips, 25 km spacing, horizontal rows, chunk partition, tile sizes on screen                                                                    |
 | `travel-plan.test.mjs`    | Courier days: five hours walking then camp, terrain costs, ford wading time, deep rivers and water refused, continuity                                            |
 | `rivers.test.mjs`         | Channel widths by depth class, the same wandering curve from either tile                                                                                          |
-| `interior.test.mjs`       | Ground field: determinism, border blending, one wandering shoreline with beach and shallows, snow line, fields, no aliasing                                       |
+| `interior.test.mjs`       | Ground field: determinism, border blending, one wandering shoreline with beach and shallows, snow line, fields, no aliasing, cover patches and ponds by share     |
 | `patches.test.mjs`        | Ground patch sizes and the size chosen at each zoom                                                                                                               |
 | `precision.test.mjs`      | Local-origin rule: a far tile paints identically from any nearby anchor; village graphics stay local with the courier 50 km out                                   |
 | `streaming.test.mjs`      | R4: 60 rapid jumps over a synthetic 4096 × 4096 world with latency stay within request and cache budgets, stale requests are dropped, textures return to baseline |
-| `bands.test.mjs`          | Zoom continuity across four bands, selection, follow days into the courier's journey, patches within budget, positions independent of the camera, pause           |
+| `bands.test.mjs`          | Zoom continuity across four bands, selection, follow days into the courier's journey, patches within budget, speeds 1×–100×, sites, camera independence, pause    |
 | `counts.test.mjs`         | R9 count identities at 400 and 2,000 citizens in every band                                                                                                       |
 
 ## Layout
