@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 CURRENT_GENERATOR = 3
 """The world generator new runs use; see ``RunManifest.generator_version``."""
+CURRENT_RULES = 2
+"""The rules new runs use; see ``RunManifest.rules_version``."""
 
 
 class WorldConfig(BaseModel):
@@ -83,14 +85,20 @@ class RunManifest(BaseModel):
     forked_at_day: int | None = Field(default=None, ge=0)
     generator_version: int = Field(default=1, ge=1, le=CURRENT_GENERATOR)
     """Which world generator built the map. Runs from before versions were recorded used 1."""
+    rules_version: int = Field(default=1, ge=1, le=CURRENT_RULES)
+    """Which rules the world runs under. Version 2 adds houses, ranks and civil research;
+    runs from before versions were recorded used 1, and keep it when replayed."""
 
     @classmethod
-    def new(cls, config: WorldConfig, engine_version: str) -> RunManifest:
+    def new(
+        cls, config: WorldConfig, engine_version: str, *, rules_version: int = CURRENT_RULES
+    ) -> RunManifest:
         return cls(
             run_id=uuid4(),
             engine_version=engine_version,
             config=config,
             generator_version=CURRENT_GENERATOR,
+            rules_version=rules_version,
         )
 
     def content_hash(self) -> str:
@@ -102,6 +110,7 @@ class RunManifest(BaseModel):
             "parent_run_id": None,
             "forked_at_day": None,
             "generator_version": 1,
+            "rules_version": 1,
         }
         for key, default in defaults.items():
             if dumped.get(key) == default:

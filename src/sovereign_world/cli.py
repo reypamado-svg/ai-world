@@ -10,6 +10,7 @@ import typer
 
 from sovereign_world.config import (
     CURRENT_GENERATOR,
+    CURRENT_RULES,
     BudgetConfig,
     RunManifest,
     SovereignConfig,
@@ -66,6 +67,7 @@ def initialize(
             "engine_version": "0.2.0",
             "config": config,
             "generator_version": CURRENT_GENERATOR,
+            "rules_version": CURRENT_RULES,
             **_settings(sovereigns),
         }
     )
@@ -175,6 +177,7 @@ def fork(
             "parent_run_id": parent.run_id,
             "forked_at_day": state.day,
             "generator_version": parent.generator_version,
+            "rules_version": parent.rules_version,
             **_settings(sovereigns),
         }
     )

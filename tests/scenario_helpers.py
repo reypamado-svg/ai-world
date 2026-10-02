@@ -109,7 +109,12 @@ def run_scenario(
     root: Path,
 ) -> Run:
     manifest = RunManifest.model_validate(
-        {"run_id": initial.run_id, "config": initial.config, "engine_version": "0.1.0"}
+        {
+            "run_id": initial.run_id,
+            "config": initial.config,
+            "engine_version": "0.1.0",
+            "rules_version": initial.rules_version,
+        }
     )
     store = WorldStore.create(root / "record", manifest, initial)
     final, events, councils = _simulate(initial, make_sovereigns, days, store)

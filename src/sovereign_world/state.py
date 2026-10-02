@@ -23,7 +23,7 @@ from sovereign_world.capabilities import (
     TeachingAssignment,
     regional_capability,
 )
-from sovereign_world.config import RunManifest, WorldConfig
+from sovereign_world.config import CURRENT_RULES, RunManifest, WorldConfig
 from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
@@ -123,6 +123,15 @@ class CivilizationState(BaseModel):
     """Battles as this civilization's own survivors told them."""
 
 
+_CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
+    ("housing", {}),
+    ("house_jobs", []),
+    ("ranks_reached", {}),
+    ("realm_rank_reached", "chiefdom"),
+)
+"""Civilization fields added by rules version 2, and the value at which each is left out."""
+
+
 class WorldState(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
@@ -157,6 +166,8 @@ class WorldState(BaseModel):
     sites: tuple[Site, ...] = ()
     """Ore deposits, quarries, ancient ruins and troves placed when the world was made, by tile;
     worlds from before them have none."""
+    rules_version: int = Field(default=1, ge=1, le=CURRENT_RULES)
+    """The rules this world runs under, copied from its manifest; see ``rules.rules_for``."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(
@@ -177,6 +188,14 @@ class WorldState(BaseModel):
             for key in ("bridges", "sites"):
                 if not dumped.get(key):
                     dumped.pop(key, None)
+            if dumped.get("rules_version") == 1:
+                dumped.pop("rules_version")
+            # Rules-2 additions to each civilization, left out while they hold nothing.
+            for civilization in (dumped.get("civilizations") or {}).values():
+                if isinstance(civilization, dict):
+                    for key, empty in _CIVILIZATION_ADDITIONS:
+                        if key in civilization and civilization[key] == empty:
+                            civilization.pop(key)
         return dumped
 
 
@@ -281,6 +300,7 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
         world_map=generated.world_map,
         civilizations=civilizations,
         sites=generated.sites,
+        rules_version=manifest.rules_version,
     )
 
 

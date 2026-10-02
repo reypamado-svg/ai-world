@@ -28,10 +28,16 @@ def linked_world(
     *,
     seed: int = 21,
     distance: int = 3,
+    rules_version: int = 1,
 ) -> tuple[RunManifest, WorldState, EntityId, EntityId, tuple[HexCoord, ...]]:
-    """Two civilizations in mutual contact, a short route both have observed."""
+    """Two civilizations in mutual contact, a short route both have observed.
+
+    The world runs under rules version 1 unless asked otherwise, so scenarios test their own
+    rules, not houses and ranks at a village-sized capital."""
     manifest = RunManifest.new(
-        config=WorldConfig(seed=seed, width=48, height=48), engine_version="0.1.0"
+        config=WorldConfig(seed=seed, width=48, height=48),
+        engine_version="0.1.0",
+        rules_version=rules_version,
     )
     state = build_initial_state(manifest)
     sender_id, recipient_id = sorted(state.civilizations)[:2]
@@ -82,9 +88,12 @@ def treaty_world(
     *,
     seed: int = 21,
     distance: int = 3,
+    rules_version: int = 1,
 ) -> tuple[WorldState, EntityId, EntityId, tuple[HexCoord, ...]]:
     """Linked civilizations, optionally already bound by a ratified treaty."""
-    _, state, sender_id, recipient_id, route = linked_world(seed=seed, distance=distance)
+    _, state, sender_id, recipient_id, route = linked_world(
+        seed=seed, distance=distance, rules_version=rules_version
+    )
     if kind is not None:
         treaty_id = EntityId(f"treaty:{kind.value}")
         state.treaty_offers = (
