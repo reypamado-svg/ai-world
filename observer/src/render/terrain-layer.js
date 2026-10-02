@@ -40,6 +40,13 @@ export const HEX_MODE_TILE_PX = 256;
 export const HEX_TILE_PX = [512, 1024];
 const MAX_DETAIL_HEXES = 120;
 
+/** A tile's land-cover shares (seven basis points), or null for water and older exports. */
+function coverOf(chunk, i) {
+  if (!chunk.hasCover) return null;
+  const shares = Array.from(chunk.cover.subarray(i * 7, i * 7 + 7));
+  return shares.some((v) => v > 0) ? shares : null;
+}
+
 /** A tile's map colour: its interior's base colour, with a slight per-tile variation. */
 function tileColor(tile, q, r, lake) {
   const f = 0.97 + (hash2(q, r, 5) - 0.5) * 0.06;
@@ -116,6 +123,7 @@ export class TerrainLayer {
           temperature: chunk.temperature[i],
           river: !!chunk.river[i],
           lake: !!this.source.rivers?.lakes.has(`${chunk.q[i]},${chunk.r[i]}`),
+          cover: coverOf(chunk, i),
         });
     }
     return chunk.tiles.get(`${q},${r}`);

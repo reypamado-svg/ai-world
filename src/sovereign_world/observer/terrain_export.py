@@ -26,7 +26,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from sovereign_world.config import CURRENT_GENERATOR, RunManifest, WorldConfig
-from sovereign_world.hexmap import HexCoord, Terrain, Tile, WorldMap
+from sovereign_world.hexmap import COVER_CLASSES, HexCoord, Terrain, Tile, WorldMap
 from sovereign_world.rng import StableRng
 from sovereign_world.state import build_initial_state
 from sovereign_world.travel import (
@@ -52,9 +52,10 @@ TILE_FIELDS: tuple[str, ...] = (
     "stone",
     "ore",
     "river",
+    "cover",
 )
 OVERVIEW_MAX = 256
-EXPORT_VERSION = 3
+EXPORT_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +71,7 @@ def _dump(path: Path, payload: Any) -> None:
     path.write_text(text + "\n", encoding="ascii")
 
 
-def _tile_row(tile: Tile) -> list[int | str | bool]:
+def _tile_row(tile: Tile) -> list[int | str | bool | list[int]]:
     return [
         tile.coord.q,
         tile.coord.r,
@@ -83,6 +84,7 @@ def _tile_row(tile: Tile) -> list[int | str | bool]:
         tile.stone,
         tile.ore,
         tile.river,
+        list(tile.cover),
     ]
 
 
@@ -175,7 +177,7 @@ def export_terrain(
     chunk_dir = out_dir / "chunks"
     chunk_dir.mkdir(exist_ok=True)
 
-    chunks: dict[tuple[int, int], list[list[int | str | bool]]] = {}
+    chunks: dict[tuple[int, int], list[list[int | str | bool | list[int]]]] = {}
     for tile in tiles:
         key = (tile.coord.q // chunk_tiles, tile.coord.r // chunk_tiles)
         chunks.setdefault(key, []).append(_tile_row(tile))
@@ -210,6 +212,24 @@ def export_terrain(
     _dump(out_dir / "day0.json", day0)
     _dump(out_dir / "overview.json", _overview(tiles, width, height))
     _dump(out_dir / "hydrology.json", _hydrology(generated.world_map))
+    _dump(
+        out_dir / "sites.json",
+        {
+            "source": "engine worldgen, day 0",
+            "fields": ["site_id", "q", "r", "kind", "richness", "remaining"],
+            "sites": [
+                [
+                    site.site_id,
+                    site.tile.q,
+                    site.tile.r,
+                    site.kind.value,
+                    site.richness,
+                    site.remaining,
+                ]
+                for site in state.sites
+            ],
+        },
+    )
 
     chunk_counts = (-(-width // chunk_tiles), -(-height // chunk_tiles))
     _dump(
@@ -234,6 +254,16 @@ def export_terrain(
                 ),
                 "time_step": "one day",
                 "start_centres": [[s.center.q, s.center.r] for s in generated.starts],
+                "start_spacing": generated.start_spacing,
+                "cover_classes": [item.value for item in COVER_CLASSES],
+                "cover": (
+                    "each land tile's share under each cover class, in cover_classes order, in"
+                    " basis points summing to 10000; empty for water"
+                ),
+                "sites": (
+                    "sites.json lists ore deposits, quarries, ancient ruins and troves placed"
+                    " when the world was made; the same kit for each civilization"
+                ),
                 "travel": {
                     "note": (
                         "world rule: tile centres lie a day's walk apart; costs are in tenths"
@@ -267,10 +297,11 @@ def export_terrain(
                 "chunks": "chunks/c{cq}_{cr}.json",
                 "overview": "overview.json",
                 "hydrology": "hydrology.json",
+                "sites": "sites.json",
             },
         },
     )
-    files += ["day0.json", "overview.json", "hydrology.json", "manifest.json"]
+    files += ["day0.json", "overview.json", "hydrology.json", "sites.json", "manifest.json"]
     return ExportSummary(out_dir=out_dir, tiles=len(tiles), chunks=len(chunks), files=tuple(files))
 
 

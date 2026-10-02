@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from sovereign_world.config import CURRENT_GENERATOR, WorldConfig
-from sovereign_world.hexmap import HexCoord, Terrain
+from sovereign_world.hexmap import COVER_CLASSES, HexCoord, Terrain
 from sovereign_world.observer.terrain_export import TILE_FIELDS, export_terrain
 from sovereign_world.rng import StableRng
 from sovereign_world.travel import (
@@ -65,7 +65,10 @@ def test_every_tile_round_trips_in_exactly_one_chunk(tmp_path: Path) -> None:
             "stone": tile.stone,
             "ore": tile.ore,
             "river": tile.river,
+            "cover": list(tile.cover),
         }
+        if tile.terrain is not Terrain.WATER:
+            assert sum(record["cover"]) == 10_000
 
 
 def test_day0_matches_the_engine_starts(tmp_path: Path) -> None:
@@ -79,7 +82,9 @@ def test_day0_matches_the_engine_starts(tmp_path: Path) -> None:
     assert all(c["founders"] == 32 for c in day0["civilizations"])
     assert all(c["capital"]["founded_day"] == 0 for c in day0["civilizations"])
     assert "hex_radius_m" not in manifest["presentation"], "the scale is an engine rule now"
-    assert manifest["export_version"] == 3
+    assert manifest["export_version"] == 4
+    assert manifest["engine"]["cover_classes"] == [item.value for item in COVER_CLASSES]
+    assert manifest["engine"]["start_spacing"] == generated.start_spacing >= 12
     assert manifest["engine"]["travel"] == {
         "note": manifest["engine"]["travel"]["note"],
         "tile_spacing_m": TILE_SPACING_M,
@@ -139,3 +144,25 @@ def test_hydrology_matches_the_engine_rivers(tmp_path: Path) -> None:
     assert all(world.tile(HexCoord(q, r)).terrain is Terrain.WATER for q, r in lakes)
     assert manifest["engine"]["generator_version"] == CURRENT_GENERATOR
     assert manifest["files"]["hydrology"] == "hydrology.json"
+
+
+def test_sites_match_the_engine(tmp_path: Path) -> None:
+    export_terrain(9, 48, 48, tmp_path)
+    generated = generate_world(WorldConfig(seed=9, width=48, height=48), StableRng(9))
+    exported = json.loads((tmp_path / "sites.json").read_text())
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+
+    assert manifest["files"]["sites"] == "sites.json"
+    rows = [dict(zip(exported["fields"], row, strict=True)) for row in exported["sites"]]
+    assert generated.sites
+    assert rows == [
+        {
+            "site_id": site.site_id,
+            "q": site.tile.q,
+            "r": site.tile.r,
+            "kind": site.kind.value,
+            "richness": site.richness,
+            "remaining": site.remaining,
+        }
+        for site in generated.sites
+    ]

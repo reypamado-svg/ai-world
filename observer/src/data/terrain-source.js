@@ -1,6 +1,8 @@
 // Engine terrain export, fetched chunk by chunk (never the whole world).
 
 const TERRAINS = ['water', 'grassland', 'forest', 'mountain', 'desert', 'tundra', 'hills', 'snow'];
+/** Land cover classes, in the engine's order (manifest engine.cover_classes). */
+const COVER_CLASSES = ['open', 'wood', 'scrub', 'wetland', 'rock', 'sand', 'snowfield'];
 
 /** Pack tile records into typed arrays (compact and fast to paint). */
 export function packChunk(cq, cr, fields, rows) {
@@ -22,6 +24,9 @@ export function packChunk(cq, cr, fields, rows) {
     stone: new Uint16Array(n),
     ore: new Uint16Array(n),
     river: new Uint8Array(n),
+    // Seven basis-point shares per tile (generator 3 on); absent in older exports.
+    hasCover: fields.includes('cover'),
+    cover: new Uint16Array(n * COVER_CLASSES.length),
   };
   rows.forEach((row, i) => {
     chunk.q[i] = row[idx.q];
@@ -29,8 +34,10 @@ export function packChunk(cq, cr, fields, rows) {
     chunk.terrain[i] = TERRAINS.indexOf(row[idx.terrain]);
     for (const f of ['elevation', 'moisture', 'temperature', 'soil', 'timber', 'stone', 'ore']) chunk[f][i] = row[idx[f]];
     chunk.river[i] = row[idx.river] ? 1 : 0;
+    const cover = chunk.hasCover ? row[fields.indexOf('cover')] : null;
+    if (cover && cover.length === COVER_CLASSES.length) chunk.cover.set(cover, i * COVER_CLASSES.length);
   });
-  chunk.bytes = n * 26 + 64;
+  chunk.bytes = n * 40 + 64;
   return chunk;
 }
 
@@ -61,9 +68,13 @@ export function indexHydrology(hydrology, chunkTiles) {
 }
 
 export class TerrainSource {
-  constructor(base, manifest, hydrology = null) {
+  constructor(base, manifest, hydrology = null, sites = null) {
     this.base = base;
     this.manifest = manifest;
+    /** Ore deposits, quarries, ancient ruins and troves (engine day 0), or null. */
+    this.sites = sites
+      ? sites.sites.map((row) => Object.fromEntries(sites.fields.map((field, k) => [field, row[k]])))
+      : null;
     this.label = `engine worldgen seed ${manifest.engine.seed}`;
     this.rivers = indexHydrology(hydrology, manifest.presentation.chunk_tiles);
   }
@@ -72,7 +83,9 @@ export class TerrainSource {
     const manifest = await (await fetch(`${base}/manifest.json`)).json();
     const file = manifest.files?.hydrology;
     const hydrology = file ? await (await fetch(`${base}/${file}`)).json() : null;
-    return new TerrainSource(base, manifest, hydrology);
+    const sitesFile = manifest.files?.sites;
+    const sites = sitesFile ? await (await fetch(`${base}/${sitesFile}`)).json() : null;
+    return new TerrainSource(base, manifest, hydrology, sites);
   }
 
   get width() {
@@ -99,4 +112,4 @@ export class TerrainSource {
   }
 }
 
-export { TERRAINS };
+export { TERRAINS, COVER_CLASSES };
