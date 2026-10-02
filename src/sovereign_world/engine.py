@@ -102,9 +102,12 @@ from sovereign_world.housing import (
 )
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import (
+    ARMOURY_DAY,
+    HALL_STRENGTH,
     HEALING_FACTOR,
     INSTITUTIONS,
     SCHOOL_TEACHING_DAYS,
+    TRAINING_CAP_BONUS,
     WORKSHOP_DAY,
     Institution,
     InstitutionKind,
@@ -140,7 +143,19 @@ from sovereign_world.people import (
     go_hungry,
     recover,
 )
+from sovereign_world.ranks import (
+    CITY_RESEARCH_BONUS,
+    CIVIL_HALF_RATE_RANK,
+    RealmRank,
+    SettlementRank,
+    institutions_open,
+    next_realm_rank,
+    next_settlement_rank,
+    realm_at_least,
+    settlement_facts,
+)
 from sovereign_world.research import (
+    CIVIL_TOPICS,
     DISCOVERED_SKILL,
     DOCTRINE_DRILL_CAP,
     POINTS_PER_SCHOLAR,
@@ -863,6 +878,13 @@ def _cede(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
     if sid in giver.housing:
         taker.housing = dict(sorted({**taker.housing, sid: giver.housing[sid]}.items()))
         giver.housing = {key: value for key, value in giver.housing.items() if key != sid}
+    if sid in giver.ranks_reached:
+        taker.ranks_reached = dict(
+            sorted({**taker.ranks_reached, sid: giver.ranks_reached[sid]}.items())
+        )
+        giver.ranks_reached = {
+            key: value for key, value in giver.ranks_reached.items() if key != sid
+        }
     giver.storehouse_jobs = tuple(
         item for item in giver.storehouse_jobs if item.settlement_id != sid
     )
@@ -3267,6 +3289,8 @@ def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent
     civilization.settlements = ()
     civilization.housing = {}
     civilization.house_jobs = ()
+    civilization.ranks_reached = {}
+    civilization.realm_rank_reached = RealmRank.CHIEFDOM
     civilization.stores = {}
     civilization.inventory = Inventory(capacity=0)
     civilization.storehouses = ()
@@ -4398,6 +4422,23 @@ def _lose_houses(
     ]
 
 
+def _armoury_bonus(
+    state: WorldState,
+    civilization_id: EntityId,
+    tile: HexCoord,
+    present: int,
+    away: set[EntityId],
+) -> int:
+    """Rules version 2: every second day, each worker making equipment at a settlement with an
+    open armoury does a day extra."""
+    if not present or state.day % ARMOURY_DAY or not rules_for(state.rules_version).ranks:
+        return 0
+    civilization = state.civilizations[civilization_id]
+    site = supplying(civilization, tile)
+    tiles = serving_tiles(civilization, InstitutionKind.ARMOURY, away)
+    return present if site is not None and site.tile in tiles else 0
+
+
 def _workshop_bonus(
     state: WorldState,
     civilization_id: EntityId,
@@ -4886,6 +4927,7 @@ def _advance_crafting(state: WorldState) -> list[DomainEvent]:
                 for person_id in job.worker_ids
             )
             present += _workshop_bonus(state, civilization_id, job.workshop, present, away)
+            present += _armoury_bonus(state, civilization_id, job.workshop, present, away)
             job = job.model_copy(update={"person_days_done": job.person_days_done + present})
             if not job.done:
                 kept.append(job)
@@ -4915,6 +4957,18 @@ def _advance_research(state: WorldState) -> list[DomainEvent]:
         homes = {settlement.tile for settlement in civilization.settlements}
         people = civilization.population.people
         points = dict(civilization.research_points)
+        cities = {
+            settlement.tile
+            for settlement in civilization.settlements
+            if civilization.ranks_reached.get(settlement.settlement_id) is SettlementRank.CITY
+        }
+        # A great realm's civil learning needs a school or archive to keep pace.
+        slow_civil = (
+            rules_for(state.rules_version).civil_research
+            and realm_at_least(civilization.realm_rank_reached, CIVIL_HALF_RATE_RANK)
+            and not serving_tiles(civilization, InstitutionKind.SCHOOL, away)
+            and not serving_tiles(civilization, InstitutionKind.ARCHIVE, away)
+        )
         kept: list[ResearchAssignment] = []
         for assignment in civilization.research:
             present = [
@@ -4927,8 +4981,11 @@ def _advance_research(state: WorldState) -> list[DomainEvent]:
             earned = sum(
                 POINTS_PER_SCHOLAR
                 + (WRITING_BONUS if person.skills.get(CapabilityId.WRITING.value, 0) > 0 else 0)
+                + (CITY_RESEARCH_BONUS if person.location in cities else 0)
                 for person in present
             )
+            if assignment.topic in CIVIL_TOPICS and slow_civil:
+                earned //= 2
             points[assignment.topic] = points.get(assignment.topic, 0) + earned
             assignment = assignment.model_copy(update={"days_done": assignment.days_done + 1})
             if assignment.active:
@@ -5004,6 +5061,11 @@ def _advance_drills(state: WorldState) -> list[DomainEvent]:
         civilization = state.civilizations[civilization_id]
         homes = {settlement.tile for settlement in civilization.settlements}
         people = civilization.population.people
+        grounds = (
+            serving_tiles(civilization, InstitutionKind.TRAINING_GROUNDS, away)
+            if rules_for(state.rules_version).ranks
+            else set()
+        )
         kept: list[Drill] = []
         for drill in civilization.drills:
             present = [
@@ -5026,8 +5088,9 @@ def _advance_drills(state: WorldState) -> list[DomainEvent]:
                 for person_id in present:
                     person = people[person_id]
                     current = person.skills.get(ARMS, 0)
-                    if current < cap:
-                        person.skills = {**person.skills, ARMS: min(current + gained, cap)}
+                    reach = cap + TRAINING_CAP_BONUS if person.location in grounds else cap
+                    if current < reach:
+                        person.skills = {**person.skills, ARMS: min(current + gained, reach)}
             if drill.active:
                 kept.append(drill)
             else:
@@ -5144,6 +5207,75 @@ def _tile_id(tile: HexCoord) -> str:
     return f"tile:{tile.q},{tile.r}"
 
 
+def _hall_bonuses(state: WorldState) -> dict[EntityId, int]:
+    """Rules version 2: settlements whose hall is open reach a little further."""
+    away = _away(state)
+    bonuses: dict[EntityId, int] = {}
+    for civilization in state.civilizations.values():
+        halls = serving_tiles(civilization, InstitutionKind.HALL, away)
+        for settlement in civilization.settlements:
+            if settlement.tile in halls:
+                bonuses[settlement.settlement_id] = HALL_STRENGTH
+    return bonuses
+
+
+def _advance_ranks(state: WorldState) -> list[DomainEvent]:
+    """Rules version 2: each settlement, and then the realm, moves at most one rank a month."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        if civilization.eliminated_day is not None:
+            continue
+        own = civilization.population.people
+        residents = {
+            sid: sum(person_id in own for person_id in people)
+            for sid, people in residents_by_settlement(state, civilization_id).items()
+        }
+        open_at = institutions_open(civilization, away)
+        known = frozenset(record.capability for record in civilization.capabilities)
+        ranks: dict[EntityId, SettlementRank] = {}
+        for settlement in civilization.settlements:
+            sid = settlement.settlement_id
+            current = civilization.ranks_reached.get(sid, SettlementRank.VILLAGE)
+            facts = settlement_facts(civilization, sid, residents.get(sid, 0), open_at)
+            rank = next_settlement_rank(current, facts, known)
+            if rank is not current:
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.WORK,
+                        "settlement_rank_changed",
+                        str(civilization_id),
+                        str(sid),
+                        rank=rank.value,
+                        previous=current.value,
+                    )
+                )
+            if rank is not SettlementRank.VILLAGE:
+                ranks[sid] = rank
+        civilization.ranks_reached = ranks
+        current_realm = civilization.realm_rank_reached
+        everyone = {
+            settlement.settlement_id: ranks.get(settlement.settlement_id, SettlementRank.VILLAGE)
+            for settlement in civilization.settlements
+        }
+        realm = next_realm_rank(current_realm, state, civilization_id, everyone, open_at)
+        if realm is not current_realm:
+            civilization.realm_rank_reached = realm
+            events.append(
+                _event(
+                    state,
+                    EventPhase.WORK,
+                    "realm_rank_changed",
+                    str(civilization_id),
+                    rank=realm.value,
+                    previous=current_realm.value,
+                )
+            )
+    return events
+
+
 def _advance_territory(state: WorldState) -> list[DomainEvent]:
     """Derive today's control from settlements and terrain; claims are never consulted."""
     events: list[DomainEvent] = []
@@ -5190,6 +5322,7 @@ def _advance_territory(state: WorldState) -> list[DomainEvent]:
             for occupation in state.occupations
             if occupation.active
         },
+        bonuses=_hall_bonuses(state) if rules_for(state.rules_version).ranks else None,
     )
     state.territory = result.territory
     owner_of_source = {
@@ -6290,6 +6423,11 @@ def advance_day(
 
     events.extend(_advance_civilizations(candidate))
     events.extend(_advance_territory(candidate))
+    if (
+        rules_for(candidate.rules_version).ranks
+        and candidate.day % candidate.config.council_interval_days == 0
+    ):
+        events.extend(_advance_ranks(candidate))
     events.extend(_joined_roads(candidate))
     if candidate.day % LEARNING_INTERVAL == 0:
         learn(

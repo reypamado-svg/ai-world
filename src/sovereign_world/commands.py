@@ -47,7 +47,7 @@ from sovereign_world.endings import Ending, EndingKind, RuinView
 from sovereign_world.espionage import MAX_SPIES, MAX_WATCH_DAYS, CaughtSpy, SpyReport
 from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
-from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
+from sovereign_world.hexmap import COVER_CLASSES, CoverClass, HexCoord, Terrain, WorldMap
 from sovereign_world.housing import (
     MAX_HOUSES_PER_ORDER,
     HouseGrade,
@@ -58,9 +58,12 @@ from sovereign_world.housing import (
 )
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import (
+    ARMOURY_GEAR,
+    CIVIC_KINDS,
     INSTITUTIONS,
     MAX_STAFF,
     SCHOOL_APPRENTICES,
+    SEAT,
     Institution,
     InstitutionKind,
     serving_tiles,
@@ -82,7 +85,22 @@ from sovereign_world.logistics import (
     provisions_needed,
     roadwork_days,
 )
+from sovereign_world.ranks import (
+    INSTITUTION_RANK,
+    INSTITUTION_SLOTS,
+    STOREHOUSE_RANK,
+    TOLL_RANK,
+    TRIBUTE_RANK,
+    WAR_PARTY_LIMIT,
+    WRITING_RANK,
+    RealmRank,
+    SettlementRank,
+    at_least,
+    realm_at_least,
+    settlement_rank,
+)
 from sovereign_world.research import (
+    CIVIL_TOPICS,
     LOGISTICS_CARRY,
     MAX_RESEARCH_DAYS,
     ResearchAssignment,
@@ -419,6 +437,8 @@ _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("rules_version", 1),
     ("housing", {}),
     ("house_jobs", []),
+    ("ranks", {}),
+    ("realm_rank", None),
 )
 """Report fields added since council-3, and the value at which each is left out, so reports
 from older worlds read, and so prompt, exactly as before."""
@@ -512,6 +532,10 @@ class CouncilReport(BaseModel):
     """Each settlement's houses (rules version 2)."""
     house_jobs: tuple[HouseJob, ...] = ()
     """Houses going up."""
+    ranks: dict[EntityId, SettlementRank] = Field(default_factory=dict)
+    """Each settlement's rank (rules version 2); a settlement not listed is a village."""
+    realm_rank: RealmRank | None = None
+    """The civilization's rank: chiefdom, kingdom or empire (rules version 2)."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -694,6 +718,10 @@ def build_council_report(
         rules_version=state.rules_version,
         housing=_housing_views(state, civilization_id),
         house_jobs=civilization.house_jobs,
+        ranks=dict(civilization.ranks_reached),
+        realm_rank=(
+            civilization.realm_rank_reached if rules_for(state.rules_version).ranks else None
+        ),
         inventory=dict(civilization.inventory.quantities),
         stores={
             settlement_id: dict(sorted(inventory.quantities.items()))
@@ -1210,6 +1238,14 @@ def _campaign_error(
     if expectant & set(command.traveller_ids):
         return error("expectant_traveller", "a mother with a birth due cannot march")
     fighters = len(command.traveller_ids)
+    if rules_for(state.rules_version).ranks:
+        limit = WAR_PARTY_LIMIT[civilization.realm_rank_reached]
+        if fighters > limit:
+            return error(
+                "party_too_large",
+                f"a {civilization.realm_rank_reached.value} sends at most {limit} fighters"
+                " in one war party",
+            )
     if (
         set(command.cargo) - WAR_GEAR
         or any(count <= 0 for count in command.cargo.values())
@@ -1452,6 +1488,47 @@ def _shelter_error(
     return None
 
 
+def _civil_research_error(
+    command: DirectOrder, state: WorldState, civilization_id: EntityId
+) -> CommandError | None:
+    """Rules version 2: what a civil topic needs of the land and the settlements."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    topic = command.research_topic
+    if topic is CapabilityId.WRITING and not any(
+        at_least(settlement_rank(civilization, item.settlement_id), WRITING_RANK)
+        for item in civilization.settlements
+    ):
+        return error(
+            "rank_required",
+            f"writing is worked out in a {WRITING_RANK.value.replace('_', ' ')} or above",
+        )
+    if topic is CapabilityId.IRRIGATION and not any(
+        (tile := state.world_map.tile(coord)).river
+        or (tile.cover and tile.cover[WETLAND_INDEX] >= IRRIGATION_WETLAND)
+        for coord in civilization.known_tiles
+    ):
+        return error("invalid_research", "irrigation needs a river or wetland among its fields")
+    if topic is CapabilityId.FISHING and not any(
+        state.world_map.tile(item.tile).has_water
+        or any(
+            state.world_map.contains(other) and state.world_map.tile(other).terrain is Terrain.WATER
+            for other in item.tile.neighbors()
+        )
+        for item in civilization.settlements
+    ):
+        return error("invalid_research", "fishing needs water at or beside a settlement")
+    return None
+
+
+WETLAND_INDEX = COVER_CLASSES.index(CoverClass.WETLAND)
+IRRIGATION_WETLAND = 1_000
+"""A field with this much wetland (basis points), or a river, can be irrigated."""
+
+
 def _decree_error(command: Decree, state: WorldState) -> CommandError | None:
     if command.kind is not DecreeKind.HOUSING_POLICY:
         return None
@@ -1495,9 +1572,11 @@ def _found_institution_error(
     site = settlement_at(civilization, next(iter(places))) if len(places) == 1 else None
     if site is None:
         return error("invalid_institution", "founders work together at one of their settlements")
+    if kind in CIVIC_KINDS and not rules_for(state.rules_version).ranks:
+        return error("invalid_institution", f"this world's rules have no {kind.value}")
     spec = INSTITUTIONS[kind]
     known = {record.capability for record in civilization.capabilities}
-    if not spec.needs & known:
+    if spec.needs and not spec.needs & known:
         needs = " or ".join(sorted(item.value for item in spec.needs))
         return error("missing_capability", f"a {kind.value} needs {needs}")
     if (site.settlement_id, kind) in founding or any(
@@ -1505,6 +1584,28 @@ def _found_institution_error(
         for item in civilization.institutions
     ):
         return error("invalid_institution", f"the settlement already has a {kind.value}")
+    if rules_for(state.rules_version).ranks:
+        held = settlement_rank(civilization, site.settlement_id)
+        floor = INSTITUTION_RANK.get(kind)
+        if floor is not None and not at_least(held, floor):
+            return error(
+                "rank_required", f"a {kind.value} needs a {floor.value.replace('_', ' ')} or above"
+            )
+        slots = INSTITUTION_SLOTS[held]
+        if kind is not SEAT and slots is not None:
+            kept = sum(
+                item.settlement_id == site.settlement_id and item.kind is not SEAT
+                for item in civilization.institutions
+            ) + sum(
+                settlement_id == site.settlement_id and other is not SEAT
+                for settlement_id, other in founding
+            )
+            if kept >= slots:
+                return error(
+                    "rank_required",
+                    f"a {held.value.replace('_', ' ')} keeps at most {slots} institution(s)"
+                    " besides its hall",
+                )
     for resource, quantity in spec.materials.items():
         if _short(civilization, site.tile, reserved, resource, quantity):
             return error("insufficient_materials", f"not enough {resource} for the {kind.value}")
@@ -1716,6 +1817,12 @@ def _craft_error(
         people[person_id].skills.get(needed.value, 0) > 0 for person_id in command.worker_ids
     ):
         return error("unqualified_worker", f"making {item} needs someone who knows {needed}")
+    if rules_for(state.rules_version).ranks and item in ARMOURY_GEAR:
+        away = _travelling_people(state, civilization_id) | _garrisoned_people(
+            state, civilization_id
+        )
+        if workshop not in serving_tiles(civilization, InstitutionKind.ARMOURY, away):
+            return error("building_required", f"{item} is made only at an open armoury")
     for resource, quantity in craft_materials(item, command.craft_quantity).items():
         if _short(civilization, workshop, reserved, resource, quantity):
             return error("insufficient_materials", f"not enough {resource} to make {item}")
@@ -1772,6 +1879,15 @@ def _storehouse_error(
         current = house.grade
     if rank(target) <= rank(current):
         return error("invalid_storehouse", "an upgrade raises the storehouse's grade")
+    if rules_for(state.rules_version).ranks:
+        held = settlement_rank(civilization, site.settlement_id)
+        for grade in steps(current, target):
+            floor = STOREHOUSE_RANK.get(grade)
+            if floor is not None and not at_least(held, floor):
+                return error(
+                    "rank_required",
+                    f"a {grade.value} needs a {floor.value.replace('_', ' ')} or above",
+                )
     for grade in steps(current, target):
         needed = STOREHOUSE_GRADES[grade].capability
         if needed is not None and not any(
@@ -2022,6 +2138,14 @@ def _toll_error(
             "invalid_route",
             "a deposit route leads over known land to one of this civilization's settlements",
         )
+    if rules_for(state.rules_version).ranks:
+        deposit = settlement_at(civilization, route[-1])
+        assert deposit is not None
+        if not at_least(settlement_rank(civilization, deposit.settlement_id), TOLL_RANK):
+            return error(
+                "rank_required",
+                f"a toll's takings go to a {TOLL_RANK.value.replace('_', ' ')} or above",
+            )
     return None
 
 
@@ -2227,6 +2351,21 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         command_id=command.command_id,
                         code="invalid_treaty",
                         message="peace terms go with a peace offer, and a party pays tribute",
+                    )
+                elif (
+                    command.peace_terms is not None
+                    and rules.ranks
+                    and command.peace_terms.tribute_payer is not None
+                    and command.peace_terms.tribute_payer == command.recipient_civilization_id
+                    and not realm_at_least(
+                        state.civilizations[envelope.civilization_id].realm_rank_reached,
+                        TRIBUTE_RANK,
+                    )
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="rank_required",
+                        message=f"only a {TRIBUTE_RANK.value} or an empire can demand tribute",
                     )
                 elif (
                     command.peace_terms is not None
@@ -2521,7 +2660,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 homes = {settlement.tile for settlement in civilization.settlements}
                 people = civilization.population.people
                 reason = (
-                    research_error(command.research_topic, civilization.capabilities)
+                    research_error(
+                        command.research_topic,
+                        civilization.capabilities,
+                        civil=rules.civil_research,
+                    )
                     if command.research_topic is not None
                     else "names no topic"
                 )
@@ -2533,6 +2676,10 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="invalid_research",
                         message=f"this research {reason}",
                     )
+                elif command.research_topic in CIVIL_TOPICS and (
+                    civil_error := _civil_research_error(command, state, envelope.civilization_id)
+                ):
+                    command_error = civil_error
                 elif not command.worker_ids or len(set(command.worker_ids)) != len(
                     command.worker_ids
                 ):

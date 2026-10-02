@@ -151,6 +151,11 @@ def settlement_strength(residents: int) -> int:
     return SETTLEMENT_BASE_STRENGTH + SETTLEMENT_STRENGTH_PER_ROOT * isqrt(residents)
 
 
+def _boosted(strength: int, bonus: int) -> int:
+    """A settlement's reach with its hall's bonus; an empty one still projects nothing."""
+    return strength + bonus if strength > 0 else 0
+
+
 def influence_field(
     world_map: WorldMap,
     sources: Iterable[tuple[HexCoord, int]],
@@ -263,6 +268,7 @@ def advance_territory(
     besieged: frozenset[EntityId] = frozenset(),
     occupied: Mapping[EntityId, EntityId] | None = None,
     bridges: Bridges = NO_BRIDGES,
+    bonuses: Mapping[EntityId, int] | None = None,
 ) -> TerritoryDayResult:
     """Drift each civilization's hold toward its influence, then settle ownership.
 
@@ -287,7 +293,10 @@ def advance_territory(
             settlement.tile,
             0
             if settlement.settlement_id in occupied
-            else settlement_strength(residents.get(settlement.settlement_id, 0)),
+            else _boosted(
+                settlement_strength(residents.get(settlement.settlement_id, 0)),
+                (bonuses or {}).get(settlement.settlement_id, 0),
+            ),
         )
         for settlement in settlement_list
     ]

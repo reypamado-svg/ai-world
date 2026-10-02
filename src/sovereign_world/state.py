@@ -45,6 +45,7 @@ from sovereign_world.logistics import (
     LogisticsNotice,
 )
 from sovereign_world.people import Population, create_founders
+from sovereign_world.ranks import RealmRank, SettlementRank
 from sovereign_world.research import ResearchAssignment
 from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rng import StableRng
@@ -126,6 +127,9 @@ class CivilizationState(BaseModel):
     """Each settlement's houses, by settlement id (rules version 2)."""
     house_jobs: tuple[HouseJob, ...] = ()
     """Houses going up, by job id."""
+    ranks_reached: dict[EntityId, SettlementRank] = Field(default_factory=dict)
+    """Each settlement's rank above village, by settlement id (rules version 2)."""
+    realm_rank_reached: RealmRank = RealmRank.CHIEFDOM
 
 
 _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
@@ -361,6 +365,9 @@ def validate_world(state: WorldState) -> None:
             for person_id in civilization.known_captives
         ):
             raise ValueError("a civilization knows only of its own people held captive")
+        kinds_at = [(item.settlement_id, item.kind) for item in civilization.institutions]
+        if len(kinds_at) != len(set(kinds_at)):
+            raise ValueError("a settlement keeps at most one institution of each kind")
         kept_by: dict[EntityId, EntityId] = {}
         for institution in civilization.institutions:
             for person_id in institution.staff_ids:
@@ -432,6 +439,10 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("house jobs are unique and sorted")
         if any(job.settlement_id not in settlement_ids for job in civilization.house_jobs):
             raise ValueError("houses go up in their civilization's own settlements")
+        if not set(civilization.ranks_reached) <= settlement_ids or any(
+            rank is SettlementRank.VILLAGE for rank in civilization.ranks_reached.values()
+        ):
+            raise ValueError("ranks above village belong to the civilization's own settlements")
         builders = [person_id for job in civilization.house_jobs for person_id in job.worker_ids]
         if len(builders) != len(set(builders)):
             raise ValueError("a builder works on one house job at a time")
