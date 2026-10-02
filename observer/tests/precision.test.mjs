@@ -30,6 +30,7 @@ test('a far tile paints the same whichever nearby anchor its texture uses', asyn
     const { paintHexDetail } = await import('/src/render/hex-detail.js');
     const { hexCentre, sharedCorners } = await import('/src/world/hex.js');
     const { riverPoint } = await import('/src/world/rivers.js');
+    const { makeInterior } = await import('/src/world/interior.js');
     const R = 25000 / Math.sqrt(3);
     const [q, r] = [99, 99];
     const tile = {
@@ -43,6 +44,7 @@ test('a far tile paints the same whichever nearby anchor its texture uses', asyn
       stone: 650,
       temperature: 400,
     };
+    const interior = makeInterior({ R, tileAt: () => tile });
     const [p1, p2] = sharedCorners(q, r, q + 1, r, R);
     const edge = { p1, p2, flow: 6, deep: false, widthM: 104, key: `${q},${r},${q + 1},${r}` };
     // A 256 px window on the river, 226 m across, at a scale where float32 world coordinates would show.
@@ -59,7 +61,7 @@ test('a far tile paints the same whichever nearby anchor its texture uses', asyn
       const cx = (dx - dy) * 16;
       const cy = ((dx + dy) * 16) / 2;
       ctx.setTransform(s, 0, 0, s, 128 - cx * s, 128 - cy * s);
-      paintHexDetail(ctx, { ...tile, river: true, lake: false }, R, s, { origin, riverEdges: [edge] });
+      paintHexDetail(ctx, { ...tile, river: true, lake: false }, R, s, { origin, riverEdges: [edge], interior });
       return ctx.getImageData(0, 0, 256, 256).data;
     };
     const centre = hexCentre(q, r, R);

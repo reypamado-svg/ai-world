@@ -26,11 +26,11 @@ import {
   worldScreenBounds,
   zoomForTilePx,
 } from '../world/hex.js';
-import { paintHexDetail } from './hex-detail.js';
+import { landOutline, paintHexDetail } from './hex-detail.js';
 import { riverEdgesOf, riverLine, riverWidthM } from '../world/rivers.js';
 import { ChunkLoader, LruCache } from '../world/chunks.js';
 import { hash2 } from '../sim/rng.js';
-import { css, mix } from './art/paint/color.js';
+import { makeInterior, tileBaseColor } from '../world/interior.js';
 
 /** Chunk texture resolutions, as screen pixels per tile, coarse to fine. */
 export const CHUNK_TILE_PX = [32, 64, 128, 256];
@@ -40,25 +40,10 @@ export const HEX_MODE_TILE_PX = 256;
 export const HEX_TILE_PX = [512, 1024];
 const MAX_DETAIL_HEXES = 120;
 
-const LAND = {
-  1: '#86a24f', // grassland
-  2: '#4c7a3a', // forest
-  3: '#8c8476', // mountain
-  4: '#d2b97f', // desert
-  5: '#b9bfa8', // tundra
-  6: '#9c9461', // hills
-  7: '#e9edf0', // snow
-};
-
-function tileColor(terrain, elevation, q, r, lake = false) {
-  if (terrain === 0)
-    return lake
-      ? mix('#2f6f8a', '#4f97ad', Math.min(1, elevation / 150))
-      : mix('#1f4670', '#3f76a6', Math.min(1, elevation / 150));
-  if (terrain === 7) return css(LAND[7], 0.94 + (hash2(q, r, 5) - 0.5) * 0.06);
-  const base = LAND[terrain] ?? '#888';
-  const f = 0.84 + (elevation / 1000) * 0.3 + (hash2(q, r, 5) - 0.5) * 0.06;
-  return terrain === 3 ? mix(base, '#b8b0a2', Math.max(0, (elevation - 820) / 180)).map((c) => c * f) : css(base, f);
+/** A tile's map colour: its interior's base colour, with a slight per-tile variation. */
+function tileColor(tile, q, r, lake) {
+  const f = 0.97 + (hash2(q, r, 5) - 0.5) * 0.06;
+  return tileBaseColor(tile, lake).map((c) => c * f);
 }
 
 /** Thinnest a river is drawn on the map, in texture pixels: 1 for a stream, up to 3 for the largest. */
@@ -101,6 +86,82 @@ export class TerrainLayer {
     this.complete = false;
     this.world = worldScreenBounds(this.width, this.height, this.R);
     this.boundsCache = new Map();
+    this.features = [];
+    this.edgeCache = new Map();
+    this.tileAt = this.tileAt.bind(this);
+    this._interior = null;
+  }
+
+  /**
+   * Engine values of tile (q, r): null off the map, undefined while its chunk
+   * is not loaded. Objects are built once per loaded chunk.
+   */
+  tileAt(q, r) {
+    if (q < 0 || r < 0 || q >= this.width || r >= this.height) return null;
+    const { cq, cr } = chunkOf(q, r, this.ct);
+    const chunk = this.chunks.map.get(`${cq},${cr}`)?.value;
+    if (!chunk) return undefined;
+    if (!chunk.tiles) {
+      chunk.tiles = new Map();
+      for (let i = 0; i < chunk.n; i += 1)
+        chunk.tiles.set(`${chunk.q[i]},${chunk.r[i]}`, {
+          q: chunk.q[i],
+          r: chunk.r[i],
+          terrain: chunk.terrain[i],
+          elevation: chunk.elevation[i],
+          moisture: chunk.moisture[i],
+          soil: chunk.soil[i],
+          timber: chunk.timber[i],
+          stone: chunk.stone[i],
+          temperature: chunk.temperature[i],
+          river: !!chunk.river[i],
+          lake: !!this.source.rivers?.lakes.has(`${chunk.q[i]},${chunk.r[i]}`),
+        });
+    }
+    return chunk.tiles.get(`${q},${r}`);
+  }
+
+  /** Whether a tile and its six neighbours are loaded (needed to blend across its borders). */
+  neighbourhoodLoaded(q, r) {
+    for (const [dq, dr] of [
+      [0, 0],
+      [1, 0],
+      [1, -1],
+      [0, -1],
+      [-1, 0],
+      [-1, 1],
+      [0, 1],
+    ])
+      if (this.tileAt(q + dq, r + dr) === undefined) return false;
+    return true;
+  }
+
+  /** River borders of a tile, in ground-plane metres (cached). */
+  riverEdges(q, r) {
+    const key = `${q},${r}`;
+    if (!this.edgeCache.has(key)) {
+      if (this.edgeCache.size > 4096) this.edgeCache.clear();
+      this.edgeCache.set(key, riverEdgesOf(q, r, this.source.rivers, this.R, this.streamFlow));
+    }
+    return this.edgeCache.get(key);
+  }
+
+  /** Presentation features painted into the ground (the SAMPLE field ring). */
+  setFeatures(features) {
+    this.features = features;
+    this._interior = null;
+  }
+
+  /** The ground colour field over the loaded tiles. */
+  interior() {
+    if (!this._interior)
+      this._interior = makeInterior({
+        R: this.R,
+        tileAt: (q, r) => this.tileAt(q, r) ?? null,
+        lakes: this.source.rivers?.lakes ?? new Set(),
+        features: this.features,
+      });
+    return this._interior;
   }
 
   chunkBounds(cq, cr) {
@@ -155,7 +216,24 @@ export class TerrainLayer {
     this.level = this.hexMode ? this.chunkLevels[2] : this.levelFor(zoom);
     const keys = this.visibleChunks(view);
     this.visibleKeys = keys;
-    this.loader.want(keys);
+    // Detailed tiles blend with their neighbours, so load the chunks around them too.
+    const hexes = this.hexMode ? this.visibleHexes(view) : [];
+    const around = new Set(keys);
+    for (const [, q, r] of hexes)
+      for (const [dq, dr] of [
+        [1, 0],
+        [1, -1],
+        [0, -1],
+        [-1, 0],
+        [-1, 1],
+        [0, 1],
+      ]) {
+        const [nq, nr] = [q + dq, r + dr];
+        if (nq < 0 || nr < 0 || nq >= this.width || nr >= this.height) continue;
+        const c = chunkOf(nq, nr, this.ct);
+        around.add(`${c.cq},${c.cr}`);
+      }
+    this.loader.want([...around]);
     this.loader.pump();
     const wantedTex = new Set(keys.map((k) => `${k}@${this.level}`));
     let bakes = 0;
@@ -185,7 +263,7 @@ export class TerrainLayer {
         }
       }
     }
-    if (this.hexMode) complete = this._updateHexes(view, zoom, show, wantedTex) && complete;
+    if (this.hexMode) complete = this._updateHexes(hexes, zoom, show, wantedTex) && complete;
     for (const [k, sprite] of this.sprites) sprite.visible = show.has(k);
     this.shown = show;
     // Coarser fallbacks must draw beneath finer textures.
@@ -219,10 +297,9 @@ export class TerrainLayer {
     return out.slice(0, MAX_DETAIL_HEXES);
   }
 
-  _updateHexes(view, zoom, show, pinned) {
+  _updateHexes(hexes, zoom, show, pinned) {
     const s = this.hexLevels.find((l) => l >= zoom * 0.8) ?? this.hexLevels[this.hexLevels.length - 1];
     this.hexLevel = s;
-    const hexes = this.visibleHexes(view);
     this.visibleHexCount = hexes.length;
     for (const [, q, r] of hexes) pinned.add(`h${q},${r}@${s}`);
     let complete = true;
@@ -232,8 +309,8 @@ export class TerrainLayer {
       if (!this.textures.has(key)) {
         const { cq, cr } = chunkOf(q, r, this.ct);
         const chunk = this.chunks.get(`${cq},${cr}`);
-        if (chunk && bakes < 2) {
-          this._bakeHex(key, chunk, q, r, b, s, pinned);
+        if (chunk && bakes < 2 && this.neighbourhoodLoaded(q, r)) {
+          this._bakeHex(key, q, r, b, s, pinned);
           bakes += 1;
         }
       }
@@ -249,24 +326,10 @@ export class TerrainLayer {
     return complete;
   }
 
-  _bakeHex(key, chunk, q, r, b, s, pinned) {
+  _bakeHex(key, q, r, b, s, pinned) {
     const { PIXI } = this;
-    let i = 0;
-    while (i < chunk.n && !(chunk.q[i] === q && chunk.r[i] === r)) i += 1;
-    if (i >= chunk.n) return;
-    const tile = {
-      q,
-      r,
-      terrain: chunk.terrain[i],
-      elevation: chunk.elevation[i],
-      moisture: chunk.moisture[i],
-      soil: chunk.soil[i],
-      timber: chunk.timber[i],
-      stone: chunk.stone[i],
-      temperature: chunk.temperature[i],
-      river: !!chunk.river[i],
-      lake: !!this.source.rivers?.lakes.has(`${q},${r}`),
-    };
+    const tile = this.tileAt(q, r);
+    if (!tile) return;
     const pad = 0.04 * (b.x1 - b.x0);
     const x0 = b.x0 - pad;
     const y0 = b.y0 - pad;
@@ -280,8 +343,13 @@ export class TerrainLayer {
     const origin = hexCentre(q, r, this.R);
     const A = project(origin.x, origin.y);
     ctx.setTransform(s, 0, 0, s, -(x0 - A.x) * s, -(y0 - A.y) * s);
-    const edges = riverEdgesOf(q, r, this.source.rivers, this.R, this.streamFlow);
-    paintHexDetail(ctx, tile, this.R, s, { glyphs: true, riverEdges: edges, origin });
+    paintHexDetail(ctx, tile, this.R, s, {
+      glyphs: true,
+      riverEdges: this.riverEdges(q, r),
+      origin,
+      interior: this.interior(),
+      outline: landOutline(q, r, (tq, tr) => (this.tileAt(tq, tr)?.terrain ?? 0) !== 0),
+    });
     const texture = new PIXI.Texture({
       source: new PIXI.CanvasSource({ resource: canvas, autoGenerateMipmaps: true, scaleMode: 'linear' }),
     });
@@ -344,8 +412,10 @@ export class TerrainLayer {
       ctx.beginPath();
       pts.forEach((p, k) => (k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
       ctx.closePath();
-      const col = tileColor(c.terrain[i], c.elevation[i], q, r, this.source.rivers?.lakes.has(`${q},${r}`));
-      ctx.fillStyle = typeof col === 'string' ? col : `rgb(${col.map(Math.round).join(',')})`;
+      const tile = { terrain: c.terrain[i], elevation: c.elevation[i], moisture: c.moisture[i] };
+      Object.assign(tile, { timber: c.timber[i], temperature: c.temperature[i] });
+      const col = tileColor(tile, q, r, this.source.rivers?.lakes.has(`${q},${r}`));
+      ctx.fillStyle = `rgb(${col.map(Math.round).join(',')})`;
       ctx.fill();
       // Hex grid line, about one texture pixel.
       ctx.strokeStyle = 'rgba(20,24,20,0.16)';
