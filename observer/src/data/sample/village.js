@@ -145,5 +145,18 @@ export function observerVillage(footprintOf, R, tile, route = null, travel = nul
   const alpha = (x, y) => Math.max(0, Math.min(1, (inradius - hexDistance(x, y)) / 6));
   const ground = VILLAGE_RADIUS_M;
   const groundBounds = { x0: -ground, y0: -ground, x1: ground, y1: ground };
-  return { scene, origin, tile, alpha, groundBounds, dropped, courierId: id, courierTile: [tq, tr], courierPlan: plan };
+  // SAMPLE fields in a ring around the village, about 800 m across (presentation).
+  const fieldRing = { x: origin.x, y: origin.y, r0: 60, r1: 400 };
+  return {
+    scene,
+    origin,
+    tile,
+    alpha,
+    groundBounds,
+    dropped,
+    fieldRing,
+    courierId: id,
+    courierTile: [tq, tr],
+    courierPlan: plan,
+  };
 }

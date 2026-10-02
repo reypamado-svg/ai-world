@@ -41,9 +41,9 @@ export class VillageLayer {
     this.pin = new PIXI.Graphics();
     this.badge = new PIXI.Container();
     const g = new PIXI.Graphics();
-    g.roundRect(-6, -40, 216, 34, 6).fill({ color: 0x1b1408, alpha: 0.85 }).stroke({ width: 1.5, color: 0xe9b44c });
+    g.roundRect(-6, -40, 300, 34, 6).fill({ color: 0x1b1408, alpha: 0.85 }).stroke({ width: 1.5, color: 0xe9b44c });
     const text = new PIXI.Text({
-      text: `SAMPLE village · ${village.scene.people.length} sample citizens`,
+      text: `SAMPLE village · ${village.scene.people.length} sample citizens · fields: SAMPLE`,
       style: { fontFamily: 'system-ui, sans-serif', fontSize: 12, fontWeight: '700', fill: 0xe9b44c },
     });
     text.position.set(2, -33);

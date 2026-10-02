@@ -76,6 +76,7 @@ class ObserverApp {
     this.villageData = extras.village ?? null;
     if (extras.village) {
       const v = extras.village;
+      this.terrain.setFeatures([{ kind: 'fields', ...v.fieldRing }]);
       this.decor = new DecorLayer({
         PIXI,
         atlas: extras.atlas,
@@ -647,6 +648,14 @@ async function main() {
     ? source.label
     : `Engine world · seed ${source.manifest.engine.seed} · ${source.width}×${source.height} tiles`;
   const app = new ObserverApp(pixi, source, extras);
+  const note = $('provenance');
+  if (note && extras.village) {
+    const [q, r] = extras.village.tile;
+    const borders = source.rivers?.byTile.get(`${q},${r}`) ?? [];
+    note.textContent += borders.length
+      ? ` A river borders the capital tile; no bridge, since none is built before day 1.`
+      : ' No river borders the capital tile.';
+  }
   app.bindInput();
   app.setPaused(false);
   app.run();
