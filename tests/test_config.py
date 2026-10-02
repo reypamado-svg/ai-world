@@ -16,13 +16,24 @@ def test_world_config_has_locked_civilization_shape() -> None:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("width", 23), ("height", 0), ("civilizations", 3), ("founders_per_civilization", 31)],
+    [
+        ("width", 23),
+        ("height", 0),
+        ("civilizations", 1),
+        ("civilizations", 5),
+        ("founders_per_civilization", 31),
+    ],
 )
 def test_world_config_rejects_values_outside_world_contract(field: str, value: int) -> None:
     values = {"seed": 41, "width": 48, "height": 48, field: value}
 
     with pytest.raises(ValidationError):
         WorldConfig(**values)
+
+
+@pytest.mark.parametrize("count", [2, 3, 4])
+def test_world_config_accepts_two_to_four_civilizations(count: int) -> None:
+    assert WorldConfig(seed=41, width=48, height=48, civilizations=count).civilizations == count
 
 
 def test_world_config_is_immutable() -> None:

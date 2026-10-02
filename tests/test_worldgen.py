@@ -3,8 +3,10 @@ from itertools import combinations
 import pytest
 
 from sovereign_world.config import RunManifest, WorldConfig
+from sovereign_world.engine import advance_day
 from sovereign_world.rng import StableRng
-from sovereign_world.state import build_initial_state
+from sovereign_world.scripted import BaselineSovereign
+from sovereign_world.state import build_initial_state, state_hash
 from sovereign_world.worldgen import WorldGenerationError, generate_world
 
 
@@ -56,3 +58,26 @@ def test_generation_failure_is_bounded_and_reports_seed() -> None:
     assert captured.value.seed == 77
     assert captured.value.attempts == 3
     assert "separation" in captured.value.failures
+
+
+@pytest.mark.parametrize(("size", "count"), [(24, 2), (24, 3), (48, 2), (48, 3)])
+def test_two_and_three_civilizations_generate_and_run_deterministically(
+    size: int, count: int
+) -> None:
+    config = WorldConfig(seed=9, width=size, height=size, civilizations=count)
+    manifest = RunManifest.new(config=config, engine_version="test")
+
+    def daily() -> list[str]:
+        state = build_initial_state(manifest)
+        assert len(state.civilizations) == count
+        sovereigns = {
+            civilization_id: BaselineSovereign() for civilization_id in state.civilizations
+        }
+        rng = StableRng(config.seed)
+        hashes = [state_hash(state)]
+        for _ in range(60):
+            state = advance_day(state, rng, sovereigns=sovereigns).state
+            hashes.append(state_hash(state))
+        return hashes
+
+    assert daily() == daily()

@@ -21,7 +21,8 @@ class WorldConfig(BaseModel):
     seed: int
     width: int = Field(ge=24)
     height: int = Field(ge=24)
-    civilizations: int = Field(default=4, ge=4, le=4)
+    civilizations: int = Field(default=4, ge=2, le=4)
+    """How many civilizations the world starts with: two to four."""
     founders_per_civilization: int = Field(default=32, ge=32, le=32)
     council_interval_days: int = Field(default=30, ge=30, le=30)
 

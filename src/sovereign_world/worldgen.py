@@ -49,12 +49,12 @@ class GeneratedWorld:
 
 
 class WorldGenerationError(RuntimeError):
-    def __init__(self, seed: int, attempts: int, failures: dict[str, int]) -> None:
+    def __init__(self, seed: int, attempts: int, failures: dict[str, int], count: int = 4) -> None:
         self.seed = seed
         self.attempts = attempts
         self.failures = failures
         super().__init__(
-            f"could not place four viable starts for seed {seed} after {attempts} attempts: "
+            f"could not place {count} viable starts for seed {seed} after {attempts} attempts: "
             f"{failures}"
         )
 
@@ -252,4 +252,6 @@ def generate_world(
         if len(starts) == config.civilizations:
             return GeneratedWorld(world_map=world_map, starts=tuple(starts))
         failures.update(reasons)
-    raise WorldGenerationError(config.seed, max_attempts, dict(failures))
+    raise WorldGenerationError(
+        config.seed, max_attempts, dict(failures), count=config.civilizations
+    )

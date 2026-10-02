@@ -53,12 +53,13 @@ def initialize(
     seed: int = typer.Option(..., help="Deterministic world seed."),
     width: int = typer.Option(100, min=24, help="Tiles across; each is 25 km."),
     height: int = typer.Option(100, min=24, help="Tiles down; each is 25 km."),
+    civilizations: int = typer.Option(4, min=2, max=4, help="Civilizations in the world, 2 to 4."),
     sovereigns: str | None = typer.Option(
         None, help="TOML file of sovereign assignments and budgets, frozen for the run."
     ),
 ) -> None:
     """Create a locked manifest and day-zero checkpoint."""
-    config = WorldConfig(seed=seed, width=width, height=height)
+    config = WorldConfig(seed=seed, width=width, height=height, civilizations=civilizations)
     manifest = RunManifest.model_validate(
         {
             "run_id": uuid4(),
