@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from logistics_helpers import ScheduledSovereign, clear_message_id, treaty_world
@@ -34,7 +35,9 @@ QUIET = json.dumps({"commands": [], "rationale": "Wait and watch."})
 
 
 def test_a_manifest_left_at_its_defaults_keeps_its_old_hash() -> None:
-    manifest = RunManifest.new(config=WorldConfig(seed=21, width=48, height=48), engine_version="1")
+    manifest = RunManifest(
+        run_id=uuid4(), engine_version="1", config=WorldConfig(seed=21, width=48, height=48)
+    )
     old = hashlib.sha256(
         json.dumps(
             {
