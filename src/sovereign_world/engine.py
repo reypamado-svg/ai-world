@@ -5552,7 +5552,10 @@ def _advance_territory(state: WorldState) -> list[DomainEvent]:
         },
         bonuses=_hall_bonuses(state) if rules_for(state.rules_version).ranks else None,
     )
-    state.territory = result.territory
+    # Set without checking it again: advance_territory builds it in canonical order, and
+    # checking 30,000 entries a day on a large map costs a third of a second.
+    object.__setattr__(state, "territory", result.territory)
+    state.__pydantic_fields_set__.add("territory")
     owner_of_source = {
         **{
             settlement.settlement_id: settlement.civilization_id

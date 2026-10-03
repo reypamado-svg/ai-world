@@ -144,6 +144,11 @@ class Territory(BaseModel):
         )
 
 
+def _coord_key(coord: HexCoord) -> tuple[int, int]:
+    """A coordinate's sort key: the order coordinates sort in, compared without Python."""
+    return (coord.q, coord.r)
+
+
 def settlement_strength(residents: int) -> int:
     """A settlement projects 40 plus 8 per square root of its residents; empty ones nothing."""
     if residents <= 0:
@@ -156,6 +161,46 @@ def _boosted(strength: int, bonus: int) -> int:
     return strength + bonus if strength > 0 else 0
 
 
+@dataclass(frozen=True, slots=True)
+class _Graph:
+    """Every tile of a map with the cost of stepping to each passable neighbour, for given
+    roads and bridges: worked out once instead of on every step of every day."""
+
+    coords: tuple[HexCoord, ...]
+    index: dict[HexCoord, int]
+    edges: tuple[tuple[tuple[int, int], ...], ...]
+    """For each tile, (neighbour, cost) in the map's neighbour order."""
+
+
+_GRAPHS: dict[tuple[str, frozenset[object], frozenset[object]], _Graph] = {}
+_GRAPH_CACHE = 8
+
+
+def _graph(world_map: WorldMap, roads: Roads | None, bridges: Bridges) -> _Graph:
+    key = (
+        world_map.content_hash(),
+        frozenset((roads or {}).items()),
+        frozenset(bridges),
+    )
+    graph = _GRAPHS.get(key)
+    if graph is None:
+        coords = tuple(tile.coord for tile in world_map.tiles)
+        index = {coord: position for position, coord in enumerate(coords)}
+        edges = []
+        for coord in coords:
+            steps = []
+            for neighbor in world_map.neighbors(coord):
+                cost = entry_cost(world_map, neighbor, roads, origin=coord, bridges=bridges)
+                if cost is not None:
+                    steps.append((index[neighbor], cost))
+            edges.append(tuple(steps))
+        graph = _Graph(coords, index, tuple(edges))
+        if len(_GRAPHS) >= _GRAPH_CACHE:
+            _GRAPHS.clear()
+        _GRAPHS[key] = graph
+    return graph
+
+
 def influence_field(
     world_map: WorldMap,
     sources: Iterable[tuple[HexCoord, int]],
@@ -166,6 +211,45 @@ def influence_field(
 
     Roads cut the travel cost, so influence reaches further along them.
     """
+    sources = list(sources)
+    graph = _graph(world_map, roads, bridges)
+    if any(tile not in graph.index for tile, _ in sources):
+        return _influence_field_stepwise(world_map, sources, roads, bridges)
+    coords, edges = graph.coords, graph.edges
+    values = [0] * len(coords)
+    reached_order: list[int] = []
+    """Tiles in the order they were first reached, so the result is built in that order."""
+    heap: list[tuple[int, int, int, int]] = []
+    for tile, strength in sources:
+        position = graph.index[tile]
+        if strength > values[position]:
+            if not values[position]:
+                reached_order.append(position)
+            values[position] = strength
+            heapq.heappush(heap, (-strength, tile.q, tile.r, position))
+    while heap:
+        negative, _, _, position = heapq.heappop(heap)
+        value = -negative
+        if value != values[position]:
+            continue
+        for neighbor, cost in edges[position]:
+            reached = value - cost
+            if reached > values[neighbor]:
+                if not values[neighbor]:
+                    reached_order.append(neighbor)
+                values[neighbor] = reached
+                coord = coords[neighbor]
+                heapq.heappush(heap, (-reached, coord.q, coord.r, neighbor))
+    return {coords[position]: values[position] for position in reached_order}
+
+
+def _influence_field_stepwise(
+    world_map: WorldMap,
+    sources: Iterable[tuple[HexCoord, int]],
+    roads: Roads | None = None,
+    bridges: Bridges = NO_BRIDGES,
+) -> dict[HexCoord, int]:
+    """`influence_field` worked out step by step: for sources off the map's tiles."""
     best: dict[HexCoord, int] = {}
     frontier: list[tuple[int, int, int]] = []
     for tile, strength in sources:
@@ -339,7 +423,7 @@ def advance_territory(
     tiles = set(previous)
     for field in fields.values():
         tiles.update(field)
-    for tile in sorted(tiles):
+    for tile in sorted(tiles, key=_coord_key):
         before = previous.get(tile, {})
         for civilization_id in sorted(set(before) | set(fields)):
             value = _drift(
@@ -359,7 +443,7 @@ def advance_territory(
     new_owners: dict[HexCoord, EntityId] = {}
     new_challenges: list[Challenge] = []
     changes: list[ControlChange] = []
-    for tile in sorted(set(held) | set(owners) | set(anchors)):
+    for tile in sorted(set(held) | set(owners) | set(anchors), key=_coord_key):
         holders = held.get(tile, {})
         owner = owners.get(tile)
         if tile in anchors:
@@ -390,11 +474,23 @@ def advance_territory(
             if new_owner is not None:
                 changes.append(ControlChange(tile, new_owner, gained=True, previous_owner=owner))
 
+    # Built in canonical order, so the whole is not checked for order again (tens of
+    # thousands of entries a day on a large map); each entry still is, and a saved
+    # territory is checked in full when it is loaded.
+    # Most holds are as they were yesterday: those keep yesterday's record.
+    kept = {(item.tile, item.civilization_id): item for item in territory.held}
+
+    def hold(tile: HexCoord, civilization_id: EntityId, value: int) -> HeldControl:
+        item = kept.get((tile, civilization_id))
+        if item is not None and item.value == value:
+            return item
+        return HeldControl(tile=tile, civilization_id=civilization_id, value=value)
+
     return TerritoryDayResult(
-        territory=Territory(
+        territory=Territory.model_construct(
             held=tuple(
-                HeldControl(tile=tile, civilization_id=civilization_id, value=value)
-                for tile in sorted(held)
+                hold(tile, civilization_id, value)
+                for tile in sorted(held, key=_coord_key)
                 for civilization_id, value in sorted(held[tile].items())
             ),
             owners=tuple(
@@ -407,7 +503,9 @@ def advance_territory(
                         else day
                     ),
                 )
-                for tile, civilization_id in sorted(new_owners.items())
+                for tile, civilization_id in sorted(
+                    new_owners.items(), key=lambda item: _coord_key(item[0])
+                )
             ),
             challenges=tuple(sorted(new_challenges, key=lambda item: item.tile)),
             cut_off=tuple(sorted(cut_off)),
