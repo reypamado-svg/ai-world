@@ -15,7 +15,7 @@ from sovereign_world.commands import (
     build_council_report,
     crisis_council_due,
 )
-from sovereign_world.config import RunManifest
+from sovereign_world.config import CURRENT_JOURNAL_FORMAT, RunManifest
 from sovereign_world.diplomacy import PeaceTerms, TreatyKind
 from sovereign_world.engine import advance_day
 from sovereign_world.events import DomainEvent
@@ -114,6 +114,8 @@ def run_scenario(
             "config": initial.config,
             "engine_version": "0.1.0",
             "rules_version": initial.rules_version,
+            # Saved as a new run is, so scenarios exercise the daily changes (Phase 5 S5).
+            "journal_format": CURRENT_JOURNAL_FORMAT,
         }
     )
     store = WorldStore.create(root / "record", manifest, initial)
@@ -131,7 +133,7 @@ def assert_replays(
     validate_world(run.final)
     final_hash = state_hash(run.final)
     assert state_hash(replay_run(run.store)) == final_hash
-    assert verify_run(run.store).state_hash == final_hash
+    assert verify_run(run.store).state_hash == run.store.state_hash(run.final)
     rerun, events, _ = _simulate(initial, make_sovereigns, days)
     assert state_hash(rerun) == final_hash
     assert [event.kind for event in events] == [event.kind for event in run.events]
