@@ -55,6 +55,7 @@ from sovereign_world.housing import (
     HouseJob,
     best_grade,
     house_materials,
+    known_grades,
     residents_by_settlement,
 )
 from sovereign_world.ids import EntityId
@@ -188,6 +189,8 @@ class DecreeKind(StrEnum):
     POPULATION_GROWTH_POLICY = "population_growth_policy"
     HOUSING_POLICY = "housing_policy"
     """Rules version 2: the spare room, in percent, each settlement keeps building toward."""
+    MATERIALS_RESERVE_TARGET = "materials_reserve_target"
+    """Rules version 2: the timber each settlement gathers toward (and half as much stone)."""
 
 
 class DirectOrderKind(StrEnum):
@@ -363,6 +366,8 @@ class DirectOrder(BaseModel):
     priority: int = Field(default=50, ge=0, le=100)
     house_count: int = Field(default=1, ge=1, le=MAX_HOUSES_PER_ORDER)
     """Rules version 2: how many houses a shelter project raises, one after another."""
+    house_grade: HouseGrade | None = None
+    """Rules version 2: the kind of house to raise; none means the best this people knows."""
 
 
 Command = Annotated[Decree | DirectOrder, Field(union_mode="left_to_right")]
@@ -1533,7 +1538,9 @@ def _shelter_error(
         return error(
             "invalid_project", "builders raise houses together at one of their settlements"
         )
-    grade = best_grade(civilization.capabilities)
+    grade = command.house_grade or best_grade(civilization.capabilities)
+    if grade not in known_grades(civilization.capabilities):
+        return error("invalid_project", f"this people does not know how to build a {grade.value}")
     materials = house_materials(grade, command.house_count)
     for resource, quantity in materials.items():
         if _short(civilization, site.tile, reserved, resource, quantity):
@@ -1583,11 +1590,26 @@ def _civil_research_error(
 
 
 WETLAND_INDEX = COVER_CLASSES.index(CoverClass.WETLAND)
+MAX_MATERIALS_TARGET = 5_000
 IRRIGATION_WETLAND = WET_FIELD
 """A field with this much wetland (basis points), or a river, can be irrigated."""
 
 
 def _decree_error(command: Decree, state: WorldState) -> CommandError | None:
+    if command.kind is DecreeKind.MATERIALS_RESERVE_TARGET:
+        if not rules_for(state.rules_version).cover_mechanics:
+            return CommandError(
+                command_id=command.command_id,
+                code="invalid_decree",
+                message="this world's rules have no gathering, so no materials target",
+            )
+        if not 0 <= command.value <= MAX_MATERIALS_TARGET:
+            return CommandError(
+                command_id=command.command_id,
+                code="invalid_decree",
+                message=f"a materials target is 0 to {MAX_MATERIALS_TARGET} timber",
+            )
+        return None
     if command.kind is not DecreeKind.HOUSING_POLICY:
         return None
     if not rules_for(state.rules_version).houses:

@@ -7,6 +7,7 @@ building. Huts need only timber; houses and stone houses need the craft to raise
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -110,6 +111,29 @@ def best_grade(capabilities: tuple[CapabilityRecord, ...]) -> HouseGrade:
         if needs is None or needs in known:
             return grade
     return HouseGrade.HUT
+
+
+def known_grades(capabilities: tuple[CapabilityRecord, ...]) -> tuple[HouseGrade, ...]:
+    """The houses this civilization knows how to build, best first."""
+    known = {record.capability for record in capabilities}
+    return tuple(
+        grade
+        for grade in reversed(GRADE_ORDER)
+        if HOUSE_GRADES[grade].needs is None or HOUSE_GRADES[grade].needs in known
+    )
+
+
+def affordable_grade(
+    capabilities: tuple[CapabilityRecord, ...], goods: Mapping[Resource, int], count: int = 1
+) -> HouseGrade | None:
+    """The best known house of which a store can pay for `count`, if any."""
+    for grade in known_grades(capabilities):
+        if all(
+            goods.get(resource, 0) >= quantity * count
+            for resource, quantity in HOUSE_GRADES[grade].materials.items()
+        ):
+            return grade
+    return None
 
 
 def slots_of(civilization: CivilizationState, settlement_id: EntityId) -> int:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from itertools import batched
@@ -87,13 +87,14 @@ from sovereign_world.exploration import (
     Observation,
     advance_expeditions,
 )
-from sovereign_world.hexmap import HexCoord
+from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.housing import (
     ABANDONED_DECAY_DAYS,
     ABANDONED_GRACE_DAYS,
     STORMED_SHARE,
     HouseJob,
     Housing,
+    affordable_grade,
     best_grade,
     founding_housing,
     house_materials,
@@ -114,7 +115,7 @@ from sovereign_world.institutions import (
     serving_tiles,
     staff_of,
 )
-from sovereign_world.land import food_capacity
+from sovereign_world.land import food_capacity, stone_capacity, timber_capacity
 from sovereign_world.languages import LEARNING_INTERVAL, learn, native
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
@@ -4155,6 +4156,34 @@ def _advance_storehouses(state: WorldState) -> list[DomainEvent]:
     return events
 
 
+def _gather(
+    world_map: WorldMap,
+    tiles: Sequence[HexCoord],
+    larder: Inventory,
+    hands: int,
+    target: int,
+) -> tuple[Inventory, dict[Resource, int]]:
+    """Rules version 2: spare hands gather timber up to the target, then stone up to half
+    of it, as fast as the woods and rock allow. A tool in store doubles one gatherer's day."""
+    gathered: dict[Resource, int] = {}
+    for resource, goal, most in (
+        (Resource.TIMBER, target, timber_capacity(world_map, tiles)),
+        (Resource.STONE, target // 2, stone_capacity(world_map, tiles)),
+    ):
+        if hands <= 0:
+            break
+        tools = min(larder.quantities.get(Resource.TOOL, 0), hands)
+        room = larder.capacity - larder.total_units
+        units = min(hands + tools, most, goal - larder.quantities.get(resource, 0), room)
+        if units <= 0:
+            continue
+        larder = larder.apply_delta(InventoryDelta(changes={resource: units}))
+        gathered[resource] = units
+        # A gatherer with a tool brings in two units, so fewer hands are spent.
+        hands -= units - min(tools, units // 2)
+    return larder, gathered
+
+
 def _expire_decrees(state: WorldState) -> list[DomainEvent]:
     """Rules version 2: a decree ends when its days run out, unless a council renews it."""
     events: list[DomainEvent] = []
@@ -4187,7 +4216,7 @@ def _start_houses(
         civilization, civilization.population.people[command.worker_ids[0]].location
     )
     assert site is not None
-    grade = best_grade(civilization.capabilities)
+    grade = command.house_grade or best_grade(civilization.capabilities)
     return [
         _open_house_job(
             state,
@@ -4239,8 +4268,6 @@ def _apply_housing_policy(state: WorldState) -> list[DomainEvent]:
         residents = residents_by_settlement(state, civilization_id)
         busy = _busy_at_home(state, civilization_id)
         building = {job.settlement_id for job in civilization.house_jobs}
-        grade = best_grade(civilization.capabilities)
-        materials = house_materials(grade, 1)
         people = civilization.population.people
         for settlement in civilization.settlements:
             sid = settlement.settlement_id
@@ -4250,7 +4277,16 @@ def _apply_housing_policy(state: WorldState) -> list[DomainEvent]:
             spare = slots_of(civilization, sid) - count
             if spare * 100 >= target * max(count, 1):
                 continue
-            if not has(civilization, settlement.tile, materials):
+            # The best house the store can pay for; huts when stone runs short.
+            grade = (
+                affordable_grade(
+                    civilization.capabilities,
+                    store_at(civilization, settlement.tile).quantities,
+                )
+                if rules_for(state.rules_version).cover_mechanics
+                else best_grade(civilization.capabilities)
+            )
+            if grade is None or not has(civilization, settlement.tile, house_materials(grade, 1)):
                 continue
             idle = [
                 person_id
@@ -6185,6 +6221,7 @@ def advance_day(
             larder = store(civilization, store_id)
             current_food = larder.quantities.get(Resource.FOOD, 0)
             target_food = living_count * reserve_days
+            produced = 0
             # Under siege the fields lie outside the walls, beyond reach.
             if labor_priority > 0 and current_food < target_food and store_id not in blockaded:
                 capacity = larder.capacity - larder.total_units
@@ -6214,6 +6251,29 @@ def advance_day(
                             str(civilization_id),
                             str(store_id),
                             units=produced,
+                        )
+                    )
+            materials_target = decrees.get("materials_reserve_target", 0)
+            if (
+                materials_target > 0
+                and labor_priority > 0
+                and store_id not in blockaded
+                and rules_for(candidate.rules_version).cover_mechanics
+            ):
+                # Hands not needed in the fields cut timber and break stone.
+                hands = sum(person_id not in drilling for person_id in local) - produced
+                larder, gathered = _gather(
+                    candidate.world_map, fields.get(store_id, ()), larder, hands, materials_target
+                )
+                for resource, units in gathered.items():
+                    events.append(
+                        _event(
+                            candidate,
+                            EventPhase.WORK,
+                            f"{resource.value}_gathered",
+                            str(civilization_id),
+                            str(store_id),
+                            units=units,
                         )
                     )
             consumed = min(living_count, larder.quantities.get(Resource.FOOD, 0))

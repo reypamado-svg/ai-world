@@ -15,7 +15,7 @@ from sovereign_world.commands import (
     ProjectKind,
 )
 from sovereign_world.hexmap import HexCoord, Terrain
-from sovereign_world.housing import HOUSE_GRADES, HOUSEHOLD, MAX_HOUSES_PER_ORDER
+from sovereign_world.housing import HOUSE_GRADES, HOUSEHOLD, MAX_HOUSES_PER_ORDER, HouseGrade
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import InstitutionKind
 
@@ -117,8 +117,17 @@ def _plan_rules_two(report: CouncilReport) -> tuple[Command, ...]:
             priority=60,
             duration_days=60,
         ),
+        Decree(
+            command_id=f"decree:{report.day}:materials",
+            kind=DecreeKind.MATERIALS_RESERVE_TARGET,
+            value=MATERIALS_TARGET,
+            priority=60,
+            duration_days=60,
+        ),
     ]
-    shelter = _house_order(report)
+    # On the first day the housing policy starts the first house; the council's eight
+    # orders go to the hall and the survey instead.
+    shelter = _house_order(report) if report.day else None
     if shelter is not None:
         commands.append(shelter)
     commands.append(
@@ -160,6 +169,8 @@ def _plan_rules_two(report: CouncilReport) -> tuple[Command, ...]:
 
 SPARE_ROOM_PCT = 10
 """The baseline keeps a tenth of its capital's room spare."""
+MATERIALS_TARGET = 300
+"""Timber each settlement gathers toward, and half as much stone."""
 
 
 def _house_order(report: CouncilReport) -> DirectOrder | None:
@@ -175,10 +186,22 @@ def _house_order(report: CouncilReport) -> DirectOrder | None:
         return None
     count = min(MAX_HOUSES_PER_ORDER, -(-wanted // HOUSEHOLD))
     store = report.stores.get(capital.settlement_id, report.inventory)
-    for resource, quantity in HOUSE_GRADES[view.buildable].materials.items():
-        count = min(count, store.get(resource, 0) // quantity)
-    if count <= 0:
+    # The best house the store can pay for at least one of; huts when stone is short.
+    grade = next(
+        (
+            item
+            for item in _grades_down_from(view.buildable)
+            if all(
+                store.get(resource, 0) >= quantity
+                for resource, quantity in HOUSE_GRADES[item].materials.items()
+            )
+        ),
+        None,
+    )
+    if grade is None:
         return None
+    for resource, quantity in HOUSE_GRADES[grade].materials.items():
+        count = min(count, store.get(resource, 0) // quantity)
     return DirectOrder(
         command_id=f"project:{report.day}:shelter",
         kind=DirectOrderKind.START_PROJECT,
@@ -186,8 +209,18 @@ def _house_order(report: CouncilReport) -> DirectOrder | None:
         project_id=EntityId(f"project:houses:{report.civilization_id}:{report.day}"),
         project_kind=ProjectKind.SHELTER,
         house_count=count,
+        house_grade=grade,
         priority=90,
     )
+
+
+def _grades_down_from(best: HouseGrade) -> tuple[HouseGrade, ...]:
+    """The best grade and those below it, best first; a hut is always known."""
+    if best is HouseGrade.STONE_HOUSE:
+        return (HouseGrade.STONE_HOUSE, HouseGrade.HUT)
+    if best is HouseGrade.HOUSE:
+        return (HouseGrade.HOUSE, HouseGrade.HUT)
+    return (HouseGrade.HUT,)
 
 
 def _survey_route(report: CouncilReport, direction: int) -> tuple[HexCoord, ...] | None:

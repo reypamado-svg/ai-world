@@ -1,5 +1,7 @@
 """Houses (rules version 2): every five people need one; people grow only where there is room."""
 
+from dataclasses import replace
+
 import pytest
 from logistics_helpers import OneShotSovereign, clear_journey_id, linked_world, treaty_world
 from test_allegiance import _colony as _walled_colony
@@ -153,6 +155,16 @@ def test_captives_held_at_a_settlement_need_room_too() -> None:
 
 def test_settlers_raise_huts_as_they_arrive() -> None:
     _, state, home, _, route = linked_world(distance=6, rules_version=2)
+    # A new settlement needs water: give the site a marsh.
+    state.world_map = replace(
+        state.world_map,
+        tiles=tuple(
+            replace(tile, cover=(6_000, 1_000, 1_000, 2_000, 0, 0, 0))
+            if tile.coord == route[3]
+            else tile
+            for tile in state.world_map.tiles
+        ),
+    )
     found = DirectOrder(
         command_id="order:found",
         kind=DirectOrderKind.FOUND_SETTLEMENT,
