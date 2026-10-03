@@ -254,33 +254,42 @@ class PeopleTable:
     def dump(self, mode: str) -> dict[str, dict[str, Any]]:
         """Every person, by id in row order, as the old model dumped them."""
         json = mode == "json"
-        nums = {name: column[: self.size].tolist() for name, column in self.nums.items()}
-        alive = self.alive[: self.size].tolist()
-        objs = self.objs
-        out: dict[str, dict[str, Any]] = {}
-        for row in self.rows().tolist():
-            person: dict[str, Any] = {}
-            for name in FIELDS:
-                if name == "alive":
-                    person[name] = alive[row]
-                elif name in nums:
-                    person[name] = nums[name][row]
-                else:
-                    value = objs[name][row]
-                    if name == "location":
-                        value = {"q": value.q, "r": value.r}
-                    elif name == "sex":
-                        value = value.value if json else value
-                    elif name == "allegiances":
-                        value = [item.model_dump(mode=mode) for item in value]
-                        value = value if json else tuple(value)
-                    elif name in TUPLES:
-                        value = list(value) if json else value
-                    elif name in DICTS:
-                        value = dict(value)
-                    person[name] = value
-            out[self.ids[row]] = person
-        return out
+        rows = self.rows()
+        picked = rows.tolist()
+        columns: list[list[Any]] = []
+        for name in FIELDS:
+            if name == "alive":
+                columns.append(self.alive[rows].tolist())
+            elif name in NUMBERS:
+                columns.append(self.nums[name][rows].tolist())
+            else:
+                column = self.objs[name]
+                values = [column[row] for row in picked]
+                if name == "location":
+                    values = [{"q": value.q, "r": value.r} for value in values]
+                elif name == "sex" and json:
+                    values = [value.value for value in values]
+                elif name == "allegiances":
+                    values = [
+                        (
+                            [item.model_dump(mode=mode) for item in value]
+                            if json
+                            else tuple(item.model_dump(mode=mode) for item in value)
+                        )
+                        if value
+                        else ([] if json else ())
+                        for value in values
+                    ]
+                elif name in TUPLES and json:
+                    values = [list(value) for value in values]
+                elif name in DICTS and not json:
+                    values = [dict(value) for value in values]
+                columns.append(values)
+        ids = self.ids
+        return {
+            ids[row]: dict(zip(FIELDS, person, strict=True))
+            for row, person in zip(picked, zip(*columns, strict=True), strict=True)
+        }
 
 
 _RECORDS: TypeAdapter[dict[EntityId, PersonRecord]] = TypeAdapter(dict[EntityId, PersonRecord])
@@ -320,6 +329,16 @@ class _Column[T]:
 class _Int(_Column[int]):
     __slots__ = ()
 
+    @overload
+    def __get__(self, obj: None, owner: type | None = None) -> Self: ...
+    @overload
+    def __get__(self, obj: Person, owner: type | None = None) -> int: ...
+    def __get__(self, obj: Person | None, owner: type | None = None) -> int | Self:
+        if obj is None:
+            return self
+        value: int = int(obj._table.nums[self.name][obj._row])
+        return value
+
     def read(self, table: PeopleTable, row: int) -> int:
         return int(table.nums[self.name][row])
 
@@ -335,6 +354,16 @@ class _Int(_Column[int]):
 class _Alive(_Column[bool]):
     __slots__ = ()
 
+    @overload
+    def __get__(self, obj: None, owner: type | None = None) -> Self: ...
+    @overload
+    def __get__(self, obj: Person, owner: type | None = None) -> bool: ...
+    def __get__(self, obj: Person | None, owner: type | None = None) -> bool | Self:
+        if obj is None:
+            return self
+        value: bool = bool(obj._table.alive[obj._row])
+        return value
+
     def read(self, table: PeopleTable, row: int) -> bool:
         return bool(table.alive[row])
 
@@ -346,6 +375,16 @@ class _Alive(_Column[bool]):
 
 class _Object[T](_Column[T]):
     __slots__ = ()
+
+    @overload
+    def __get__(self, obj: None, owner: type | None = None) -> Self: ...
+    @overload
+    def __get__(self, obj: Person, owner: type | None = None) -> T: ...
+    def __get__(self, obj: Person | None, owner: type | None = None) -> T | Self:
+        if obj is None:
+            return self
+        value: T = obj._table.objs[self.name][obj._row]
+        return value
 
     def read(self, table: PeopleTable, row: int) -> T:
         value: T = table.objs[self.name][row]
