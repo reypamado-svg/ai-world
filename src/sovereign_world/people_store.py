@@ -18,6 +18,7 @@ Saves are exactly as before: a people mapping dumps to the same JSON, and loads 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from enum import StrEnum
@@ -35,6 +36,20 @@ if TYPE_CHECKING:
 
 BLOCK = 1_024
 """Rows per dirty block."""
+_OFFSET = 1 << 21
+"""Shifts a coordinate to non-negative before packing a place into one integer."""
+_TABLES = itertools.count(1)
+"""Gives each table its own identity, for telling a copy's original."""
+
+
+def place_code(coord: HexCoord) -> int:
+    """A place as one integer, for comparing whole columns of places at once."""
+    return (coord.q + _OFFSET) * (_OFFSET * 2) + (coord.r + _OFFSET)
+
+
+def place_of(code: int) -> HexCoord:
+    q, r = divmod(int(code), _OFFSET * 2)
+    return HexCoord(q - _OFFSET, r - _OFFSET)
 
 
 class AllegianceChange(BaseModel):
@@ -115,19 +130,27 @@ class PeopleTable:
     """The columns of one civilization's people."""
 
     __slots__ = (
+        "_living",
+        "_order",
         "alive",
+        "base",
         "capacity",
+        "captive",
         "digest",
         "dirty",
+        "identity",
         "ids",
         "index",
+        "loc_code",
         "nums",
         "objs",
+        "objs_dirty",
         "origin",
         "present",
         "proxies",
         "shared",
         "size",
+        "version",
     )
 
     def __init__(self, capacity: int = 16) -> None:
@@ -150,6 +173,22 @@ class PeopleTable:
         worked out again."""
         self.origin: list[tuple[dict[Any, int], ...] | None] = []
         """A row's dicts as they were when last handed out, to see whether they changed."""
+        # Indexes (S6): kept beside the columns, never saved or hashed.
+        self.loc_code = np.zeros(capacity, dtype=np.int64)
+        """Each row's place as one integer (`place_code`)."""
+        self.captive = np.zeros(capacity, dtype=bool)
+        """Whether each row is held prisoner (`captive_of` set)."""
+        self.objs_dirty = np.zeros(capacity, dtype=bool)
+        """Rows whose text or dict fields may differ from the table this was copied from."""
+        self.identity = next(_TABLES)
+        self.version = 0
+        """Bumped by every change, so a copy can tell whether its original moved on."""
+        self.base: tuple[int, int] | None = None
+        """The (identity, version) of the table this one was copied from."""
+        self._order: np.ndarray | None = np.zeros(0, dtype=np.int64)
+        """Every row, present or not, sorted by id; None when it must be sorted again."""
+        self._living: tuple[EntityId, ...] | None = None
+        """The living people's ids, sorted, until someone is born, dies, comes or goes."""
 
     # Growth and bookkeeping.
 
@@ -159,11 +198,14 @@ class PeopleTable:
             grown = np.zeros(capacity, dtype=np.int64)
             grown[: self.capacity] = column
             self.nums[name] = grown
-        for attribute in ("present", "alive", "shared"):
+        for attribute in ("present", "alive", "shared", "captive", "objs_dirty"):
             old = getattr(self, attribute)
             grown_flags = np.zeros(capacity, dtype=bool)
             grown_flags[: self.capacity] = old
             setattr(self, attribute, grown_flags)
+        codes = np.zeros(capacity, dtype=np.int64)
+        codes[: self.capacity] = self.loc_code
+        self.loc_code = codes
         dirty = np.zeros(capacity // BLOCK + 1, dtype=bool)
         dirty[: len(self.dirty)] = self.dirty
         self.dirty = dirty
@@ -171,6 +213,17 @@ class PeopleTable:
 
     def mark(self, row: int) -> None:
         self.dirty[row // BLOCK] = True
+        self.version += 1
+
+    def touched(self, rows: np.ndarray) -> None:
+        """These rows' numbers were written as whole columns: mark their blocks dirty."""
+        if len(rows):
+            self.dirty[np.unique(rows // BLOCK)] = True
+            self.version += 1
+
+    def living_changed(self) -> None:
+        """Someone was born, died, came or went: the sorted living ids must be redone."""
+        self._living = None
 
     def unshare(self, row: int) -> None:
         """Give a row its own skill, language and held-skill dicts."""
@@ -191,10 +244,13 @@ class PeopleTable:
             self.unshare(row)
         elif self.origin[row] is None:
             self.origin[row] = tuple(dict(self.objs[name][row]) for name in DICTS)
+        self.objs_dirty[row] = True
+        self.version += 1
 
     def changed(self, row: int) -> None:
         """A row's text or dict fields were written: its digest must be worked out again."""
         self.digest[row] = None
+        self.objs_dirty[row] = True
 
     def dirty_blocks(self) -> tuple[int, ...]:
         return tuple(int(block) for block in np.flatnonzero(self.dirty))
@@ -225,8 +281,22 @@ class PeopleTable:
         self.digest.append(None)
         self.origin.append(None)
         self.size += 1
+        self._index_row(row, values)
+        order = self._order
+        if order is not None:
+            # Ids mostly arrive in order; a copy may share the list, so it is replaced.
+            if len(order) == 0 or self.ids[int(order[-1])] < person_id:
+                self._order = np.append(order, row)
+            else:
+                self._order = None
+        self._living = None
         self.mark(row)
         return row
+
+    def _index_row(self, row: int, values: Mapping[str, Any]) -> None:
+        self.loc_code[row] = place_code(values["location"])
+        self.captive[row] = values["captive_of"] is not None
+        self.objs_dirty[row] = True
 
     def overwrite(self, row: int, values: Mapping[str, Any]) -> None:
         self.alive[row] = bool(values["alive"])
@@ -239,6 +309,8 @@ class PeopleTable:
             self.objs[name][row] = dict(values[name])
         self.digest[row] = None
         self.origin[row] = None
+        self._index_row(row, values)
+        self._living = None
         self.mark(row)
 
     def values(self, row: int) -> dict[str, Any]:
@@ -257,6 +329,7 @@ class PeopleTable:
         """Take a person out; its row stays, unused, until the table is saved and loaded."""
         row = self.index.pop(person_id)
         self.present[row] = False
+        self._living = None
         self.mark(row)
         return row
 
@@ -270,6 +343,76 @@ class PeopleTable:
 
     def rows(self) -> np.ndarray:
         return np.flatnonzero(self.present[: self.size])
+
+    # Whole-column reads (S6): no proxies made, no dicts handed out.
+
+    def _sorted_rows(self) -> np.ndarray:
+        if self._order is None:
+            ids = self.ids
+            self._order = np.array(sorted(range(self.size), key=ids.__getitem__), dtype=np.int64)
+        return self._order
+
+    def ordered(self, rows: np.ndarray) -> np.ndarray:
+        """These rows, in id order."""
+        if len(rows) == 0:
+            return rows
+        wanted = np.zeros(self.size, dtype=bool)
+        wanted[rows] = True
+        order = self._sorted_rows()
+        picked: np.ndarray = order[wanted[order]]
+        return picked
+
+    def living_rows(self) -> np.ndarray:
+        """The living people's rows, in id order."""
+        size = self.size
+        return self.ordered(np.flatnonzero(self.present[:size] & self.alive[:size]))
+
+    def living_ids(self) -> tuple[EntityId, ...]:
+        if self._living is None:
+            ids = self.ids
+            self._living = tuple(ids[row] for row in self.living_rows().tolist())
+        return self._living
+
+    def mask(self, *, alive: bool | None = None, captive: bool | None = None) -> np.ndarray:
+        """Present rows, optionally only the living (or dead) and the free (or captive)."""
+        size = self.size
+        found = self.present[:size].copy()
+        if alive is not None:
+            found &= self.alive[:size] if alive else ~self.alive[:size]
+        if captive is not None:
+            found &= self.captive[:size] if captive else ~self.captive[:size]
+        return found
+
+    def rows_where_set(self, name: str, rows: np.ndarray | None = None) -> np.ndarray:
+        """Of these rows (all present ones by default), those whose field is set: not None,
+        or for a tuple or dict, not empty. In row order."""
+        column = self.objs[name]
+        picked = (self.rows() if rows is None else rows).tolist()
+        if name in OPTIONAL_INTS or name in OPTIONAL_IDS:
+            found = [row for row in picked if column[row] is not None]
+        else:
+            found = [row for row in picked if column[row]]
+        return np.array(found, dtype=np.int64)
+
+    def column(self, name: str, rows: np.ndarray) -> list[Any]:
+        """A field's values for these rows, read as they are: dicts are not handed out, so
+        they must not be changed."""
+        if name == "alive":
+            return [bool(value) for value in self.alive[rows].tolist()]
+        if name in NUMBERS:
+            numbers: list[Any] = self.nums[name][rows].tolist()
+            return numbers
+        column = self.objs[name]
+        return [column[row] for row in rows.tolist()]
+
+    def places(self, rows: np.ndarray) -> list[HexCoord]:
+        """The distinct places of these rows, in order of their codes."""
+        return [place_of(code) for code in np.unique(self.loc_code[rows]).tolist()]
+
+    def rows_at(self, rows: np.ndarray, coords: Iterable[HexCoord]) -> np.ndarray:
+        """Of these rows, those standing on any of these places, in the given row order."""
+        codes = np.fromiter((place_code(coord) for coord in coords), dtype=np.int64)
+        return rows[np.isin(self.loc_code[rows], codes)]
 
     def copy(self) -> PeopleTable:
         """An independent copy. Number columns are copied; the rest are shared until
@@ -289,6 +432,14 @@ class PeopleTable:
         other.proxies = [None] * self.size
         other.digest = list(self.digest)
         other.origin = [None] * self.size
+        other.loc_code = self.loc_code.copy()
+        other.captive = self.captive.copy()
+        other.objs_dirty = np.zeros_like(self.objs_dirty)
+        other.identity = next(_TABLES)
+        other.version = 0
+        other.base = (self.identity, self.version)
+        other._order = self._order
+        other._living = self._living
         return other
 
     # Saving.
@@ -413,6 +564,7 @@ class _Alive(_Column[bool]):
         if not isinstance(value, bool):
             raise ValueError(f"alive must be true or false, not {value!r}")
         table.alive[row] = value
+        table._living = None
 
 
 class _Object[T](_Column[T]):
@@ -433,8 +585,16 @@ class _Object[T](_Column[T]):
         return value
 
     def write(self, table: PeopleTable, row: int, value: T) -> None:
-        table.objs[self.name][row] = _coerce(self.name, value)
+        coerced = _coerce(self.name, value)
+        table.objs[self.name][row] = coerced
         table.changed(row)
+        if self.name == "location":
+            table.loc_code[row] = place_code(coerced)
+        elif self.name == "captive_of":
+            table.captive[row] = coerced is not None
+        elif self.name == "person_id":
+            table._order = None
+            table._living = None
 
 
 class _Dict[T](_Column[T]):
@@ -656,10 +816,7 @@ class PeopleView(MutableMapping[EntityId, Person]):
         super().update(other, **kwargs)
 
     def living_ids(self) -> tuple[EntityId, ...]:
-        table = self._table
-        rows = np.flatnonzero(table.present[: table.size] & table.alive[: table.size])
-        ids = table.ids
-        return tuple(sorted(ids[row] for row in rows.tolist()))
+        return self._table.living_ids()
 
     def dead_ids(self) -> tuple[EntityId, ...]:
         table = self._table

@@ -7,7 +7,15 @@ from hypothesis import strategies as st
 
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
-from sovereign_world.people_store import PeopleView, Person, PersonRecord, people_hash
+from sovereign_world.people_store import (
+    TEXT_FIELDS,
+    PeopleView,
+    Person,
+    PersonRecord,
+    people_hash,
+    place_code,
+    place_of,
+)
 
 IDS = [EntityId(f"person:{number:010d}") for number in range(12)]
 
@@ -37,6 +45,7 @@ operation = st.one_of(
     st.tuples(st.just("skills"), st.sampled_from(IDS), st.integers(0, 100)),
     st.tuples(st.just("copy"), st.just(IDS[0]), st.just(0)),
     st.tuples(st.just("detach"), st.sampled_from(IDS), st.integers(0, 100)),
+    st.tuples(st.just("capture"), st.sampled_from(IDS), st.integers(0, 2)),
 )
 
 
@@ -71,6 +80,10 @@ def _apply(view: PeopleView, oracle: dict[EntityId, PersonRecord], op) -> None:
     elif kind == "skills":
         person.skills = {**person.skills, "lore": value}
         record.skills = {**record.skills, "lore": value}
+    elif kind == "capture":
+        captor = None if value == 0 else EntityId(f"civilization:000000000{value + 1}")
+        person.captive_of = captor
+        record.captive_of = captor
     elif kind == "detach":
         copied = person.model_copy(update={"nutrition_debt": value})
         view[person_id] = copied
@@ -81,18 +94,62 @@ def _expected(oracle: dict[EntityId, PersonRecord], mode: str):
     return {key: record.model_dump(mode=mode) for key, record in oracle.items()}
 
 
+def _check_indexes(view: PeopleView, oracle: dict[EntityId, PersonRecord], base: dict) -> None:
+    """The table's indexes (S6) agree with working everything out from the records."""
+    table = view.table
+    living = tuple(sorted(key for key, record in oracle.items() if record.alive))
+    assert table.living_ids() == living
+    assert tuple(table.ids[row] for row in table.living_rows().tolist()) == living
+    rows = table.rows()
+    assert [table.ids[row] for row in rows.tolist()] == list(oracle)
+    for row in rows.tolist():
+        record = oracle[table.ids[row]]
+        assert table.loc_code[row] == place_code(record.location)
+        assert place_of(table.loc_code[row]) == record.location
+        assert table.captive[row] == (record.captive_of is not None)
+        # A row unmarked since the table was copied has the text and dicts it had then.
+        if not table.objs_dirty[row] and table.ids[row] in base:
+            before = base[table.ids[row]]
+            for name in TEXT_FIELDS:
+                assert table.objs[name][row] == getattr(before, name), name
+    free_living = table.mask(alive=True, captive=False)
+    assert [table.ids[row] for row in rows.tolist() if free_living[row]] == [
+        key for key, record in oracle.items() if record.alive and record.captive_of is None
+    ]
+    assert [table.ids[row] for row in table.rows_where_set("captive_of").tolist()] == [
+        key for key, record in oracle.items() if record.captive_of is not None
+    ]
+    assert [table.ids[row] for row in table.rows_where_set("parent_ids").tolist()] == [
+        key for key, record in oracle.items() if record.parent_ids
+    ]
+    assert table.column("health_bp", rows) == [record.health_bp for record in oracle.values()]
+    assert table.column("location", rows) == [record.location for record in oracle.values()]
+    assert table.places(rows) == sorted(
+        {record.location for record in oracle.values()}, key=place_code
+    )
+    spot = HexCoord(1, -1)
+    assert [table.ids[row] for row in table.rows_at(rows, [spot]).tolist()] == [
+        key for key, record in oracle.items() if record.location == spot
+    ]
+    assert [table.ids[row] for row in table.ordered(rows).tolist()] == sorted(oracle)
+
+
 @settings(max_examples=150, deadline=None)
 @given(st.lists(operation, max_size=40))
 def test_the_store_matches_a_dict_of_records(ops) -> None:
     view = PeopleView()
     oracle: dict[EntityId, PersonRecord] = {}
     snapshots: list[tuple[PeopleView, dict]] = []
+    base: dict[EntityId, PersonRecord] = {}
     for op in ops:
         if op[0] == "copy":
             snapshots.append((deepcopy(view), _expected(oracle, "json")))
             view = deepcopy(view)
+            base = {key: record.model_copy(deep=True) for key, record in oracle.items()}
+            _check_indexes(view, oracle, base)
             continue
         _apply(view, oracle, op)
+        _check_indexes(view, oracle, base)
         # Hash v2 of the people: cached, from scratch, and from a saved and reloaded copy.
         cached = people_hash(view.table)
         assert cached == people_hash(view.table, fresh=True)

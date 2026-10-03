@@ -184,6 +184,7 @@ def apply_people_delta(table: PeopleTable, delta: dict[str, Any]) -> None:
         difference = np.frombuffer(_unpack(change["diff"]), dtype="<i8")
         if name == "alive":
             table.alive[changed] = (table.alive[changed].astype(np.int64) + difference) != 0
+            table.living_changed()
         else:
             table.nums[name][changed] += difference
     for person_id in delta.get("removed", ()):
