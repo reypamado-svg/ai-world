@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from sovereign_world.armoury import (
+    GOODS_RECIPES,
     MAX_CRAFT_QUANTITY,
     RECIPES,
     WAR_GEAR,
@@ -126,7 +127,7 @@ from sovereign_world.roads import (
     materials_for,
 )
 from sovereign_world.rules import rules_for
-from sovereign_world.sites import MAX_WORK_DAYS, WORKED_KINDS, SiteKind
+from sovereign_world.sites import FIND_KINDS, MAX_WORK_DAYS, WORKED_KINDS, SiteKind
 from sovereign_world.state import CivilizationState, WorldState
 from sovereign_world.stores import (
     STOREHOUSE_GRADES,
@@ -1394,7 +1395,13 @@ def _internal_journey_error(
     if hauling and destination not in own_settlements - {route[0]}:
         return error("invalid_destination", "goods are hauled to another of their own settlements")
     if kind is JourneyKind.SALVAGE and destination not in {ruin.tile for ruin in state.ruins}:
-        return error("invalid_destination", "salvagers go to a ruin")
+        if not rules_for(state.rules_version).sites:
+            return error("invalid_destination", "salvagers go to a ruin")
+        if not any(
+            view.tile == destination and view.kind in FIND_KINDS and view.remaining > 0
+            for view in known_sites(state, civilization)
+        ):
+            return error("invalid_destination", "salvagers go to a ruin or a trove")
     if kind is JourneyKind.EXTRACTION:
         if not rules_for(state.rules_version).sites:
             return error("invalid_journey", "this world's rules have no worked sites")
@@ -1910,7 +1917,12 @@ def _craft_error(
         return CommandError(command_id=command.command_id, code=code, message=message)
 
     item = command.craft_item
-    if item is None or item not in RECIPES or not command.worker_ids:
+    if (
+        item is None
+        or item not in RECIPES
+        or not command.worker_ids
+        or (item in GOODS_RECIPES and not rules_for(state.rules_version).sites)
+    ):
         return error("invalid_craft", "the armoury makes a known kit or engine, with workers")
     if len(set(command.worker_ids)) != len(command.worker_ids):
         return error("invalid_craft", "each worker is named once")

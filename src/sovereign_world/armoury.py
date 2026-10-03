@@ -101,8 +101,13 @@ RECIPES: dict[Resource, Recipe] = {
     Resource.CATAPULT: Recipe(
         {Resource.TIMBER: 15, Resource.STONE: 10}, 10, CapabilityId.SIEGECRAFT
     ),
+    Resource.METAL: Recipe({Resource.ORE: 2}, 1, CapabilityId.METALLURGY_AWARENESS),
+    Resource.TOOL: Recipe({Resource.METAL: 1, Resource.TIMBER: 1}, 1, None),
+    Resource.PLANK: Recipe({Resource.TIMBER: 2}, 1, CapabilityId.TIMBERCRAFT),
 }
 """Everything the armoury can make, one item at a time."""
+GOODS_RECIPES: frozenset[Resource] = frozenset({Resource.METAL, Resource.TOOL, Resource.PLANK})
+"""Goods rather than kits or engines: made only under rules version 2."""
 
 MAX_CRAFT_QUANTITY = 100
 

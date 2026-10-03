@@ -76,6 +76,14 @@ PRODUCT: dict[SiteKind, Resource] = {
 }
 MAX_WORK_DAYS = 60
 """The longest a party stays at a deposit or quarry."""
+FIND_KINDS: frozenset[SiteKind] = frozenset({SiteKind.ANCIENT_RUIN, SiteKind.TROVE})
+"""Sites found once: the first party to reach one takes all it holds (rules version 2)."""
+FINDS: dict[SiteKind, dict[Resource, int]] = {
+    SiteKind.ANCIENT_RUIN: {Resource.STONE: 120, Resource.TOOL: 8},
+    SiteKind.TROVE: {Resource.METAL: 60, Resource.TOOL: 6, Resource.BRONZE_ARMS: 4},
+}
+RUIN_LORE = 100
+"""Research points an ancient ruin's writings give toward a civil art the finders lack."""
 
 START_CLEARANCE = 2
 """No site lies this close to any start, or closer."""

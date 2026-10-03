@@ -171,7 +171,14 @@ from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView, grade_below, grades_of
 from sovereign_world.rules import rules_for
 from sovereign_world.scripted import Sovereign
-from sovereign_world.sites import PRODUCT, YIELD_PER_WORKER_DAY
+from sovereign_world.sites import (
+    FIND_KINDS,
+    FINDS,
+    PRODUCT,
+    RUIN_LORE,
+    YIELD_PER_WORKER_DAY,
+    SiteKind,
+)
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.stores import (
     STOREHOUSE_GRADES,
@@ -3419,7 +3426,7 @@ def _salvage(state: WorldState, journey: Journey) -> list[DomainEvent]:
     """Salvagers at a ruin load what they can bear from its store and turn for home."""
     ruin = next((item for item in state.ruins if item.tile == journey.route[-1]), None)
     if ruin is None:
-        return []
+        return _find(state, journey) if rules_for(state.rules_version).sites else []
     # Room is what the party set out able to bear, less the food it packed.
     room = journey.carry_per_person * len(journey.traveller_ids) - journey.provisions_packed
     left = dict(ruin.store.quantities)
@@ -3455,6 +3462,78 @@ def _salvage(state: WorldState, journey: Journey) -> list[DomainEvent]:
             str(journey.sender_civilization_id),
             str(ruin.ruin_id),
             units=sum(taken.values()),
+        )
+    ]
+
+
+def _find(state: WorldState, journey: Journey) -> list[DomainEvent]:
+    """Rules version 2: the first party at an ancient ruin or a trove takes what it holds."""
+    site = next(
+        (
+            item
+            for item in state.sites
+            if item.tile == journey.route[-1] and item.kind in FIND_KINDS
+        ),
+        None,
+    )
+    sender = journey.sender_civilization_id
+    if site is None or site.remaining == 0:
+        _replace_journey(state, journey.model_copy(update={"outcome": JourneyOutcome.FAILED}))
+        return [
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "site_empty",
+                str(sender),
+                str(journey.journey_id),
+            )
+        ]
+    room = journey.carry_per_person * len(journey.traveller_ids) - journey.provisions_packed
+    taken: dict[Resource, int] = {}
+    for resource, quantity in FINDS[site.kind].items():
+        grab = min(quantity, max(room, 0))
+        if grab:
+            taken[resource] = grab
+            room -= grab
+    state.sites = tuple(
+        item.model_copy(update={"remaining": 0, "opened_day": state.day, "spent_day": state.day})
+        if item.site_id == site.site_id
+        else item
+        for item in state.sites
+    )
+    if taken:
+        _replace_journey(
+            state,
+            journey.model_copy(
+                update={"cargo": dict(sorted(taken.items())), "carrying_cargo": True}
+            ),
+        )
+    lore: dict[str, int | str] = {}
+    if site.kind is SiteKind.ANCIENT_RUIN:
+        # The ruin's writings teach a civil art the finders do not know, once studied.
+        civilization = state.civilizations[sender]
+        topic = next(
+            (item for item in CIVIL_TOPICS if not knows(civilization.capabilities, item)), None
+        )
+        if topic is not None:
+            civilization.research_points = dict(
+                sorted(
+                    {
+                        **civilization.research_points,
+                        topic: civilization.research_points.get(topic, 0) + RUIN_LORE,
+                    }.items()
+                )
+            )
+            lore = {"topic": topic.value, "points": RUIN_LORE}
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "ruin_explored" if site.kind is SiteKind.ANCIENT_RUIN else "trove_found",
+            str(sender),
+            str(site.site_id),
+            units=sum(taken.values()),
+            **lore,
         )
     ]
 
