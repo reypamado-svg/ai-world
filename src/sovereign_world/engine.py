@@ -43,6 +43,7 @@ from sovereign_world.commands import (
     ProjectKind,
     build_council_report,
     crisis_council_due,
+    idle_at,
     journey_supplies,
     known_roads,
     known_spans,
@@ -4470,7 +4471,7 @@ def _apply_housing_policy(state: WorldState) -> list[DomainEvent]:
             )
             if grade is None or not has(civilization, settlement.tile, house_materials(grade, 1)):
                 continue
-            idle = _idle_at(people.table, settlement.tile, busy, 2)
+            idle = idle_at(people.table, settlement.tile, busy, 2)
             if len(idle) < 2:
                 continue
             events.append(
@@ -4491,29 +4492,6 @@ def _apply_housing_policy(state: WorldState) -> list[DomainEvent]:
             )
             busy.update(idle)
     return events
-
-
-GROWN_DAYS = 16 * 365
-"""The age at which a person can be set to building."""
-
-
-def _idle_at(table: PeopleTable, tile: HexCoord, busy: set[EntityId], count: int) -> list[EntityId]:
-    """Up to `count` living, free, grown people standing on the tile and not busy, lowest
-    ids first."""
-    living = table.living_rows()
-    here = living[
-        (table.loc_code[living] == place_code(tile))
-        & ~table.captive[living]
-        & (table.nums["age_days"][living] >= GROWN_DAYS)
-    ]
-    idle: list[EntityId] = []
-    for row in here.tolist():
-        person_id = table.ids[row]
-        if person_id not in busy:
-            idle.append(person_id)
-            if len(idle) == count:
-                break
-    return idle
 
 
 def _busy_at_home(state: WorldState, civilization_id: EntityId) -> set[EntityId]:

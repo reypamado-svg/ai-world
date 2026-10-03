@@ -50,12 +50,15 @@ from sovereign_world.sites import (
     YIELD_PER_WORKER_DAY,
     SiteKind,
 )
+from sovereign_world.territory import REACH_CAP
 from sovereign_world.travel import CROSSING_COST, DAY, ENTRY_COST, TILE_SPACING_M, Depth
 
-PROMPT_VERSION = "council-4"
+PROMPT_VERSION = "council-5"
 """council-3 added the travel rule: tile scale, terrain and river costs, and bridges.
 council-4 added houses, ranks, rank buildings and civil research, told only to worlds under
-rules version 2, and the reply fields that order them."""
+rules version 2, and the reply fields that order them.
+council-5 sums up the people (`population`, `notable_people`) instead of listing every one,
+and tells rules-2 worlds how far a settlement's hold can reach."""
 
 
 def _days(tenths: int) -> str:
@@ -239,7 +242,10 @@ def buildings_rule() -> str:
     return (
         f"A hall ({cost(InstitutionKind.HALL)}, kept by 1 to 4 clerks) is the seat a "
         "settlement needs to be more than a village; while it is open, its settlement's hold "
-        f"on the land around it is {HALL_STRENGTH} stronger, about a tile further. Some "
+        f"on the land around it is {HALL_STRENGTH} stronger, about a tile further. No "
+        "settlement's hold reaches further than a town of about a thousand people's: it is "
+        f"capped at {REACH_CAP}, so land is won by founding settlements, not by growing one. "
+        "Some "
         f"buildings need rank: {gated}. An "
         f"armoury ({cost(InstitutionKind.ARMOURY)}) makes equipment faster and is the only "
         f"place {gear} are made; training grounds ({cost(InstitutionKind.TRAINING_GROUNDS)}) "

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
 from itertools import pairwise
 from typing import Annotated, Any, Literal
@@ -37,7 +38,6 @@ from sovereign_world.bridges import (
 )
 from sovereign_world.capabilities import CapabilityId
 from sovereign_world.cover import WET_FIELD
-from sovereign_world.culture import ancestry, culture
 from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
@@ -81,7 +81,7 @@ from sovereign_world.land import (
     timber_capacity,
     water_near,
 )
-from sovereign_world.languages import native, speaks
+from sovereign_world.languages import FLUENT
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
     INTERNAL_KINDS,
@@ -97,7 +97,8 @@ from sovereign_world.logistics import (
     provisions_needed,
     roadwork_days,
 )
-from sovereign_world.people_store import place_code
+from sovereign_world.people import FERTILE_HEALTH_BP
+from sovereign_world.people_store import PeopleTable, Sex, place_code
 from sovereign_world.ranks import (
     INSTITUTION_RANK,
     INSTITUTION_SLOTS,
@@ -468,7 +469,85 @@ class HousingView(BaseModel):
     """The best house this civilization knows how to build."""
 
 
+GROWN_DAYS = 16 * 365
+"""The age at which a person can be set to work at home."""
+ELDER_YEARS = 65
+"""The age from which a person counts as an elder: when old age starts to tell."""
+NOTABLE_PEOPLE = 40
+"""How many of its people a council report names, with what they are doing."""
+
+
+def idle_at(table: PeopleTable, tile: HexCoord, busy: set[EntityId], count: int) -> list[EntityId]:
+    """Up to `count` living, free, grown people standing on the tile and not busy, lowest
+    ids first."""
+    living = table.living_rows()
+    here = living[
+        (table.loc_code[living] == place_code(tile))
+        & ~table.captive[living]
+        & (table.nums["age_days"][living] >= GROWN_DAYS)
+    ]
+    idle: list[EntityId] = []
+    for row in here.tolist():
+        person_id = table.ids[row]
+        if person_id not in busy:
+            idle.append(person_id)
+            if len(idle) == count:
+                break
+    return idle
+
+
+class PopulationSummary(BaseModel):
+    """A civilization's people in numbers: what a council needs, at any size."""
+
+    model_config = ConfigDict(frozen=True)
+
+    living: int
+    """Its living people it knows of: not emigrants, not its people held by others."""
+    children: int
+    """Of those, under 16."""
+    grown: int
+    """From 16 to 64."""
+    elders: int
+    """65 and over."""
+    women_able_to_conceive: int
+    """Women of 18 to 42 in good enough health to bear children."""
+    hungry: int
+    """Short of food lately."""
+    ailing: int
+    """In poor health."""
+    newcomers: int
+    """People of other cultures still becoming its own."""
+    dead_this_year: int
+    """Its people who died in the last 365 days."""
+    residents: dict[EntityId, int]
+    """Each settlement's people at home and on its fields, and the captives held there."""
+    idle_workers: dict[EntityId, int]
+    """Each settlement's grown-ups standing there with no duty: who an order can set to
+    work there."""
+    speakers: dict[EntityId, int]
+    """How many of its free people speak each language."""
+
+
+class PersonView(BaseModel):
+    """One of a civilization's people, as its council knows them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    person_id: EntityId
+    sex: Sex
+    age_years: int
+    health_bp: int
+    hungry: bool
+    settlement_id: EntityId | None
+    """The settlement whose ground they stand on, if any."""
+    skills: dict[str, int]
+    duty: str | None
+    """What they are doing, as `kind:id`; none when idle."""
+
+
 _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
+    ("population", None),
+    ("notable_people", []),
     ("known_sites", []),
     ("rules_version", 1),
     ("housing", {}),
@@ -578,6 +657,10 @@ class CouncilReport(BaseModel):
     """What each settlement's land yields at most each day (rules version 2)."""
     extractions: tuple[Journey, ...] = ()
     """This civilization's parties out at deposits and quarries."""
+    population: PopulationSummary | None = None
+    """Its people in numbers (from council-5)."""
+    notable_people: tuple[PersonView, ...] = ()
+    """Up to 40 of its people: those on a duty, then idle grown-ups at each settlement."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -614,11 +697,16 @@ def _land_views(state: WorldState, civilization_id: EntityId) -> dict[EntityId, 
     }
 
 
-def _housing_views(state: WorldState, civilization_id: EntityId) -> dict[EntityId, HousingView]:
+def _housing_views(
+    state: WorldState,
+    civilization_id: EntityId,
+    residents: Mapping[EntityId, Sequence[EntityId]] | None = None,
+) -> dict[EntityId, HousingView]:
     if not rules_for(state.rules_version).houses:
         return {}
     civilization = state.civilizations[civilization_id]
-    residents = residents_by_settlement(state, civilization_id)
+    if residents is None:
+        residents = residents_by_settlement(state, civilization_id)
     buildable = best_grade(civilization.capabilities)
     views: dict[EntityId, HousingView] = {}
     for settlement in civilization.settlements:
@@ -630,25 +718,6 @@ def _housing_views(state: WorldState, civilization_id: EntityId) -> dict[EntityI
             buildable=buildable,
         )
     return views
-
-
-def _blend(civilization: CivilizationState) -> dict[str, Any]:
-    cultures: dict[EntityId, int] = {}
-    ancestries: dict[EntityId, int] = {}
-    assimilating = 0
-    known_captives = set(civilization.known_captives)
-    for person_id, person in civilization.population.people.items():
-        if not person.alive or person_id in known_captives:
-            continue
-        cultures[culture(person)] = cultures.get(culture(person), 0) + 1
-        for origin in ancestry(person):
-            ancestries[origin] = ancestries.get(origin, 0) + 1
-        assimilating += person.culture is not None
-    return {
-        "cultures": dict(sorted(cultures.items())),
-        "ancestries": dict(sorted(ancestries.items())),
-        "assimilating": assimilating,
-    }
 
 
 CRISIS_GAP_DAYS = 7
@@ -693,18 +762,202 @@ def crisis_council_due(state: WorldState, civilization_id: EntityId) -> bool:
     return bool(crisis_reasons(state, civilization_id))
 
 
-def _speakers(civilization: CivilizationState) -> dict[EntityId, tuple[EntityId, ...]]:
-    found: dict[EntityId, list[EntityId]] = {}
-    known_captives = set(civilization.known_captives)
-    for person_id, person in sorted(civilization.population.people.items()):
-        if not person.alive or person_id in known_captives:
-            continue
-        tongues = {native(person)} | {
-            language for language in person.languages if speaks(person, language)
+def _busy_for_orders(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
+    """People an order cannot set to work at home today: travelling, garrisoned, on a
+    duty at home, teaching or learning, or on a work crew. (The engine's housing policy
+    keeps its own, older rule.)"""
+    civilization = state.civilizations[civilization_id]
+    return (
+        _travelling_people(state, civilization_id)
+        | _garrisoned_people(state, civilization_id)
+        | _drilling_people(state, civilization_id)
+        | {
+            person_id
+            for assignment in civilization.teaching_assignments
+            for person_id in (assignment.teacher_id, assignment.apprentice_id)
         }
+        | {person_id for order in civilization.work_orders for person_id in order.worker_ids}
+    )
+
+
+def _duties(state: WorldState, civilization_id: EntityId) -> dict[EntityId, str]:
+    """What each busy person is doing, as `kind:id`; the first duty found counts."""
+    civilization = state.civilizations[civilization_id]
+    found: dict[EntityId, str] = {}
+
+    def note(people: Iterable[EntityId], label: str) -> None:
+        for person_id in people:
+            found.setdefault(person_id, label)
+
+    for institution in civilization.institutions:
+        note(institution.staff_ids, f"staff:{institution.institution_id}")
+    for assignment in civilization.research:
+        if assignment.active:
+            note(assignment.scholar_ids, f"scholar:{assignment.assignment_id}")
+    for drill in civilization.drills:
+        if drill.active:
+            note(drill.person_ids, f"drill:{drill.drill_id}")
+    for craft in civilization.craft_jobs:
+        if not craft.done:
+            note(craft.worker_ids, f"craft:{craft.job_id}")
+    for jobs in (civilization.storehouse_jobs, civilization.wall_jobs, civilization.house_jobs):
+        for job in jobs:
+            note(job.worker_ids, f"builder:{job.job_id}")
+    for teaching in civilization.teaching_assignments:
+        note((teaching.teacher_id,), f"teacher:{teaching.assignment_id}")
+        note((teaching.apprentice_id,), f"apprentice:{teaching.assignment_id}")
+    for order in civilization.work_orders:
+        note(order.worker_ids, f"work:{order.order_id}")
+    for garrison in civilization.garrisons:
+        note(garrison.member_ids, f"garrison:{garrison.garrison_id}")
+    for expedition in civilization.expeditions:
+        if expedition.status is ExpeditionStatus.ACTIVE:
+            note(expedition.explorer_ids, f"expedition:{expedition.expedition_id}")
+    for journey in state.journeys:
+        if journey.active and journey.sender_civilization_id == civilization_id:
+            note(journey.traveller_ids, f"journey:{journey.journey_id}")
+    for message in state.diplomatic_missions:
+        if (
+            message.status is MissionStatus.IN_TRANSIT
+            and message.sender_civilization_id == civilization_id
+        ):
+            note((message.ambassador_id,), f"envoy:{message.message_id}")
+    return found
+
+
+def _people_part(
+    state: WorldState,
+    civilization_id: EntityId,
+    emigrants: set[EntityId],
+    residents: Mapping[EntityId, Sequence[EntityId]],
+) -> dict[str, Any]:
+    """Everything a council report says about the people, read from the columns in one
+    pass: no person is copied or handed out, so nothing is marked as changed."""
+    civilization = state.civilizations[civilization_id]
+    table = civilization.population.people.table
+    ids, objs, nums = table.ids, table.objs, table.nums
+    known_captives = set(civilization.known_captives)
+    hidden = emigrants | known_captives
+    person_ids = tuple(
+        person_id
+        for person_id in map(ids.__getitem__, table.ordered(table.rows()).tolist())
+        if person_id not in hidden
+    )
+    living = table.living_rows().tolist()
+    own_tongue, homeland = objs["native_language"], objs["civilization_id"]
+    known_languages, cultures_of, ancestry_of = objs["languages"], objs["culture"], objs["ancestry"]
+    speakers: dict[EntityId, list[EntityId]] = {}
+    cultures: dict[EntityId, int] = {}
+    ancestries: dict[EntityId, int] = {}
+    assimilating = 0
+    for row in living:
+        person_id = ids[row]
+        if person_id in known_captives:
+            continue
+        own = own_tongue[row] or homeland[row]
+        known = known_languages[row]
+        tongues = (
+            {own} | {language for language, level in known.items() if level >= FLUENT}
+            if known
+            else (own,)
+        )
         for language in tongues:
-            found.setdefault(language, []).append(person_id)
-    return {language: tuple(found[language]) for language in sorted(found)}
+            speakers.setdefault(language, []).append(person_id)
+        lives_by = cultures_of[row] or homeland[row]
+        cultures[lives_by] = cultures.get(lives_by, 0) + 1
+        for origin in ancestry_of[row] or (own,):
+            ancestries[origin] = ancestries.get(origin, 0) + 1
+        assimilating += cultures_of[row] is not None
+    captives = sorted(
+        other.ids[row]
+        for civilization_other in state.civilizations.values()
+        for other in (civilization_other.population.people.table,)
+        for row in np.flatnonzero(other.mask(alive=True, captive=True)).tolist()
+        if other.objs["captive_of"][row] == civilization_id
+    )
+
+    free = np.array([row for row in living if ids[row] not in hidden], dtype=np.int64)
+    ages = nums["age_days"][free]
+    health = nums["health_bp"][free]
+    female = np.fromiter(
+        (objs["sex"][row] is Sex.FEMALE for row in free.tolist()), dtype=bool, count=len(free)
+    )
+    elder = ages // 365 >= ELDER_YEARS
+    dead = np.flatnonzero(table.mask(alive=False))
+    died = table.column("death_day", dead)
+    busy = _busy_for_orders(state, civilization_id)
+    idle = free[(ages >= GROWN_DAYS) & ~table.captive[free]]
+    busy_rows = table.rows_of(busy)
+    if len(busy_rows):
+        idle = idle[~np.isin(idle, busy_rows)]
+    idle_codes = table.loc_code[idle]
+    settlements = sorted(
+        civilization.settlements, key=lambda item: (not item.capital, item.settlement_id)
+    )
+    population = PopulationSummary(
+        living=len(free),
+        children=int(np.count_nonzero(ages < GROWN_DAYS)),
+        grown=int(np.count_nonzero((ages >= GROWN_DAYS) & ~elder)),
+        elders=int(np.count_nonzero(elder)),
+        women_able_to_conceive=int(
+            np.count_nonzero(
+                female & (ages >= 18 * 365) & (ages <= 42 * 365) & (health >= FERTILE_HEALTH_BP)
+            )
+        ),
+        hungry=int(np.count_nonzero(nums["nutrition_debt"][free] > 0)),
+        ailing=int(np.count_nonzero(health < FERTILE_HEALTH_BP)),
+        newcomers=sum(cultures_of[row] is not None for row in free.tolist()),
+        dead_this_year=sum(day is not None and day > state.day - 365 for day in died),
+        residents={
+            settlement.settlement_id: len(residents.get(settlement.settlement_id, ()))
+            for settlement in civilization.settlements
+        },
+        idle_workers={
+            settlement.settlement_id: int(
+                np.count_nonzero(idle_codes == place_code(settlement.tile))
+            )
+            for settlement in civilization.settlements
+        },
+        speakers={language: len(speakers[language]) for language in sorted(speakers)},
+    )
+    # Those on a duty first, then idle grown-ups taken in turn from each settlement.
+    duties = _duties(state, civilization_id)
+    notable = [row for row in free.tolist() if ids[row] in duties][:NOTABLE_PEOPLE]
+    queues = [
+        idle[idle_codes == place_code(settlement.tile)].tolist()[:NOTABLE_PEOPLE]
+        for settlement in settlements
+    ]
+    turn = 0
+    while len(notable) < NOTABLE_PEOPLE and any(turn < len(queue) for queue in queues):
+        notable.extend(queue[turn] for queue in queues if turn < len(queue))
+        turn += 1
+    notable = notable[:NOTABLE_PEOPLE]
+    settlement_at = {}
+    for settlement in reversed(settlements):
+        settlement_at[place_code(settlement.tile)] = settlement.settlement_id
+    notable_people = tuple(
+        PersonView(
+            person_id=ids[row],
+            sex=objs["sex"][row],
+            age_years=int(nums["age_days"][row]) // 365,
+            health_bp=int(nums["health_bp"][row]),
+            hungry=int(nums["nutrition_debt"][row]) > 0,
+            settlement_id=settlement_at.get(int(table.loc_code[row])),
+            skills=dict(objs["skills"][row]),
+            duty=duties.get(ids[row]),
+        )
+        for row in notable
+    )
+    return {
+        "person_ids": person_ids,
+        "speakers": {language: tuple(speakers[language]) for language in sorted(speakers)},
+        "cultures": dict(sorted(cultures.items())),
+        "ancestries": dict(sorted(ancestries.items())),
+        "assimilating": assimilating,
+        "captives": tuple(captives),
+        "population": population,
+        "notable_people": notable_people,
+    }
 
 
 def build_council_report(
@@ -729,7 +982,8 @@ def build_council_report(
             and journey.outcome in {JourneyOutcome.FAILED, JourneyOutcome.REFUSED}
         )
     }
-    known_captives = set(civilization.known_captives)
+    residents = residents_by_settlement(state, civilization_id)
+    people = _people_part(state, civilization_id, emigrants, residents)
     visible_events = tuple(
         event
         for event in recent_events
@@ -739,15 +993,9 @@ def build_council_report(
         report_id=f"report:{state.day}:{civilization_id}",
         civilization_id=civilization_id,
         day=state.day,
-        person_ids=tuple(
-            sorted(
-                person_id
-                for person_id, person in civilization.population.people.items()
-                if person_id not in emigrants and person_id not in known_captives
-            )
-        ),
+        person_ids=people["person_ids"],
         ruins=known_ruins(state, civilization_id),
-        speakers=_speakers(civilization),
+        speakers=people["speakers"],
         crisis=crisis_reasons(state, civilization_id),
         spy_missions=tuple(
             journey
@@ -758,7 +1006,9 @@ def build_council_report(
         ),
         spy_reports=civilization.spy_reports,
         institutions=civilization.institutions,
-        **_blend(civilization),
+        cultures=people["cultures"],
+        ancestries=people["ancestries"],
+        assimilating=people["assimilating"],
         caught_spies=civilization.caught_spies,
         endings=_known_endings(state, civilization_id),
         petitions=tuple(
@@ -766,14 +1016,7 @@ def build_council_report(
             for journey in state.journeys
             if journey.waiting and journey.recipient_civilization_id == civilization_id
         ),
-        captives=tuple(
-            sorted(
-                person_id
-                for other in state.civilizations.values()
-                for person_id, person in other.population.people.items()
-                if person.alive and person.captive_of == civilization_id
-            )
-        ),
+        captives=people["captives"],
         held_captive=civilization.known_captives,
         start_center=civilization.start_center,
         known_tiles=tuple(sorted(civilization.known_tiles)),
@@ -783,7 +1026,7 @@ def build_council_report(
         known_rivers=known_rivers(state.world_map, frozenset(civilization.known_tiles)),
         known_sites=known_sites(state, civilization),
         rules_version=state.rules_version,
-        housing=_housing_views(state, civilization_id),
+        housing=_housing_views(state, civilization_id, residents),
         land=_land_views(state, civilization_id),
         extractions=tuple(
             journey
@@ -862,6 +1105,8 @@ def build_council_report(
         research=civilization.research,
         research_points=dict(civilization.research_points),
         recent_events=visible_events,
+        population=people["population"],
+        notable_people=people["notable_people"],
     )
 
 

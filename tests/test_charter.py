@@ -1,5 +1,6 @@
-"""council-3 and council-4: sovereigns are told how the land is crossed and, under rules
-version 2, how houses, ranks and civil research work, in words made from the rules."""
+"""council-3 to council-5: sovereigns are told how the land is crossed and, under rules
+version 2, how houses, ranks, civil research and the reach of a settlement's hold work, in
+words made from the rules."""
 
 import pytest
 
@@ -62,7 +63,7 @@ def test_the_charter_states_the_travel_rules_from_the_tables() -> None:
 
 
 def test_new_sovereigns_use_this_prompt_version() -> None:
-    assert PROMPT_VERSION == "council-4"
+    assert PROMPT_VERSION == "council-5"
     assert SovereignConfig().prompt_version == PROMPT_VERSION
 
 
@@ -113,3 +114,11 @@ def test_the_land_rule_quotes_the_tables() -> None:
     assert f"{YIELD_PER_WORKER_DAY[SiteKind.QUARRY]} stone a day per worker" in rule
     assert f"{RUIN_LORE} research points" in rule
     assert "2 ore make metal" in rule
+
+
+def test_rules_two_is_told_how_far_a_hold_reaches() -> None:
+    from sovereign_world.territory import REACH_CAP
+
+    assert f"capped at {REACH_CAP}" in buildings_rule()
+    assert f"capped at {REACH_CAP}" in charter(_report(2))
+    assert f"capped at {REACH_CAP}" not in charter(_report(1))
