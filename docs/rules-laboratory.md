@@ -47,7 +47,12 @@ Each world records the rules it runs under in its manifest.
   - settlement ranks (village to city) and realm ranks (chiefdom to empire), and what they unlock;
   - the hall, armoury and training grounds;
   - civil research;
-  - decrees that end when their days run out.
+  - decrees that end when their days run out;
+  - food, water and forage from each tile's land cover; new settlements need water;
+  - timber and stone gathered at home toward a materials target;
+  - parties working ore deposits and quarries;
+  - one-off finds at ancient ruins and troves;
+  - recipes for metal, tools and planks.
 - **Rules 1:** worlds made before rules versions were recorded. They keep rules 1 and replay and verify exactly as before.
 - **Forks:** a fork keeps its parent's rules.
 

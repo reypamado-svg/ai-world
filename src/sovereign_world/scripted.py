@@ -140,17 +140,19 @@ def _plan_rules_two(report: CouncilReport) -> tuple[Command, ...]:
             priority=85,
         )
     )
+    # A hall at the capital, raised on the first day, or as soon as the store can pay.
+    if not any(item.kind is InstitutionKind.HALL for item in report.institutions):
+        commands.append(
+            DirectOrder(
+                command_id=f"institution:{report.day}:hall",
+                kind=DirectOrderKind.FOUND_INSTITUTION,
+                institution_kind=InstitutionKind.HALL,
+                worker_ids=report.person_ids[6:7],
+                priority=70,
+            )
+        )
     if report.day != 0:
         return tuple(commands)
-    commands.append(
-        DirectOrder(
-            command_id=f"institution:{report.day}:hall",
-            kind=DirectOrderKind.FOUND_INSTITUTION,
-            institution_kind=InstitutionKind.HALL,
-            worker_ids=report.person_ids[6:7],
-            priority=70,
-        )
-    )
     direction = -1 if report.start_center.q >= 4 else 1
     route = _survey_route(report, direction) or _survey_route(report, -direction)
     if route is not None:

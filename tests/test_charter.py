@@ -12,6 +12,7 @@ from sovereign_world.gateway.prompt import (
     buildings_rule,
     charter,
     housing_rule,
+    land_rule,
     ranks_rule,
     travel_rule,
 )
@@ -85,7 +86,7 @@ def test_a_run_recorded_with_council_2_keeps_its_hash_and_must_fork() -> None:
 
 def test_rules_two_worlds_are_told_of_houses_ranks_and_civil_research() -> None:
     new, old = charter(_report(2)), charter(_report(1))
-    for rule in (housing_rule(), ranks_rule(), buildings_rule()):
+    for rule in (housing_rule(), ranks_rule(), buildings_rule(), land_rule()):
         assert rule in new
         assert rule not in old
     assert travel_rule() in new and travel_rule() in old
@@ -102,3 +103,13 @@ def test_rules_two_worlds_are_told_of_houses_ranks_and_civil_research() -> None:
     for limit in WAR_PARTY_LIMIT.values():
         assert f"{limit} for a" in ranks
     assert "hall" in buildings_rule() and "writing (250 points)" in buildings_rule()
+
+
+def test_the_land_rule_quotes_the_tables() -> None:
+    from sovereign_world.sites import MAX_WORK_DAYS, RUIN_LORE, YIELD_PER_WORKER_DAY, SiteKind
+
+    rule = land_rule()
+    assert f"1 to {MAX_WORK_DAYS} work_days" in rule
+    assert f"{YIELD_PER_WORKER_DAY[SiteKind.QUARRY]} stone a day per worker" in rule
+    assert f"{RUIN_LORE} research points" in rule
+    assert "2 ore make metal" in rule

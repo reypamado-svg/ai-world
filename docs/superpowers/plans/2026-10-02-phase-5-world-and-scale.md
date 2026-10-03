@@ -285,3 +285,88 @@ The idea follows both games:
 - the hall, armoury and training grounds as institution sprites.
 
 The current sample village stays until then.
+
+## S3 as built: the land in the mechanics, gathering, worked sites, finds
+
+Planned with Fable 5.1. Built in five commits.
+
+**Rules version.**
+- S3 completes rules 2 rather than starting a rules 3. You confirmed that no rules-2 world needs to be kept, and S2 had noted rules 2 as unfinished (timber, and the food from irrigation and fishing).
+- `rules.py` gains `cover_mechanics` and `sites`, both on in rules 2. Council-4 stays.
+- **Escape hatch:** if a rules-2 world ever has to be frozen, set `CURRENT_RULES = 3` and switch these two flags on at 3.
+- Rules 1 keeps the old code path unchanged, and all 14 reference runs keep every daily hash.
+
+**Food, water and forage from land cover** (`land.py`, `cover.py`). Each settlement's food capacity per day is the sum of:
+
+| Part | Yield |
+|---|---|
+| Fields | open ground and half the scrub, as fertile as the soil (a grassland tile yields what it did before) |
+| Water | +2 per watered tile (a lake, a river, or a tenth wetland) |
+| Wild food | woods and wetland: a tile all wood or wetland gives about 2 |
+| Irrigation | watered fields yield half again |
+| Fishing | +1 per tile of open water or river |
+
+- **Maps without cover** yield as before.
+- **Checked on eight start positions:** food lands within about ±25% of rules 1. It is slightly higher on ordinary land and lower only where the start is ringed by lakes.
+- **Foraging:** travellers find more food in woods and wetland, on the same random draws.
+- **New settlements:** a new settlement needs water on its tile or beside it.
+- **Reports:** they show each settlement's daily food, timber and stone capacity.
+
+**Gathering at home.**
+- **Materials decree:** sets the timber each settlement keeps, and half as much stone.
+- **Who gathers:** hands not needed in the fields gather toward the target, as fast as the woods and loose rock of the settlement's land allow. Woods grow back.
+- **Tools:** a tool in store doubles one gatherer's day.
+- **No gathering** under siege, without labour priority, or under rules 1.
+- **House choice:** a shelter order may name the kind of house. The housing decree builds the best kind the store can pay for, and builds huts when stone runs short.
+- **Baseline:**
+  - keeps 300 timber and 150 stone;
+  - founds its hall as soon as the store can pay;
+  - orders the best affordable house.
+
+**Mining and quarrying trips.**
+- **The order:** an extract order sends workers to a deposit or quarry their people know of, for 1 to 60 work days.
+
+  | Site | Yield per worker per day |
+  |---|---|
+  | Ore deposit | 2 ore |
+  | Quarry | 4 stone |
+
+- **Limits:** each day's take is capped by what the site still holds and the room in the packs; packs hold 50 each, food for the stay included.
+- **Return:** the party goes home when its days are done, its packs are full or the site is spent. The goods go into the store it left from.
+- **Size:** eight workers 4 tiles away bring home about 160 ore per trip. A deposit lasts about 15 such trips and a quarry about 30.
+- **Hash safety:** the new journey fields are left out of saves at their defaults.
+
+**Ruins and troves.**
+- A salvage party to an ancient ruin or a trove takes everything it holds, if it arrives first. Later parties find nothing.
+
+  | Site | Find |
+  |---|---|
+  | Ancient ruin | 120 stone, 8 tools, and 100 research points toward the first civil art the finders lack (they count once someone studies it) |
+  | Trove | 60 metal, 6 tools, 4 bronze arms |
+
+**Recipes** (rules 2).
+
+| Product | Made from | Needs |
+|---|---|---|
+| Metal | 2 ore | metallurgy |
+| Tool | 1 metal + 1 timber | — |
+| Plank | 2 timber | timbercraft |
+
+**Placeholders for wild animals** (no animals yet):
+- `graze_bp` and `browse_bp` from land cover;
+- a reserved `fauna` random stream;
+- `FORAGE_HAZARD_CAUSE`;
+- a `fauna` argument to the observer's `cellPlan`, accepted and ignored, with a test.
+
+**Council-4** adds a land rule written from the engine's tables: fields, water, irrigation, fishing, gathering, worked sites, finds and the goods recipes.
+
+**Sample runs** (seed 21, 48×48, baseline sovereign):
+
+| Run | Result |
+|---|---|
+| Two years, rules 2 | 39, 40, 41 and 40 people per civilization, the same as rules 1, with food stores within 5% |
+| Starting stock in that run | never fell below the 300-timber target, so no gathering was needed |
+| 90 days starting with no timber or stone | every civilization gathered 310 timber and up to 180 stone, refilled to its targets, and built houses from day 4 |
+| Daily capacities across the four starts | food 116–214, timber 14–140, stone 1–19 |
+
+**Growth limit lifted.** The S2 timber limit is gone: woods renew, and stone comes from loose rock and quarries. Growth is now bounded by food and births, as under rules 1.

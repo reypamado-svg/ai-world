@@ -29,8 +29,11 @@ export const DECOR_MIN_ZOOM = 0.2;
  * rocks to try. With land cover each is tried at a full density and kept only where its cover
  * class shows (trees in woods, rocks on rock, bushes on scrub and open ground), so how many
  * appear follows the engine's shares.
+ *
+ * `fauna` is reserved for wild herds (none yet): when they come, grazing will thin the bushes and
+ * leave trampled ground. It is accepted and ignored for now.
  */
-export function cellPlan(t) {
+export function cellPlan(t, fauna = null) {
   const out = { trees: 0, pines: 0, bushes: 0, rocks: 0 };
   if (!t || t.terrain === 0) return out;
   if (t.cover) {
