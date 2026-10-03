@@ -451,10 +451,95 @@ The people hash covers the present rows in order: one matrix of the number colum
 Before S5, at 100,000 people, the hash took 6.2 s and saving a day 4.8 s (2.9 MB a day, over 1 GB a year).
 - **Journal:** 71–103 MB a year, under the 200 MB target. 100×100 stays under 150 MB, so the territory map needs no compact delta of its own (C6b not built).
 - **Hash:** 0.17 s at 48×48 meets the 0.2 s target; at 100×100 it is 0.27 s. Most of that is dumping the world's fields (the territory map grows with the map), which saving a day dumps again. S6 can share one dump between the two.
-- **Memory:** the peak rose by about 230 MB at 100K, because the journal keeps the day before (its fields and a copy of its people tables) to save the next day's changes. S6's 1 GB target covers this.
+- **Memory:** the peak rose to about 1.07 GB at 100K. S6 measured where it comes from: keeping the day before costs only about 30 MB; the peak is the whole-world JSON dump on snapshot and checkpoint days (about +340 MB), and those S5 rows were taken with `--verify`. S6's compact snapshots remove that dump.
 - **A small world runs faster too:** the observer throughput run (seed 21, 48×48, a year, journal included) does 13.1 days a second, against 7.0 in Phase 4.
 - **Verification** works every hash from scratch: about 2.5–3 s a simulated day at 100K, so a year takes about 15–18 minutes.
 
 **Defaults taken** (the user can change them at review):
 - A fork is saved in format 2, even from a format-1 run: the format is storage, not rules.
 - No extra SQLite checkpoints every 30 days; `run` still saves one at its end.
+
+## S6 as built: 100,000 people in well under a second a day
+
+Planned with Fable 5.1 from a profile of a 100K day. Built in ten commits plus these docs. Every reference hash and both parity scenarios hold throughout.
+
+**Measurements** (`tests/perf/bench_people.py 100000 --days 31`, this container). Before is c653256 with the C0 harness; a 31-day run includes one snapshot day (day 30).
+
+| Case | Day, before → after | Hash v2 | Saving a day (average) | Day, hash and save | Snapshot day | Peak memory | Journal per year |
+|---|---|---|---|---|---|---|---|
+| Rules 1, 48×48 | 3.90 → **0.50 s** | 0.14 → 0.10 s | 0.80 → 0.13 s | 4.85 → **0.73 s** | 6.0 → 1.2 s | 623 → 436 MB | 70 → 59 MB |
+| Rules 2, 48×48 | 5.54 → **0.45 s** | 0.14 → 0.14 s | 0.84 → 0.13 s | 6.52 → **0.73 s** | 6.1 → 1.3 s | 620 → 580 MB | 71 → 57 MB |
+| Rules 2, 100×100 | 6.48 → **0.44 s** | 0.23 → 0.10 s | 1.10 → 0.14 s | 7.81 → **0.68 s** | 7.0 → 1.6 s | 672 → 571 MB | 105 → 63 MB |
+
+All targets are met:
+- at most 2 s a day with the journal;
+- at most 1 GB of memory;
+- at most 200 MB of journal a year;
+- reference hashes unchanged.
+
+Council days also became cheap. At 100K a report takes 49 ms instead of 202 ms per civilization, and a model's prompt 13 ms instead of 2.0 s.
+
+**What changed**
+- **C0, harness:** the synthetic world keeps five granaries instead of one per 5,000 food, which had given 1,800 per civilization at 100K. New `--rules 2` and `--phases` options.
+- **C1, table indexes:** each people table keeps, never saved or hashed:
+  - each row's place as one integer, and a captive mask;
+  - which rows' text or dicts changed since the table was copied;
+  - the id order, and the sorted living ids.
+
+  Whole-column reads make no proxies and hand out no dicts.
+- **C2, population day:** aging, death chances and conception pairs are worked out as arrays. The day's random rolls are drawn as one batch, in id order, which gives the same numbers as one draw per person; a standing test checks it.
+- **C3, daily scans:** these steps read whole columns instead of visiting every person through a proxy:
+  - feeding, hunger and recovery, including healers' houses;
+  - residents per settlement, sight and enemy checks;
+  - newcomers, assimilation and escapes;
+  - language learning;
+  - `validate_world`.
+- **C4, territory:**
+  - each map's neighbour and step costs are worked out once per set of roads and bridges, giving the same field in the same order;
+  - coordinates sort by their (q, r) keys;
+  - unchanged holds keep yesterday's record;
+  - the day's territory is built in canonical order and not re-checked as a whole when set. It is checked on load, and a test checks each day of a 40-day run.
+- **C4b, reach cap (rules 2):** a settlement's strength, its hall's bonus included, is capped at 300: a town of about 1,000 people, reaching about 25 tiles of open land. Before, a 25,000-person capital held every tile of a 100×100 map, so borders were decided by headcount alone.
+- **C5, saving:**
+  - hash v2 and the journal record share one dump of the world outside its people;
+  - when a day's table is a copy of the one last saved, its changes are found by comparing rows in place, checking field by field only the rows marked as changed;
+  - the housing policy and language learning skip the people they cannot affect.
+- **C6, compact snapshots:**
+  - format-2 snapshots and checkpoints store people as columns (snapshot version 2);
+  - format-2 files compress at gzip level 6;
+  - older snapshots still load; the two are told apart by their first key.
+- **C7, council reports and council-5:**
+  - reports add a population summary and up to 40 notable people;
+  - the people fields are read from the columns, exactly as before, and an oracle test keeps the old code;
+  - the prompt's state section no longer lists every person, and is always valid JSON within its budget. It used to be cut mid-list from about 550 people per civilization;
+  - rules-2 charters state the reach cap.
+- **C8, worker counts (rules 2):**
+  - work at home may give `worker_count` and `settlement_id`, and the lowest-numbered idle grown-ups there are taken;
+  - refusals are `invalid_workers`, `unknown_settlement` and `too_few_idle_workers`;
+  - envelopes from model replies are schema 2.
+- **Fix after C8:** the non-interference test caught that report counts used people's true captive state. Reports now count only what the council knows. The rules-2 housing view in reports had the same leak since S2.
+
+**Not done, measured as not worth it:**
+- replacing the remaining `CopyOnRead` uses: 8 ms a day;
+- a custom civilization copy and digest arrays: about 50 ms a day together;
+- the columnar territory delta (C6b): the 100×100 journal is 63 MB a year.
+
+**Defaults taken** (the user can change them at review)
+- Notable people: those on a duty first, then idle grown-ups taken in turn from each settlement, capital first.
+- Ailing means health below the level needed to conceive.
+- Children are under 16; elders are 65 and over.
+- Drill counts take only people able to fight.
+- At most 100 workers to a counted order.
+
+**Checks**
+- The full suite passes: 717 passed, 2 skipped.
+- The soak suite passes: 218, all of it, for the first time in this phase.
+- The observer throughput run (seed 21, 48×48, a year, journal included) does 16.3 days a second, against 13.1 after S5.
+- Three soak tests were failing before S6. They are fixed in their scenarios only:
+  - **Territory seeds 4 and 14**, failing since S3 required water for new settlements: the test's expanding sovereign now picks sites with water or a river beside them, as the rule asks.
+  - **Cession seed 2**, failing since before Phase 5: its capital stands at the end of a causeway in open water, so the scenario raises an island for the colony there. Seeds that already found dry land keep exactly their setup.
+
+**Known**
+- Under rules 1 (no reach cap), territory on large maps is still the costliest step: 195 ms a day at 100K.
+- Verification still works every hash from scratch.
+- A counted order is resolved against the true state, as named orders always were. A capture the council has not heard of can therefore leave it one idle worker short of what its report showed.

@@ -52,9 +52,13 @@ Each world records the rules it runs under in its manifest.
   - timber and stone gathered at home toward a materials target;
   - parties working ore deposits and quarries;
   - one-off finds at ancient ruins and troves;
-  - recipes for metal, tools and planks.
+  - recipes for metal, tools and planks;
+  - a cap on how far a settlement's hold reaches (strength 300, about 25 tiles of open land), so borders stay local however large a city grows;
+  - orders for work at home that count their workers at a settlement instead of naming them.
 - **Rules 1:** worlds made before rules versions were recorded. They keep rules 1 and replay and verify exactly as before.
 - **Forks:** a fork keeps its parent's rules.
+
+**Model-played runs and prompt versions.** Councils played by a model read a charter of a given prompt version. The current one is `council-5`: the council report sums up the people (counts by age, health and settlement, the idle grown-ups at each settlement, and up to 40 notable people) instead of listing every one, which kept the report readable at any population. A run recorded under an older prompt version still replays, verifies and rederives, but to carry on with a model sovereign it must be forked; the fork's sovereigns use the current version.
 
 ## Checkpoint, replay, and verify
 
