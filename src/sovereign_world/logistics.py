@@ -548,7 +548,7 @@ class TollEncounter:
 @dataclass(frozen=True, slots=True)
 class JourneyDayResult:
     journeys: tuple[Journey, ...]
-    people_by_civilization: dict[EntityId, dict[EntityId, Person]]
+    people_by_civilization: Mapping[EntityId, Mapping[EntityId, Person]]
     delayed_ids: tuple[EntityId, ...]
     lost_ids: tuple[EntityId, ...]
     perished_ids: tuple[EntityId, ...]
@@ -605,7 +605,7 @@ def advance_journeys_day(
     over land its civilization knows, if its pack covers the longer road, and otherwise
     turns back with its goods. A road crew that cannot pay stops.
     """
-    people: dict[EntityId, dict[EntityId, Person]] = {
+    people: dict[EntityId, CopyOnRead] = {
         civilization_id: CopyOnRead(population)
         for civilization_id, population in people_by_civilization.items()
     }
@@ -649,7 +649,7 @@ def advance_journeys_day(
         if not journey.active:
             updated.append(journey)
             continue
-        party = people.get(journey.sender_civilization_id, {})
+        party: Mapping[EntityId, Person] = people.get(journey.sender_civilization_id, {})
         living = [
             party[person_id]
             for person_id in journey.traveller_ids
@@ -943,7 +943,7 @@ def advance_journeys_day(
     return JourneyDayResult(
         journeys=tuple(sorted(fed_journeys, key=lambda item: item.journey_id)),
         people_by_civilization={
-            civilization_id: dict(population) for civilization_id, population in people.items()
+            civilization_id: population for civilization_id, population in people.items()
         },
         delayed_ids=tuple(sorted(delayed_ids)),
         lost_ids=tuple(sorted(lost_ids)),

@@ -61,7 +61,7 @@ class Expedition(BaseModel):
 @dataclass(frozen=True, slots=True)
 class ExpeditionDayResult:
     expeditions: tuple[Expedition, ...]
-    people: dict[EntityId, Person]
+    people: Mapping[EntityId, Person]
     observations: tuple[Observation, ...]
     observed_tiles: tuple[HexCoord, ...]
     returned_ids: tuple[EntityId, ...]
@@ -196,7 +196,7 @@ def advance_expeditions(
             returned_ids.append(expedition.expedition_id)
     return ExpeditionDayResult(
         expeditions=tuple(sorted(updated_expeditions, key=lambda item: item.expedition_id)),
-        people=dict(updated_people),
+        people=updated_people,
         observations=tuple(sorted(observation_by_tile.values(), key=lambda item: item.tile)),
         observed_tiles=tuple(sorted(set(observed_tiles))),
         returned_ids=tuple(sorted(returned_ids)),

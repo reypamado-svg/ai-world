@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -57,34 +57,64 @@ class Population(BaseModel):
 FoundingPopulation = Population
 
 
-class CopyOnRead(dict[EntityId, Person]):
+class CopyOnRead(MutableMapping[EntityId, Person]):
     """People that are copied only when looked up by id, the first time.
 
     A step that changes a few people (travellers, ambassadors, apprentices) works on
-    copies of just those, instead of copying everyone; the people passed in are never
-    changed. Look people up by key (`[]`, `get`) before changing them: iterating values
-    yields the shared originals, for reading only. Turn the result back into a plain
-    dict with `dict(...)`, which keeps every copy made and the original order.
+    copies of just those, over the people it was given, which are never changed. Look
+    people up by key (`[]`, `get`) before changing them: iterating values yields the
+    originals, for reading only, except those already copied. `changed()` gives just the
+    copies, which is all a population needs to take back in.
     """
 
-    __slots__ = ("_copied",)
+    __slots__ = ("_copies", "base")
 
     def __init__(self, people: Mapping[EntityId, Person]) -> None:
-        super().__init__(people)
-        self._copied: set[EntityId] = set()
+        self.base = people
+        self._copies: dict[EntityId, Person] = {}
 
     def __getitem__(self, person_id: EntityId) -> Person:
-        person = super().__getitem__(person_id)
-        if person_id not in self._copied:
-            person = person.model_copy(deep=True)
-            super().__setitem__(person_id, person)
-            self._copied.add(person_id)
+        person = self._copies.get(person_id)
+        if person is None:
+            person = self.base[person_id].model_copy(deep=True)
+            self._copies[person_id] = person
         return person
 
     def get(self, person_id: EntityId, default: Person | None = None) -> Person | None:  # type: ignore[override]
         if person_id not in self:
             return default
         return self[person_id]
+
+    def __setitem__(self, person_id: EntityId, person: Person) -> None:
+        self._copies[person_id] = person
+
+    def __delitem__(self, person_id: EntityId) -> None:
+        raise TypeError("people are not removed here")
+
+    def __contains__(self, person_id: object) -> bool:
+        return person_id in self._copies or person_id in self.base
+
+    def __iter__(self) -> Iterator[EntityId]:
+        yield from self.base
+        yield from (person_id for person_id in self._copies if person_id not in self.base)
+
+    def __len__(self) -> int:
+        return len(self.base) + sum(person_id not in self.base for person_id in self._copies)
+
+    def items(self) -> Iterator[tuple[EntityId, Person]]:  # type: ignore[override]
+        copies = self._copies
+        for person_id, person in self.base.items():
+            yield person_id, copies.get(person_id, person)
+        for person_id, person in copies.items():
+            if person_id not in self.base:
+                yield person_id, person
+
+    def values(self) -> Iterator[Person]:  # type: ignore[override]
+        return (person for _, person in self.items())
+
+    def changed(self) -> dict[EntityId, Person]:
+        """The people copied (and so possibly changed), in the order they were first read."""
+        return dict(self._copies)
 
 
 @dataclass(frozen=True, slots=True)

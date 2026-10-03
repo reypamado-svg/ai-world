@@ -253,7 +253,7 @@ class DiplomaticMessage(BaseModel):
 @dataclass(frozen=True, slots=True)
 class DiplomacyDayResult:
     missions: tuple[DiplomaticMessage, ...]
-    people_by_civilization: dict[EntityId, dict[EntityId, Person]]
+    people_by_civilization: Mapping[EntityId, Mapping[EntityId, Person]]
     delivered: tuple[DiplomaticMessage, ...]
     delayed_ids: tuple[EntityId, ...]
     lost_ids: tuple[EntityId, ...]
@@ -286,7 +286,7 @@ def advance_diplomacy_day(
 
     Rough terrain takes more than a day to enter, and roads make it quicker.
     """
-    people: dict[EntityId, dict[EntityId, Person]] = {
+    people: dict[EntityId, CopyOnRead] = {
         civilization_id: CopyOnRead(population)
         for civilization_id, population in people_by_civilization.items()
     }
@@ -298,7 +298,8 @@ def advance_diplomacy_day(
         if mission.status is not MissionStatus.IN_TRANSIT:
             updated.append(mission)
             continue
-        ambassador = people.get(mission.sender_civilization_id, {}).get(mission.ambassador_id)
+        senders: Mapping[EntityId, Person] = people.get(mission.sender_civilization_id, {})
+        ambassador = senders.get(mission.ambassador_id)
         if ambassador is None or not ambassador.alive:
             updated.append(mission.model_copy(update={"status": MissionStatus.LOST}))
             lost_ids.append(mission.message_id)
@@ -368,7 +369,7 @@ def advance_diplomacy_day(
     return DiplomacyDayResult(
         missions=tuple(sorted(updated, key=lambda item: item.message_id)),
         people_by_civilization={
-            civilization_id: dict(population) for civilization_id, population in people.items()
+            civilization_id: population for civilization_id, population in people.items()
         },
         delivered=tuple(sorted(delivered, key=lambda item: item.message_id)),
         delayed_ids=tuple(sorted(delayed_ids)),

@@ -105,7 +105,7 @@ class KnowledgeState(BaseModel):
 @dataclass(frozen=True, slots=True)
 class KnowledgeDayResult:
     knowledge: KnowledgeState
-    people: dict[EntityId, Person]
+    people: Mapping[EntityId, Person]
     learned: tuple[CapabilityId, ...]
     forgotten: tuple[CapabilityId, ...]
 
@@ -171,7 +171,7 @@ def advance_knowledge_day(
                 sorted(remaining_assignments, key=lambda assignment: assignment.assignment_id)
             ),
         ),
-        people=dict(updated_people),
+        people=updated_people,
         learned=tuple(learned),
         forgotten=tuple(sorted(forgotten, key=lambda capability: capability.value)),
     )

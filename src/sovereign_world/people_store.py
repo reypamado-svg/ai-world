@@ -121,6 +121,7 @@ class PeopleTable:
         "nums",
         "objs",
         "present",
+        "proxies",
         "shared",
         "size",
     )
@@ -139,6 +140,7 @@ class PeopleTable:
             name: np.zeros(capacity, dtype=np.int64) for name in NUMBERS
         }
         self.objs: dict[str, list[Any]] = {name: [] for name in (*OBJECTS, *DICTS)}
+        self.proxies: list[Person | None] = []
 
     # Growth and bookkeeping.
 
@@ -195,6 +197,7 @@ class PeopleTable:
             self.objs[name].append(values[name])
         for name in DICTS:
             self.objs[name].append(dict(values[name]))
+        self.proxies.append(None)
         self.size += 1
         self.mark(row)
         return row
@@ -229,6 +232,14 @@ class PeopleTable:
         self.mark(row)
         return row
 
+    def person(self, row: int) -> Person:
+        """The row's person, made once per table."""
+        person = self.proxies[row]
+        if person is None:
+            person = Person._at(self, row)
+            self.proxies[row] = person
+        return person
+
     def rows(self) -> np.ndarray:
         return np.flatnonzero(self.present[: self.size])
 
@@ -247,6 +258,7 @@ class PeopleTable:
         other.dirty = np.zeros_like(self.dirty)
         other.nums = {name: column.copy() for name, column in self.nums.items()}
         other.objs = {name: list(column) for name, column in self.objs.items()}
+        other.proxies = [None] * self.size
         return other
 
     # Saving.
@@ -543,11 +555,11 @@ class PeopleView(MutableMapping[EntityId, Person]):
         return self._table
 
     def __getitem__(self, person_id: EntityId) -> Person:
-        return Person._at(self._table, self._table.index[person_id])
+        return self._table.person(self._table.index[person_id])
 
     def get(self, person_id: EntityId, default: Person | None = None) -> Person | None:  # type: ignore[override]
         row = self._table.index.get(person_id)
-        return default if row is None else Person._at(self._table, row)
+        return default if row is None else self._table.person(row)
 
     def __contains__(self, person_id: object) -> bool:
         return person_id in self._table.index
@@ -595,11 +607,22 @@ class PeopleView(MutableMapping[EntityId, Person]):
     def items(self) -> Iterator[tuple[EntityId, Person]]:  # type: ignore[override]
         table = self._table
         ids = table.ids
-        return iter([(ids[row], Person._at(table, row)) for row in table.rows().tolist()])
+        person = table.person
+        return iter([(ids[row], person(row)) for row in table.rows().tolist()])
 
     def values(self) -> Iterator[Person]:  # type: ignore[override]
         table = self._table
-        return iter([Person._at(table, row) for row in table.rows().tolist()])
+        person = table.person
+        return iter([person(row) for row in table.rows().tolist()])
+
+    def update(self, other: Any = (), /, **kwargs: Any) -> None:
+        """Take in changed people; from an overlay on this very view, only its copies."""
+        changed = getattr(other, "changed", None)
+        if changed is not None and getattr(other, "base", None) is self:
+            for person_id, person in changed().items():
+                self._put(person_id, person)
+            return
+        super().update(other, **kwargs)
 
     def living_ids(self) -> tuple[EntityId, ...]:
         table = self._table
