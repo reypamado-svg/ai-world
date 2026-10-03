@@ -14,20 +14,21 @@ def test_replay_matches_recorded_hashes(tmp_path: Path) -> None:
     manifest = RunManifest.new(config=config, engine_version="0.1.0")
     state = build_initial_state(manifest)
     store = WorldStore.create(tmp_path, manifest, state)
-    expected = {0: state_hash(state)}
+    # The store hashes as its journal format says (version 2 for new runs).
+    expected = {0: store.state_hash(state)}
     rng = StableRng(config.seed)
     for _ in range(5):
         result = advance_day(state, rng)
         state = result.state
         store.append_transition(state, result.events)
-        expected[state.day] = state_hash(state)
+        expected[state.day] = store.state_hash(state)
         if state.day in {3, 5}:
             store.save_checkpoint(state)
 
     replayed = replay_run(store, target_day=5)
     verification = verify_run(store)
 
-    assert state_hash(replayed) == expected[5]
+    assert store.state_hash(replayed) == expected[5]
     assert verification.verified_through_day == 5
     assert verification.state_hash == expected[5]
 

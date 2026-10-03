@@ -9,6 +9,13 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+CURRENT_GENERATOR = 3
+"""The world generator new runs use; see ``RunManifest.generator_version``."""
+CURRENT_RULES = 2
+"""The rules new runs use; see ``RunManifest.rules_version``."""
+CURRENT_JOURNAL_FORMAT = 2
+"""How new runs save their days; see ``RunManifest.journal_format``."""
+
 
 class WorldConfig(BaseModel):
     """Rules that define one Rules Laboratory world."""
@@ -18,7 +25,8 @@ class WorldConfig(BaseModel):
     seed: int
     width: int = Field(ge=24)
     height: int = Field(ge=24)
-    civilizations: int = Field(default=4, ge=4, le=4)
+    civilizations: int = Field(default=4, ge=2, le=4)
+    """How many civilizations the world starts with: two to four."""
     founders_per_civilization: int = Field(default=32, ge=32, le=32)
     council_interval_days: int = Field(default=30, ge=30, le=30)
 
@@ -47,7 +55,7 @@ class SovereignConfig(BaseModel):
     require_token: bool = False
     allow_private_http: bool = False
     max_retries: int = Field(default=2, ge=0, le=5)
-    prompt_version: str = "council-2"
+    prompt_version: str = "council-5"
 
 
 class BudgetConfig(BaseModel):
@@ -77,10 +85,28 @@ class RunManifest(BaseModel):
     parent_run_id: UUID | None = None
     """The run this one was forked from, when its sovereigns or budgets were changed."""
     forked_at_day: int | None = Field(default=None, ge=0)
+    generator_version: int = Field(default=1, ge=1, le=CURRENT_GENERATOR)
+    """Which world generator built the map. Runs from before versions were recorded used 1."""
+    rules_version: int = Field(default=1, ge=1, le=CURRENT_RULES)
+    """Which rules the world runs under. Version 2 adds houses, ranks and civil research;
+    runs from before versions were recorded used 1, and keep it when replayed."""
+    journal_format: int = Field(default=1, ge=1, le=CURRENT_JOURNAL_FORMAT)
+    """How the run's days are saved. Format 1 saves the whole world each day and hashes it
+    whole (hash version 1); format 2 saves snapshots and the changes between them, and
+    hashes the world in parts (hash version 2). Runs from before formats used 1."""
 
     @classmethod
-    def new(cls, config: WorldConfig, engine_version: str) -> RunManifest:
-        return cls(run_id=uuid4(), engine_version=engine_version, config=config)
+    def new(
+        cls, config: WorldConfig, engine_version: str, *, rules_version: int = CURRENT_RULES
+    ) -> RunManifest:
+        return cls(
+            run_id=uuid4(),
+            engine_version=engine_version,
+            config=config,
+            generator_version=CURRENT_GENERATOR,
+            rules_version=rules_version,
+            journal_format=CURRENT_JOURNAL_FORMAT,
+        )
 
     def content_hash(self) -> str:
         dumped = self.model_dump(mode="json")
@@ -90,6 +116,9 @@ class RunManifest(BaseModel):
             "budgets": BudgetConfig().model_dump(mode="json"),
             "parent_run_id": None,
             "forked_at_day": None,
+            "generator_version": 1,
+            "rules_version": 1,
+            "journal_format": 1,
         }
         for key, default in defaults.items():
             if dumped.get(key) == default:

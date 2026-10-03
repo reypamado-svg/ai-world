@@ -2,18 +2,35 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from math import ceil
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from sovereign_world.armoury import WAR_GEAR, cargo_load, slowed, slows
+from sovereign_world.bridges import (
+    BRIDGE_LABOUR,
+    BRIDGE_MATERIALS,
+    MASONRY,
+    bridge_labour_days,
+    can_bridge,
+    span_needed,
+    spans_planned,
+)
+from sovereign_world.cover import forage_bp
 from sovereign_world.espionage import MAX_WATCH_DAYS, Estimate
-from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
+from sovereign_world.hexmap import HexCoord, Terrain, WorldMap, edge_key
 from sovereign_world.ids import EntityId
-from sovereign_world.people import Person, go_hungry
+from sovereign_world.people import CopyOnRead, Person, go_hungry
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import (
@@ -26,8 +43,20 @@ from sovereign_world.roads import (
     step_labour,
     steps_to,
 )
+from sovereign_world.sites import MAX_WORK_DAYS
 from sovereign_world.tolls import TollGate, TollRules, cargo_charge, detour, food_charge
-from sovereign_world.travel import DAY, ENTRY_COST, MAX_PROGRESS, Roads, entry_cost, travel_days
+from sovereign_world.travel import (
+    CROSSING_COST,
+    DAY,
+    ENTRY_COST,
+    MAX_PROGRESS,
+    NO_BRIDGES,
+    Bridges,
+    Depth,
+    Roads,
+    entry_cost,
+    travel_days,
+)
 from sovereign_world.war import WarObjective
 
 CARGO_UNITS_PER_CARRIER = 50
@@ -43,6 +72,8 @@ FORAGE_TERRAIN_BP: dict[Terrain, int] = {
     Terrain.TUNDRA: 1_000,
     Terrain.MOUNTAIN: 800,
     Terrain.DESERT: 500,
+    Terrain.HILLS: 1_500,
+    Terrain.SNOW: 0,
 }
 
 
@@ -67,6 +98,9 @@ class JourneyKind(StrEnum):
     """Spies watching a foreign settlement for a while, then bringing home what they saw."""
     COURIER = "courier"
     """A spy's companion carrying the findings so far home ahead of the others."""
+    EXTRACTION = "extraction"
+    """Workers going to a deposit or quarry, working it for some days, then carrying home
+    what they can bear (rules version 2)."""
 
 
 INTERNAL_KINDS = frozenset(
@@ -78,6 +112,7 @@ INTERNAL_KINDS = frozenset(
         JourneyKind.DEPOSIT,
         JourneyKind.HAUL,
         JourneyKind.SALVAGE,
+        JourneyKind.EXTRACTION,
     }
 )
 ROUND_TRIP_KINDS = frozenset(
@@ -89,8 +124,11 @@ ROUND_TRIP_KINDS = frozenset(
         JourneyKind.PETITION,
         JourneyKind.SALVAGE,
         JourneyKind.SPY,
+        JourneyKind.EXTRACTION,
     }
 )
+LOADING_KINDS = frozenset({JourneyKind.SALVAGE, JourneyKind.EXTRACTION})
+"""Internal parties that load goods at the end of their route and carry them home."""
 SPYING_KINDS = frozenset({JourneyKind.SPY, JourneyKind.COURIER})
 CARRYING_KINDS = frozenset({JourneyKind.DEPOSIT, JourneyKind.HAUL})
 """Internal journeys that carry goods to one of their own stores."""
@@ -131,6 +169,9 @@ class StopReason(StrEnum):
     NO_STONEWORKER = "no_stoneworker"
     MATERIALS = "materials"
     TOLL = "toll"
+    RIVER = "river"
+    """A deep river with no bridge lies across the route (saves from before the crossing
+    rule only; new routes are refused at dispatch)."""
 
 
 class Journey(BaseModel):
@@ -162,7 +203,8 @@ class Journey(BaseModel):
     materials: dict[Resource, int] = Field(default_factory=dict)
     """Road materials not yet laid; hauled separately from the crew's packs."""
     work_done: int = Field(default=0, ge=0)
-    """Person-days already spent toward `work_grade` on the crew's current tile."""
+    """Person-days already spent toward `work_grade` on the crew's current tile, or toward
+    bridging the river ahead once the tile is done (`work_grade` None)."""
     work_grade: RoadGrade | None = None
     """The grade the crew's labour so far was for; another crew reaching it first wastes it."""
     objective: WarObjective | None = None
@@ -193,6 +235,21 @@ class Journey(BaseModel):
     """Spies at the end of their route, watching, until their days are done."""
     findings: Estimate | None = None
     """What the spies, or their courier, carry home."""
+    work_days: int = Field(default=0, ge=0, le=MAX_WORK_DAYS)
+    """How many days an extraction party means to work its deposit or quarry."""
+    days_worked: int = Field(default=0, ge=0)
+    working: bool = False
+    """An extraction party at its site, working, until it leaves."""
+
+    @model_serializer(mode="wrap")
+    def _omit_unused(self, handler: SerializerFunctionWrapHandler) -> object:
+        # Journeys from before extraction parties, and every other kind, dump as before.
+        dumped = handler(self)
+        if isinstance(dumped, dict):
+            for key, default in (("work_days", 0), ("days_worked", 0), ("working", False)):
+                if dumped.get(key) == default:
+                    dumped.pop(key, None)
+        return dumped
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
@@ -231,6 +288,17 @@ class Journey(BaseModel):
             raise ValueError("only spies watch, at the end of their route")
         if self.watched > self.watch_days:
             raise ValueError("spies watch no longer than they meant to")
+        extraction = self.kind is JourneyKind.EXTRACTION
+        if extraction != (self.work_days > 0):
+            raise ValueError("only extraction parties, and all of them, set out to work")
+        if self.working and (
+            not extraction
+            or self.phase is not JourneyPhase.OUTBOUND
+            or self.route_index != len(self.route) - 1
+        ):
+            raise ValueError("only extraction parties work, at the end of their route")
+        if self.days_worked > self.work_days:
+            raise ValueError("a party works no longer than it meant to")
         if self.kind not in SPYING_KINDS and self.findings is not None:
             raise ValueError("only spies and their couriers carry findings")
         if self.kind is JourneyKind.COURIER and self.findings is None:
@@ -248,7 +316,7 @@ class Journey(BaseModel):
         if (
             internal
             and self.kind not in CARRYING_KINDS
-            and self.kind is not JourneyKind.SALVAGE
+            and self.kind not in LOADING_KINDS
             and (self.cargo or self.carrying_cargo)
         ):
             raise ValueError("internal journeys carry no trade cargo")
@@ -301,14 +369,17 @@ def journey_days(
     roads: Roads | None = None,
     *,
     heavy: bool = False,
+    bridges: Bridges = NO_BRIDGES,
 ) -> int:
     """Days on the road without delays: out and back for goods, one way for migrants.
 
     Heavy siege engines make every day of it half as long again.
     """
-    days = travel_days(world_map, route[1:], roads)
+    days = travel_days(world_map, route[1:], roads, start=route[0], bridges=bridges)
     if kind in ROUND_TRIP_KINDS:
-        days += travel_days(world_map, tuple(reversed(route))[1:], roads)
+        days += travel_days(
+            world_map, tuple(reversed(route))[1:], roads, start=route[-1], bridges=bridges
+        )
     return slowed(days) if heavy else days
 
 
@@ -318,9 +389,13 @@ def roadwork_days(
     target: RoadGrade,
     roads: Roads,
     crew: int,
+    *,
+    bridges: Bridges = NO_BRIDGES,
 ) -> int:
-    """Days for a crew to walk out, raise every route tile to the target grade, and walk home."""
-    work = 0
+    """Days for a crew to walk out, raise every route tile to the target grade, bridge the
+    rivers it must, and walk home over its own bridges."""
+    work = bridge_labour_days(world_map, route, target, bridges, crew)
+    spanned = spans_planned(world_map, route, target, bridges)
     for tile in dict.fromkeys(route):
         base = ENTRY_COST[world_map.tile(tile).terrain]
         if base is None:
@@ -328,7 +403,8 @@ def roadwork_days(
         labour = sum(step_labour(base, grade) for grade in steps_to(roads.get(tile), target))
         work += ceil(labour / max(crew, 1))
     home = tuple(reversed(route))[1:]
-    return travel_days(world_map, route[1:], roads) + work + travel_days(world_map, home, roads)
+    out = travel_days(world_map, route[1:], roads, start=route[0], bridges=spanned)
+    return out + work + travel_days(world_map, home, roads, start=route[-1], bridges=spanned)
 
 
 def provisions_needed(days: int, travellers: int, extra: int = 0) -> int:
@@ -337,10 +413,20 @@ def provisions_needed(days: int, travellers: int, extra: int = 0) -> int:
     return travellers * (days + margin) + extra
 
 
-def forage_chance_bp(world_map: WorldMap, coord: HexCoord) -> int:
-    """Chance, in basis points, that one traveller finds a day's food on this tile."""
+def forage_chance_bp(world_map: WorldMap, coord: HexCoord, *, cover: bool = False) -> int:
+    """Chance, in basis points, that one traveller finds a day's food on this tile.
+
+    With `cover` (rules version 2), woods and wetland add to it: a tile all wood, a tenth."""
     tile = world_map.tile(coord)
-    return FORAGE_TERRAIN_BP[tile.terrain] + tile.soil * 3 + (1_500 if tile.river else 0)
+    chance = FORAGE_TERRAIN_BP[tile.terrain] + tile.soil * 3 + (1_500 if tile.river else 0)
+    if cover and tile.cover:
+        chance += forage_bp(tile.cover) // FORAGE_COVER_DIVISOR
+    return chance
+
+
+FORAGE_COVER_DIVISOR = 10
+FORAGE_HAZARD_CAUSE = "forage hazard"
+"""Reserved for wild animals met while foraging; nothing causes it yet."""
 
 
 class NoticeKind(StrEnum):
@@ -429,6 +515,15 @@ class RoadBuilt:
 
 
 @dataclass(frozen=True, slots=True)
+class BridgeBuilt:
+    journey_id: EntityId
+    civilization_id: EntityId
+    a: HexCoord
+    b: HexCoord
+    depth: Depth
+
+
+@dataclass(frozen=True, slots=True)
 class RoadworkStopped:
     journey_id: EntityId
     civilization_id: EntityId
@@ -453,7 +548,7 @@ class TollEncounter:
 @dataclass(frozen=True, slots=True)
 class JourneyDayResult:
     journeys: tuple[Journey, ...]
-    people_by_civilization: dict[EntityId, dict[EntityId, Person]]
+    people_by_civilization: Mapping[EntityId, Mapping[EntityId, Person]]
     delayed_ids: tuple[EntityId, ...]
     lost_ids: tuple[EntityId, ...]
     perished_ids: tuple[EntityId, ...]
@@ -468,6 +563,7 @@ class JourneyDayResult:
     foraging: tuple[Foraging, ...]
     fed_ids: tuple[EntityId, ...]
     roads_built: tuple[RoadBuilt, ...] = ()
+    bridges_built: tuple[BridgeBuilt, ...] = ()
     roadwork_stopped: tuple[RoadworkStopped, ...] = ()
     tolls: tuple[TollEncounter, ...] = ()
 
@@ -479,7 +575,7 @@ def _roll(rng: StableRng, day: int, journey: Journey, purpose: str) -> int:
 
 def advance_journeys_day(
     journeys: tuple[Journey, ...],
-    people_by_civilization: dict[EntityId, dict[EntityId, Person]],
+    people_by_civilization: Mapping[EntityId, Mapping[EntityId, Person]],
     *,
     day: int,
     rng: StableRng,
@@ -489,6 +585,8 @@ def advance_journeys_day(
     roads: Roads | None = None,
     tolls: TollRules | None = None,
     halts: Callable[[Journey, HexCoord], bool] | None = None,
+    bridges: Bridges = NO_BRIDGES,
+    forage_bonus: bool = False,
 ) -> JourneyDayResult:
     """Move each active party one route tile, resolving deaths, hazards, and delays.
 
@@ -497,8 +595,9 @@ def advance_journeys_day(
     Every party still on the road then eats from its pack or forages; a party whose
     journey ends today hands its leftover pack to whichever storehouse it reached.
 
-    A road crew works instead of walking while its tile is below the target grade, and
-    turns home early when the tile ahead is foreign, when its pack holds only enough for
+    A road crew works instead of walking while its tile is below the target grade, then,
+    raising a graded road or better, bridges the river ahead before crossing it; it turns
+    home early when the tile ahead is foreign, when its pack holds only enough for
     the walk home, or when stone must be laid and no stoneworker is left alive.
 
     A foreign party pays each staffed toll post on its way out once. A party whose pack
@@ -506,10 +605,8 @@ def advance_journeys_day(
     over land its civilization knows, if its pack covers the longer road, and otherwise
     turns back with its goods. A road crew that cannot pay stops.
     """
-    people = {
-        civilization_id: {
-            person_id: person.model_copy(deep=True) for person_id, person in population.items()
-        }
+    people: dict[EntityId, CopyOnRead] = {
+        civilization_id: CopyOnRead(population)
         for civilization_id, population in people_by_civilization.items()
     }
     updated: list[Journey] = []
@@ -523,7 +620,9 @@ def advance_journeys_day(
     returned: list[Journey] = []
     cargo_returned: list[Journey] = []
     grades = dict(roads or {})
+    spans = set(bridges)
     roads_built: list[RoadBuilt] = []
+    bridges_built: list[BridgeBuilt] = []
     stopped: list[RoadworkStopped] = []
     encounters: list[TollEncounter] = []
     toll_rules = tolls or TollRules()
@@ -550,7 +649,7 @@ def advance_journeys_day(
         if not journey.active:
             updated.append(journey)
             continue
-        party = people.get(journey.sender_civilization_id, {})
+        party: Mapping[EntityId, Person] = people.get(journey.sender_civilization_id, {})
         living = [
             party[person_id]
             for person_id in journey.traveller_ids
@@ -571,11 +670,12 @@ def advance_journeys_day(
                         "carrying_cargo": False,
                         "completed_day": day,
                         "encamped": False,
+                        "working": False,
                     }
                 )
             )
             continue
-        if journey.encamped or journey.waiting or journey.watching:
+        if journey.encamped or journey.waiting or journey.watching or journey.working:
             # A camp, or petitioners at a gate, stay where they are; they only eat and forage.
             updated.append(journey)
             continue
@@ -644,11 +744,14 @@ def advance_journeys_day(
             # The land underfoot has turned foreign, or a treaty allowing work here ended.
             journey = stop(journey, StopReason.FOREIGN_LAND)
         if journey.kind is JourneyKind.ROADWORK and journey.phase is JourneyPhase.OUTBOUND:
-            worked = _roadwork_day(journey, living, world_map, grades, stop)
-            if isinstance(worked, RoadBuilt | None):
-                if worked is not None:
+            worked = _roadwork_day(journey, living, world_map, grades, spans, stop)
+            if isinstance(worked, RoadBuilt | BridgeBuilt | None):
+                if isinstance(worked, RoadBuilt):
                     grades[worked.tile] = worked.grade
                     roads_built.append(worked)
+                elif isinstance(worked, BridgeBuilt):
+                    spans.add((worked.a, worked.b))
+                    bridges_built.append(worked)
                 updated.append(_worked_journey(journey, living, world_map, grades, worked))
                 continue
             journey = worked
@@ -662,6 +765,7 @@ def advance_journeys_day(
             toll_rules,
             encounters,
             halts,
+            spans,
         )
         if not reached:
             updated.append(moved)
@@ -677,6 +781,12 @@ def advance_journeys_day(
             if journey.kind is JourneyKind.SPY:
                 # Spies settle in to watch; the engine keeps their count of days.
                 moved = moved.model_copy(update={"arrived_day": day, "watching": True})
+                arrived.append(moved)
+                updated.append(moved)
+                continue
+            if journey.kind is JourneyKind.EXTRACTION:
+                # Workers set to; the engine counts their days and what they take.
+                moved = moved.model_copy(update={"arrived_day": day, "working": True})
                 arrived.append(moved)
                 updated.append(moved)
                 continue
@@ -814,7 +924,9 @@ def advance_journeys_day(
         if journey.provisions and not remaining:
             exhausted_ids.append(journey.journey_id)
         if unfed:
-            chance = forage_chance_bp(world_map, journey.route[journey.route_index])
+            chance = forage_chance_bp(
+                world_map, journey.route[journey.route_index], cover=forage_bonus
+            )
             stream = rng.stream(f"day:{day}:logistics:forage:{journey.journey_id}")
             found = 0
             for person in unfed:
@@ -830,7 +942,9 @@ def advance_journeys_day(
 
     return JourneyDayResult(
         journeys=tuple(sorted(fed_journeys, key=lambda item: item.journey_id)),
-        people_by_civilization=people,
+        people_by_civilization={
+            civilization_id: population for civilization_id, population in people.items()
+        },
         delayed_ids=tuple(sorted(delayed_ids)),
         lost_ids=tuple(sorted(lost_ids)),
         perished_ids=tuple(sorted(perished_ids)),
@@ -847,6 +961,7 @@ def advance_journeys_day(
         foraging=tuple(foraging),
         fed_ids=tuple(sorted(fed_ids)),
         roads_built=tuple(roads_built),
+        bridges_built=tuple(bridges_built),
         roadwork_stopped=tuple(stopped),
         tolls=tuple(encounters),
     )
@@ -862,6 +977,7 @@ def _walk(
     tolls: TollRules,
     encounters: list[TollEncounter],
     halts: Callable[[Journey, HexCoord], bool] | None = None,
+    spans: Bridges = NO_BRIDGES,
 ) -> tuple[Journey, bool]:
     """Spend one day walking, entering as many tiles as the day covers.
 
@@ -878,15 +994,33 @@ def _walk(
     progress = journey.travel_progress + DAY
     while index != end:
         ahead = index + (1 if outbound else -1)
-        cost = entry_cost(world_map, journey.route[ahead], grades)
+        cost = entry_cost(
+            world_map, journey.route[ahead], grades, origin=journey.route[index], bridges=spans
+        )
         if cost is None:
-            raise ValueError("a journey route cannot enter impassable terrain")
+            cost = _legacy_crossing(world_map, journey.route[index], journey.route[ahead], grades)
+            if outbound:
+                # Only a party dispatched before deep rivers blocked travel meets one here:
+                # it cannot cross, so it turns for home (a crew stops) without a crash.
+                halted = journey.model_copy(
+                    update={"route_index": index, "travel_progress": min(progress, DAY - 1)}
+                )
+                if crew:
+                    return stop(halted, StopReason.RIVER), False
+                return halted.model_copy(
+                    update={
+                        "phase": JourneyPhase.RETURNING,
+                        "outcome": JourneyOutcome.TURNED_BACK,
+                    }
+                ), False
         if journey.kind is JourneyKind.CAMPAIGN and slows(journey.cargo):
             cost = slowed(cost)
         if progress < cost:
             break
         if outbound:
-            passage = _pass_toll(journey, index, living, world_map, grades, tolls, encounters)
+            passage = _pass_toll(
+                journey, index, living, world_map, grades, tolls, encounters, spans
+            )
             if passage is not journey:
                 if passage.phase is JourneyPhase.RETURNING:
                     if crew:
@@ -916,13 +1050,38 @@ def _walk(
             if arrival_allowed is not None and not arrival_allowed(here):
                 return stop(here, StopReason.FOREIGN_LAND), False
             assert journey.road_grade is not None
-            if index == end or rank(grades.get(journey.route[index])) < rank(journey.road_grade):
+            tile = journey.route[index]
+            if (
+                index == end
+                or rank(grades.get(tile)) < rank(journey.road_grade)
+                or (
+                    can_bridge(journey.road_grade)
+                    and span_needed(world_map, tile, journey.route[index + 1], spans) is not None
+                )
+            ):
+                # Work to do here: a tile to raise, or a river ahead to bridge from this bank.
                 return here, False
     reached = index == end and not crew
     if reached:
         progress = min(progress, DAY - 1)
     moved = journey.model_copy(update={"route_index": index, "travel_progress": progress})
     return moved, reached
+
+
+def _legacy_crossing(
+    world_map: WorldMap, here: HexCoord, ahead: HexCoord, grades: dict[HexCoord, RoadGrade]
+) -> int:
+    """The cost of fording a deep river a party already crossed before the crossing rule.
+
+    Saves made before deep rivers blocked travel can hold parties on the far bank; they wade
+    home the way they came, as if the river were an ordinary one, rather than being stranded.
+    """
+    cost = entry_cost(world_map, ahead, grades)
+    if cost is None or world_map.river_between(here, ahead) is None:
+        raise ValueError("a journey route cannot enter impassable terrain")
+    river = CROSSING_COST["river"]
+    assert river is not None
+    return cost + river
 
 
 def _pass_toll(
@@ -933,6 +1092,7 @@ def _pass_toll(
     grades: dict[HexCoord, RoadGrade],
     tolls: TollRules,
     encounters: list[TollEncounter],
+    spans: Bridges = NO_BRIDGES,
 ) -> Journey:
     """Settle the toll on the tile ahead: pay it, go round it, or turn back.
 
@@ -966,9 +1126,10 @@ def _pass_toll(
         encounters.append(_encounter(journey, gate, ahead, owed))
         return paid
     food = food_charge(gate, len(living))
-    if food + len(living) * _days_left(journey.route, index, journey.kind, world_map, grades) <= (
-        journey.provisions
-    ):
+    if journey.kind is JourneyKind.ROADWORK:
+        spans = spans_planned(world_map, journey.route, journey.road_grade, spans)
+    left = _days_left(journey.route, index, journey.kind, world_map, grades, spans)
+    if food + len(living) * left <= (journey.provisions):
         encounters.append(_encounter(journey, gate, ahead, {Resource.FOOD: food} if food else {}))
         return journey.model_copy(
             update={
@@ -986,11 +1147,18 @@ def _pass_toll(
                 if not tolls.exempt(payer, known.owner) and known.food_per_head
             }
         )
+        # A way round is planned over the bridges the payer's civilization knows of.
+        known_spans = tolls.known_bridges.get(payer, NO_BRIDGES)
         rerouted = detour(
-            world_map, tolls.known_tiles.get(payer, frozenset()), journey.route, index, avoid
+            world_map,
+            tolls.known_tiles.get(payer, frozenset()),
+            journey.route,
+            index,
+            avoid,
+            bridges=known_spans,
         )
         if rerouted is not None:
-            days = _days_left(rerouted, index, journey.kind, world_map, grades)
+            days = _days_left(rerouted, index, journey.kind, world_map, grades, known_spans)
             if len(living) * days <= journey.provisions:
                 encounters.append(_encounter(journey, gate, ahead, {}, avoided=True))
                 return journey.model_copy(update={"route": rerouted})
@@ -1006,11 +1174,14 @@ def _days_left(
     kind: JourneyKind,
     world_map: WorldMap,
     grades: dict[HexCoord, RoadGrade],
+    bridges: Bridges = NO_BRIDGES,
 ) -> int:
     """Days of walking still ahead from route[index], and back again for a round trip."""
-    days = travel_days(world_map, route[index + 1 :], grades)
+    days = travel_days(world_map, route[index + 1 :], grades, start=route[index], bridges=bridges)
     if kind in ROUND_TRIP_KINDS or kind is JourneyKind.ROADWORK:
-        days += travel_days(world_map, tuple(reversed(route))[1:], grades)
+        days += travel_days(
+            world_map, tuple(reversed(route))[1:], grades, start=route[-1], bridges=bridges
+        )
     return days
 
 
@@ -1040,18 +1211,20 @@ def _roadwork_day(
     living: list[Person],
     world_map: WorldMap,
     grades: dict[HexCoord, RoadGrade],
+    spans: Bridges,
     stop: Callable[[Journey, StopReason], Journey],
-) -> RoadBuilt | Journey | None:
+) -> RoadBuilt | BridgeBuilt | Journey | None:
     """One day of a road crew on its current tile.
 
-    Returns the grade finished today, None for a day of unfinished work, or the journey
-    to move today: onward when the tile is done, homeward when the crew stops or is done.
+    Returns the grade or bridge finished today, None for a day of unfinished work, or the
+    journey to move today: onward when the tile and any bridge ahead are done, homeward
+    when the crew stops or is done.
     """
     assert journey.road_grade is not None
     here = journey.route[journey.route_index]
     homeward = tuple(reversed(journey.route[: journey.route_index + 1]))[1:]
     if journey.provisions <= provisions_needed(
-        travel_days(world_map, homeward, grades), len(living)
+        travel_days(world_map, homeward, grades, start=here, bridges=spans), len(living)
     ):
         return stop(journey, StopReason.PROVISIONS)
     upcoming = next_grade(grades.get(here))
@@ -1065,6 +1238,10 @@ def _roadwork_day(
                     "work_grade": None,
                 }
             )
+        ahead = journey.route[journey.route_index + 1]
+        depth = span_needed(world_map, here, ahead, spans)
+        if depth is not None and can_bridge(journey.road_grade):
+            return _bridge_day(journey, living, here, ahead, depth, stop)
         return journey.model_copy(update={"work_done": 0, "work_grade": None})
     if upcoming in STONE_LAYING and not any(
         person.skills.get(STONEWORKING, 0) > 0 for person in living
@@ -1087,6 +1264,34 @@ def _roadwork_day(
     )
 
 
+def _bridge_day(
+    journey: Journey,
+    living: list[Person],
+    here: HexCoord,
+    ahead: HexCoord,
+    depth: Depth,
+    stop: Callable[[Journey, StopReason], Journey],
+) -> BridgeBuilt | Journey | None:
+    """A day bridging the river between here and the tile ahead, from this bank."""
+    if depth in MASONRY and not any(person.skills.get(STONEWORKING, 0) > 0 for person in living):
+        return stop(journey, StopReason.NO_STONEWORKER)
+    if any(
+        journey.materials.get(resource, 0) < quantity
+        for resource, quantity in BRIDGE_MATERIALS[depth].items()
+    ):
+        return stop(journey, StopReason.MATERIALS)
+    if _labour(journey, None) + len(living) < BRIDGE_LABOUR[depth]:
+        return None
+    a, b = edge_key(here, ahead)
+    return BridgeBuilt(
+        journey_id=journey.journey_id,
+        civilization_id=journey.sender_civilization_id,
+        a=a,
+        b=b,
+        depth=depth,
+    )
+
+
 def _labour(journey: Journey, grade: RoadGrade | None) -> int:
     """Labour this crew has already put toward the grade; none if that grade changed."""
     return journey.work_done if journey.work_grade == grade else 0
@@ -1097,11 +1302,29 @@ def _worked_journey(
     living: list[Person],
     world_map: WorldMap,
     grades: dict[HexCoord, RoadGrade],
-    built: RoadBuilt | None,
+    built: RoadBuilt | BridgeBuilt | None,
 ) -> Journey:
-    """The crew after a day of work: labour counted, and materials laid for a finished grade."""
+    """The crew after a day of work: labour counted, and materials used for a finished grade
+    or bridge."""
+    if isinstance(built, BridgeBuilt):
+        left = dict(journey.materials)
+        for resource, quantity in BRIDGE_MATERIALS[built.depth].items():
+            left[resource] -= quantity
+        return journey.model_copy(
+            update={
+                "work_done": 0,
+                "work_grade": None,
+                "materials": {resource: amount for resource, amount in left.items() if amount},
+            }
+        )
     if built is None:
         upcoming = next_grade(grades.get(journey.route[journey.route_index]))
+        assert journey.road_grade is not None
+        if upcoming is None or rank(upcoming) > rank(journey.road_grade):
+            # The tile is done: today's labour went into the bridge ahead.
+            return journey.model_copy(
+                update={"work_done": _labour(journey, None) + len(living), "work_grade": None}
+            )
         return journey.model_copy(
             update={
                 "work_done": _labour(journey, upcoming) + len(living),

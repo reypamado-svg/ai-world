@@ -1,5 +1,7 @@
 """Seeded peace settlements that cede a colony with its people, with daily invariants."""
 
+from dataclasses import replace
+
 import pytest
 from logistics_helpers import treaty_world
 from scenario_helpers import Vanquished, Victor
@@ -19,18 +21,26 @@ def _prepare(seed: int) -> tuple[WorldState, EntityId, EntityId, tuple[HexCoord,
     state, first, second, route = treaty_world(seed=seed, distance=4 + seed % 3)
     loser = state.civilizations[second]
     # A colony off to the side of the loser's capital, with a handful of settlers.
-    tile = next(
+    ring = [
         coord
         for coord in sorted(
             HexCoord(route[-1].q + dq, route[-1].r + dr)
             for dq in range(-4, 5)
             for dr in range(-4, 5)
         )
-        if coord.distance(route[-1]) == 3
-        and coord not in route
-        and state.world_map.contains(coord)
-        and state.world_map.tile(coord).terrain is not Terrain.WATER
+        if coord.distance(route[-1]) == 3 and coord not in route and state.world_map.contains(coord)
+    ]
+    tile = next(
+        (coord for coord in ring if state.world_map.tile(coord).terrain is not Terrain.WATER),
+        ring[0],
     )
+    if state.world_map.tile(tile).terrain is Terrain.WATER:
+        # Seed 2's capital stands at the end of a causeway in open water: raise an island.
+        island = replace(state.world_map.tile(tile), terrain=Terrain.GRASSLAND)
+        state.world_map = replace(
+            state.world_map,
+            tiles=tuple(island if item.coord == tile else item for item in state.world_map.tiles),
+        )
     colony = Settlement(
         settlement_id=EntityId(f"settlement:{second.rsplit(':', 1)[-1]}-0002"),
         civilization_id=second,

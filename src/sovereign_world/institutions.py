@@ -40,12 +40,18 @@ class InstitutionKind(StrEnum):
     HEALERS_HOUSE = "healers_house"
     WORKSHOP = "workshop"
     DIPLOMATIC_SERVICE = "diplomatic_service"
+    HALL = "hall"
+    """Rules version 2: the seat of a settlement's rank, kept by clerks."""
+    ARMOURY = "armoury"
+    """Rules version 2: armourers who make kits faster, and alone make bronze arms and engines."""
+    TRAINING_GROUNDS = "training_grounds"
+    """Rules version 2: drill masters who take drilled fighters further."""
 
 
 @dataclass(frozen=True, slots=True)
 class InstitutionSpec:
     needs: frozenset[CapabilityId]
-    """The civilization must know at least one of these."""
+    """The civilization must know at least one of these; none means anyone may build it."""
     materials: dict[Resource, int]
     person_days: int
 
@@ -68,7 +74,32 @@ INSTITUTIONS: dict[InstitutionKind, InstitutionSpec] = {
     InstitutionKind.DIPLOMATIC_SERVICE: InstitutionSpec(
         frozenset({CapabilityId.WRITING}), {Resource.TIMBER: 30}, 15
     ),
+    InstitutionKind.HALL: InstitutionSpec(
+        frozenset(), {Resource.TIMBER: 40, Resource.STONE: 20}, 20
+    ),
+    InstitutionKind.ARMOURY: InstitutionSpec(
+        frozenset({CapabilityId.TIMBERCRAFT, CapabilityId.STONEWORKING}),
+        {Resource.TIMBER: 30, Resource.STONE: 30},
+        20,
+    ),
+    InstitutionKind.TRAINING_GROUNDS: InstitutionSpec(
+        frozenset(), {Resource.TIMBER: 40, Resource.STONE: 10}, 15
+    ),
 }
+SEAT = InstitutionKind.HALL
+"""The building a settlement needs to be more than a village; it takes no institution slot."""
+CIVIC_KINDS: frozenset[InstitutionKind] = frozenset(
+    {InstitutionKind.HALL, InstitutionKind.ARMOURY, InstitutionKind.TRAINING_GROUNDS}
+)
+"""Buildings that only rules version 2 knows."""
+HALL_STRENGTH = 10
+"""An open hall's clerks extend its settlement's reach: about one more tile of open land."""
+ARMOURY_DAY = 2
+"""Every second day, each worker making equipment at an open armoury puts in a day extra."""
+ARMOURY_GEAR: frozenset[Resource] = frozenset({Resource.BRONZE_ARMS, Resource.CATAPULT})
+"""Made only where an armoury is open (rules version 2)."""
+TRAINING_CAP_BONUS = 10
+"""Drill at open training grounds raises arms this much further."""
 
 
 class Institution(BaseModel):

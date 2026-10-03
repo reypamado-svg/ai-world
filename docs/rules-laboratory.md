@@ -1,6 +1,6 @@
 # Rules Laboratory Operator Guide
 
-The Rules Laboratory is the first playable foundation for the AI civilization world. It creates four isolated communities with 32 founders each, advances them through deterministic daily ticks, asks scripted sovereigns for monthly decrees, and records a tamper-evident history that can be replayed and verified.
+The Rules Laboratory is the first playable foundation for the AI civilization world. It creates two to four isolated communities (four by default, `init --civilizations`) with 32 founders each, advances them through deterministic daily ticks, asks scripted sovereigns for monthly decrees, and records a tamper-evident history that can be replayed and verified.
 
 Phase 1 uses deterministic scripted sovereigns. It contains no OpenAI, Claude, local-model, HTTP, or multi-computer integration. Those adapters belong in later phases and will use the same validated command boundary.
 
@@ -30,14 +30,35 @@ If `py` is unavailable, use any installed Python 3.12 executable in the first co
 ## Create and run a world
 
 ```powershell
-& .venv\Scripts\sovereign-world.exe init work\demo-world --seed 21
+& .venv\Scripts\sovereign-world.exe init work\demo-world --seed 21 --width 48 --height 48
 & .venv\Scripts\sovereign-world.exe run work\demo-world --days 3650
 & .venv\Scripts\sovereign-world.exe inspect work\demo-world
 ```
 
-Initialization fixes the manifest, seed, terrain, start packages, and founders. After launch, the CLI offers no command that edits people, resources, terrain, or outcomes.
+Without `--width` and `--height`, a world is 100 × 100 tiles (each 25 km across, a day's walk) and takes about two seconds to generate; the demo uses a smaller 48 × 48 world. Initialization fixes the manifest, seed, terrain, start packages, and founders. After launch, the CLI offers no command that edits people, resources, terrain, or outcomes.
 
 `run` resumes the latest verified journal state, advances the requested number of daily ticks, and saves a new checkpoint. Repeating `run` continues the same world.
+
+## Rules versions
+
+Each world records the rules it runs under in its manifest.
+- **Rules 2:** worlds made with `init` now. They add:
+  - houses: every five people need one, and births need room;
+  - settlement ranks (village to city) and realm ranks (chiefdom to empire), and what they unlock;
+  - the hall, armoury and training grounds;
+  - civil research;
+  - decrees that end when their days run out;
+  - food, water and forage from each tile's land cover; new settlements need water;
+  - timber and stone gathered at home toward a materials target;
+  - parties working ore deposits and quarries;
+  - one-off finds at ancient ruins and troves;
+  - recipes for metal, tools and planks;
+  - a cap on how far a settlement's hold reaches (strength 300, about 25 tiles of open land), so borders stay local however large a city grows;
+  - orders for work at home that count their workers at a settlement instead of naming them.
+- **Rules 1:** worlds made before rules versions were recorded. They keep rules 1 and replay and verify exactly as before.
+- **Forks:** a fork keeps its parent's rules.
+
+**Model-played runs and prompt versions.** Councils played by a model read a charter of a given prompt version. The current one is `council-5`: the council report sums up the people (counts by age, health and settlement, the idle grown-ups at each settlement, and up to 40 notable people) instead of listing every one, which kept the report readable at any population. A run recorded under an older prompt version still replays, verifies and rederives, but to carry on with a model sovereign it must be forked; the fork's sovereigns use the current version.
 
 ## Checkpoint, replay, and verify
 
@@ -66,6 +87,10 @@ Each world directory contains:
 
 - `world.sqlite3`: the immutable manifest and compressed checkpoints.
 - `journal.jsonl`: append-only, checksummed transition records linked by hashes.
+
+**Journal formats.** `inspect` and `verify` print a run's format.
+- **Format 2** (new runs and every fork): the journal opens with a header record. Each day saves only what changed since the day before; the whole world is saved every 30 days, and after any gap. Hashes use version 2, worked out in parts, so a large world hashes and saves in a fraction of the time.
+- **Format 1** (runs made before this): the whole world every day, hash version 1. Old runs keep their format, carry on in it, and replay and verify exactly as before. A fork of an old run is saved in format 2.
 - `world.sqlite3-wal` and `world.sqlite3-shm`: temporary SQLite files that may appear while a command is running.
 
 Copy the entire directory when backing up or moving a world. Do not edit either authoritative file; verification will report corruption rather than silently accepting a changed history.

@@ -10,7 +10,9 @@ runner = CliRunner()
 def test_cli_run_can_be_inspected_replayed_and_verified(tmp_path: Path) -> None:
     world = tmp_path / "world"
 
-    initialized = runner.invoke(app, ["init", str(world), "--seed", "21"])
+    initialized = runner.invoke(
+        app, ["init", str(world), "--seed", "21", "--width", "24", "--height", "24"]
+    )
     assert initialized.exit_code == 0
     assert "initialized day 0" in initialized.stdout
 
@@ -36,6 +38,55 @@ def test_cli_run_can_be_inspected_replayed_and_verified(tmp_path: Path) -> None:
     verified = runner.invoke(app, ["verify", str(world)])
     assert verified.exit_code == 0
     assert "verified through day 30" in verified.stdout
+
+
+def test_cli_makes_a_two_civilization_world(tmp_path: Path) -> None:
+    world = tmp_path / "pair"
+    initialized = runner.invoke(
+        app,
+        [
+            "init",
+            str(world),
+            "--seed",
+            "21",
+            "--width",
+            "24",
+            "--height",
+            "24",
+            "--civilizations",
+            "2",
+        ],
+    )
+    assert initialized.exit_code == 0, initialized.stdout
+    assert runner.invoke(app, ["run", str(world), "--days", "10"]).exit_code == 0
+    inspected = runner.invoke(app, ["inspect", str(world)])
+    civilization_lines = [
+        line for line in inspected.stdout.splitlines() if line.startswith("civilization: ")
+    ]
+    assert len(civilization_lines) == 2
+    verified = runner.invoke(app, ["verify", str(world)])
+    assert verified.exit_code == 0
+    assert "verified through day 10" in verified.stdout
+
+
+def test_cli_refuses_one_or_five_civilizations(tmp_path: Path) -> None:
+    for count in ("1", "5"):
+        result = runner.invoke(
+            app,
+            [
+                "init",
+                str(tmp_path / count),
+                "--seed",
+                "21",
+                "--width",
+                "24",
+                "--height",
+                "24",
+                "--civilizations",
+                count,
+            ],
+        )
+        assert result.exit_code != 0
 
 
 def test_cli_exposes_no_state_editing_command() -> None:

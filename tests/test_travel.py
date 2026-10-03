@@ -20,6 +20,11 @@ def _paint(state: WorldState, terrain: Terrain, *tiles: HexCoord) -> None:
     state.world_map = replace(
         state.world_map,
         tiles=tuple(painted.get(tile.coord, tile) for tile in state.world_map.tiles),
+        rivers=tuple(
+            edge
+            for edge in state.world_map.rivers
+            if edge.a not in painted and edge.b not in painted
+        ),
     )
 
 
@@ -175,8 +180,11 @@ def test_every_start_is_on_land_all_can_reach_on_foot() -> None:
             reachable = {starts[0]}
             frontier = [starts[0]]
             while frontier:
-                for neighbor in state.world_map.neighbors(frontier.pop()):
-                    if neighbor not in reachable and entry_cost(state.world_map, neighbor):
+                here = frontier.pop()
+                for neighbor in state.world_map.neighbors(here):
+                    if neighbor not in reachable and entry_cost(
+                        state.world_map, neighbor, origin=here
+                    ):
                         reachable.add(neighbor)
                         frontier.append(neighbor)
             assert set(starts) <= reachable, (width, seed)

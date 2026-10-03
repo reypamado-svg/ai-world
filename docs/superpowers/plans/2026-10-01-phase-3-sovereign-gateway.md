@@ -194,6 +194,7 @@ Nothing stores envelopes, raw replies or rationale, and `RunManifest` has no sov
 - **`gateway/prompt.py` (`council-2`):**
   - the charter goes in the system part;
   - the user part holds `<state>`, `<memories>` and `<recent_councils>`, each with `<` and `>` escaped, so no text can close or open a section.
+  - *Later (Phase 4, G5):* `council-3` added a travel rule to the charter, generated from the travel and bridge tables: 25 km tiles, terrain days, river crossings and bridges. Runs recorded with `council-2` keep their hash but must be forked to continue with a model sovereign.
 - **`GatewaySovereign`:**
   - keeps its own council history for the transcript;
   - `remember(records)` takes it up again from a journal when a run is resumed;

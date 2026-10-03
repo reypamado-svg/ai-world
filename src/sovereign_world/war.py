@@ -46,6 +46,8 @@ VETERAN_WOUND_BP = 9_000
 TERRAIN_DEFENCE_BP: dict[Terrain, int] = {
     Terrain.FOREST: 12_500,
     Terrain.MOUNTAIN: 15_000,
+    Terrain.HILLS: 12_500,
+    Terrain.SNOW: 15_000,
 }
 SETTLEMENT_DEFENCE_BP = 12_500
 

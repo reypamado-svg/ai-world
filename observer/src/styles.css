@@ -1,0 +1,374 @@
+:root {
+  --bg: #15181c;
+  --panel: rgba(24, 27, 32, 0.92);
+  --panel-solid: #1b1f25;
+  --ink: #ece6d8;
+  --muted: #a9a294;
+  --line: rgba(255, 240, 210, 0.14);
+  --accent: #ffd84a;
+  --warn: #e9b44c;
+  --approx: #8fb3e0;
+  font-family:
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  overflow: hidden;
+}
+button {
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: #2a2f37;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover {
+  background: #343a44;
+}
+button.on {
+  background: #4a4126;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+#topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: var(--panel-solid);
+  border-bottom: 1px solid var(--line);
+  z-index: 10;
+  font-size: 13px;
+}
+#topbar .brand {
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+#topbar .brand .sub {
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 6px;
+}
+#topbar .group {
+  display: flex;
+  gap: 4px;
+}
+#topbar .spacer {
+  flex: 1;
+}
+.chip {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chip.warn {
+  color: #1b1408;
+  background: var(--warn);
+  border-color: var(--warn);
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+.chip.persp {
+  color: var(--ink);
+}
+.clock {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  min-width: 170px;
+}
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  cursor: pointer;
+}
+#stage {
+  position: fixed;
+  top: 44px;
+  left: 0;
+  right: 0;
+  bottom: 28px;
+}
+#stage canvas {
+  display: block;
+}
+#footer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 28px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 0 12px;
+  background: var(--panel-solid);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+#footer .note {
+  margin-left: auto;
+}
+#pick-note {
+  color: var(--accent);
+}
+#controls {
+  position: fixed;
+  right: 14px;
+  bottom: 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 5;
+}
+#controls button {
+  width: 34px;
+  height: 34px;
+  font-size: 18px;
+  padding: 0;
+  background: var(--panel);
+}
+#inspector {
+  position: fixed;
+  top: 56px;
+  right: 14px;
+  width: 330px;
+  max-height: calc(100% - 120px);
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  z-index: 6;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+}
+#inspector header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+#inspector h2 {
+  margin: 0 0 3px;
+  font-size: 18px;
+}
+#inspector .x {
+  background: none;
+  border: none;
+  font-size: 20px;
+  padding: 0 4px;
+  color: var(--muted);
+}
+#inspector dl {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 5px 8px;
+  margin: 0;
+}
+#inspector dt {
+  color: var(--muted);
+}
+#inspector dd {
+  margin: 0;
+}
+#inspector .mono {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+#inspector .muted {
+  color: var(--muted);
+  font-style: italic;
+}
+#inspector footer {
+  margin-top: 12px;
+}
+#inspector a {
+  color: var(--accent);
+}
+.tag {
+  font-size: 10.5px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+.tag.approx {
+  color: var(--approx);
+  border-color: rgba(143, 179, 224, 0.4);
+}
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+#loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  z-index: 50;
+}
+#loading[hidden] {
+  display: none;
+}
+#loading .box {
+  text-align: center;
+  max-width: 420px;
+}
+#loading .title {
+  font-size: 18px;
+  margin-bottom: 8px;
+}
+#loading #loading-status {
+  color: var(--muted);
+  font-size: 13px;
+  min-height: 18px;
+}
+#loading .hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 14px;
+}
+@media (max-width: 1420px) {
+  #topbar .brand .sub {
+    display: none;
+  }
+  #footer .note {
+    display: none;
+  }
+}
+@media (max-width: 1100px) {
+  .toggle {
+    font-size: 0;
+    gap: 0;
+  }
+  .toggle input {
+    margin: 0 2px;
+  }
+  .chip.persp {
+    display: none;
+  }
+}
+#minimap {
+  position: fixed;
+  left: 14px;
+  bottom: 44px;
+  width: 240px;
+  height: 150px;
+  z-index: 6;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #12161a;
+  cursor: crosshair;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+#topbar select {
+  font: inherit;
+  font-size: 12px;
+  background: #2a2f37;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+#footer button {
+  font-size: 11.5px;
+  padding: 1px 8px;
+}
+#measure {
+  position: fixed;
+  left: 270px;
+  bottom: 44px;
+  width: 420px;
+  max-height: 60vh;
+  overflow: auto;
+  z-index: 7;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+#measure header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+#measure p {
+  color: var(--muted);
+  margin: 6px 0;
+}
+#measure pre {
+  font-size: 11px;
+  white-space: pre-wrap;
+  margin: 0;
+}
+#topbar {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+#topbar > * {
+  flex-shrink: 0;
+}
+#topbar .brand,
+.clock {
+  white-space: nowrap;
+}
+#topbar .clock {
+  min-width: 0;
+}
+@media (max-width: 1750px) {
+  #topbar .brand .sub {
+    display: none;
+  }
+}
+@media (max-width: 1500px) {
+  #topbar .chip.persp {
+    display: none;
+  }
+}
+@media (max-width: 1300px) {
+  #topbar .chip:not(.warn):not(.persp) {
+    display: none;
+  }
+}
+#footer {
+  white-space: nowrap;
+  overflow: hidden;
+}
+#footer #perf {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

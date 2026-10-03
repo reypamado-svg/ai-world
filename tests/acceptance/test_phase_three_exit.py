@@ -118,7 +118,7 @@ def test_a_failed_council_changes_nothing_but_that_councils_new_orders(
     assert failed.outcome is not CouncilOutcome.ACCEPTED and failed.envelope.commands == ()
     assert failed.errors
     assert_replays(run, initial, failing, DAYS)
-    assert rederive_run(run.store).state_hash == state_hash(run.final)
+    assert rederive_run(run.store).state_hash == run.store.state_hash(run.final)
 
 
 def test_a_reply_after_the_turns_time_is_not_acted_on(tmp_path: Path) -> None:
@@ -251,7 +251,7 @@ def test_hostile_words_stay_world_content_and_change_nothing_unvalidated(tmp_pat
     assert tempted_days
     assert_no_hidden_knowledge(run.councils)
     assert_replays(run, initial, make, DAYS)
-    assert rederive_run(run.store).state_hash == state_hash(run.final)
+    assert rederive_run(run.store).state_hash == run.store.state_hash(run.final)
 
 
 def test_each_model_sees_only_its_own_council_and_no_secret(
@@ -293,5 +293,5 @@ def test_council_records_hold_raw_replies_and_replay_without_any_model(tmp_path:
     records = [record for record in recorded_councils(run.store) if record.civilization_id == home]
     assert records[0].replies[0] == "Thinking..." and records[0].outcome is CouncilOutcome.REPAIRED
     assert all(record.prompt_hash for record in records)
-    assert rederive_run(run.store).state_hash == state_hash(run.final)
+    assert rederive_run(run.store).state_hash == run.store.state_hash(run.final)
     assert Resource.FOOD in run.final.civilizations[home].inventory.quantities

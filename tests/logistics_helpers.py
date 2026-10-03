@@ -9,7 +9,7 @@ from sovereign_world.commands import CommandEnvelope, CouncilReport, DirectOrder
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.diplomacy import ActiveTreaty, Contact, TreatyKind, TreatyOffer
 from sovereign_world.exploration import Observation
-from sovereign_world.hexmap import HexCoord, Terrain
+from sovereign_world.hexmap import HexCoord, RiverEdge, Terrain, corner_tiles, edge_key
 from sovereign_world.ids import EntityId
 from sovereign_world.rng import StableRng
 from sovereign_world.state import CivilizationState, WorldState, build_initial_state
@@ -28,10 +28,16 @@ def linked_world(
     *,
     seed: int = 21,
     distance: int = 3,
+    rules_version: int = 1,
 ) -> tuple[RunManifest, WorldState, EntityId, EntityId, tuple[HexCoord, ...]]:
-    """Two civilizations in mutual contact, a short route both have observed."""
+    """Two civilizations in mutual contact, a short route both have observed.
+
+    The world runs under rules version 1 unless asked otherwise, so scenarios test their own
+    rules, not houses and ranks at a village-sized capital."""
     manifest = RunManifest.new(
-        config=WorldConfig(seed=seed, width=48, height=48), engine_version="0.1.0"
+        config=WorldConfig(seed=seed, width=48, height=48),
+        engine_version="0.1.0",
+        rules_version=rules_version,
     )
     state = build_initial_state(manifest)
     sender_id, recipient_id = sorted(state.civilizations)[:2]
@@ -40,11 +46,15 @@ def linked_world(
     home = sender.start_center
     step = 1 if home.q + distance < state.config.width else -1
     route = tuple(HexCoord(home.q + index * step, home.r) for index in range(distance + 1))
-    # Lay grassland along the route so scenarios test their own rules, not the terrain.
+    # Lay grassland along the route, with no rivers on its borders, so scenarios test their
+    # own rules, not the terrain.
     grass = {tile: replace(state.world_map.tile(tile), terrain=Terrain.GRASSLAND) for tile in route}
     state.world_map = replace(
         state.world_map,
         tiles=tuple(grass.get(tile.coord, tile) for tile in state.world_map.tiles),
+        rivers=tuple(
+            edge for edge in state.world_map.rivers if edge.a not in grass and edge.b not in grass
+        ),
     )
     move_home(recipient, route[-1])
     for person in recipient.population.people.values():
@@ -78,9 +88,12 @@ def treaty_world(
     *,
     seed: int = 21,
     distance: int = 3,
+    rules_version: int = 1,
 ) -> tuple[WorldState, EntityId, EntityId, tuple[HexCoord, ...]]:
     """Linked civilizations, optionally already bound by a ratified treaty."""
-    _, state, sender_id, recipient_id, route = linked_world(seed=seed, distance=distance)
+    _, state, sender_id, recipient_id, route = linked_world(
+        seed=seed, distance=distance, rules_version=rules_version
+    )
     if kind is not None:
         treaty_id = EntityId(f"treaty:{kind.value}")
         state.treaty_offers = (
@@ -193,4 +206,29 @@ def clear_message_id(prefix: str, *, start_day: int = 0, days: int = 8) -> str:
         lambda roll: roll >= 900,
         start_day=start_day,
         days=days,
+    )
+
+
+def flatten(state: WorldState, around: tuple[HexCoord, ...], reach: int = 2) -> None:
+    """Grassland within reach of the given tiles, and no rivers anywhere."""
+    near = {
+        tile.coord
+        for tile in state.world_map.tiles
+        if min(tile.coord.distance(spot) for spot in around) <= reach
+    }
+    state.world_map = replace(
+        state.world_map,
+        tiles=tuple(
+            replace(tile, terrain=Terrain.GRASSLAND) if tile.coord in near else tile
+            for tile in state.world_map.tiles
+        ),
+        rivers=(),
+    )
+
+
+def river(state: WorldState, first: HexCoord, second: HexCoord, flow: int) -> None:
+    a, b = edge_key(first, second)
+    edge = RiverEdge(a=a, b=b, flow=flow, downstream=corner_tiles(a, b)[0])
+    state.world_map = replace(
+        state.world_map, rivers=tuple(sorted((*state.world_map.rivers, edge)))
     )

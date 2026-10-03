@@ -174,6 +174,6 @@ def test_joined_roads_pass_free_until_the_treaty_breaks(tmp_path: Path) -> None:
 
     validate_world(final)
     assert state_hash(replay_run(store)) == state_hash(final)
-    assert verify_run(store).state_hash == state_hash(final)
+    assert verify_run(store).state_hash == store.state_hash(final)
     rerun, _ = run()
     assert state_hash(rerun) == state_hash(final)

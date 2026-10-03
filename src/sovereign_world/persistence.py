@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 from base64 import b64encode
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,18 @@ from pydantic import BaseModel, ConfigDict
 
 from sovereign_world.config import RunManifest
 from sovereign_world.events import EventBatch
-from sovereign_world.state import WorldState, state_hash
+from sovereign_world.journal import (
+    GZIP_LEVEL,
+    SNAPSHOT_INTERVAL,
+    Parts,
+    Saved,
+    compress,
+    encode_delta,
+    encode_snapshot,
+    load_state,
+    split_parts,
+)
+from sovereign_world.state import WorldState, state_hash, state_hash_v2
 
 
 class JournalCorruption(RuntimeError):
@@ -53,6 +65,10 @@ def _record_hash(
     return hashlib.sha256(encoded).hexdigest()
 
 
+HEADER = "header"
+"""The first record of a format-2 journal: its format and hash version."""
+
+
 class WorldStore:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -61,6 +77,9 @@ class WorldStore:
         self._tail_sequence: int | None = None
         self._tail_hash: str | None = None
         self._verified_length: int | None = None
+        self._journal_format: int | None = None
+        self._last: Saved | None = None
+        """The day this store last saved, to save the next one as the changes from it."""
 
     @classmethod
     def create(
@@ -98,8 +117,50 @@ class WorldStore:
             )
             connection.commit()
         store.journal_path.write_bytes(b"")
+        store._journal_format = manifest.journal_format
+        if manifest.journal_format >= 2:
+            store.append_record(
+                HEADER,
+                {
+                    "journal_format": manifest.journal_format,
+                    "hash_version": 2,
+                    "run_id": str(manifest.run_id),
+                    "manifest_hash": manifest.content_hash(),
+                    "engine_version": manifest.engine_version,
+                },
+            )
         store.save_checkpoint(initial_state)
+        if manifest.journal_format >= 2:
+            # The first day is saved as its changes from this checkpoint.
+            store._last = Saved(initial_state)
         return store
+
+    @property
+    def journal_format(self) -> int:
+        """1 for journals without a header (whole world each day, hash v1), else the
+        header's; it must agree with the manifest."""
+        if self._journal_format is None:
+            first = next(self.iter_records(), None)
+            declared = self.manifest().journal_format
+            found = (
+                int(first.payload["journal_format"])
+                if first is not None and first.type == HEADER
+                else (declared if first is None else 1)
+            )
+            if found != declared:
+                raise JournalCorruption(0, "journal format differs from the manifest")
+            self._journal_format = found
+        return self._journal_format
+
+    @property
+    def hash_version(self) -> int:
+        return 1 if self.journal_format == 1 else 2
+
+    def state_hash(self, state: WorldState, *, fresh: bool = False) -> str:
+        """The run's hash of a state: version 1 or 2, as its journal format says."""
+        if self.hash_version == 1:
+            return state_hash(state)
+        return state_hash_v2(state, fresh=fresh)
 
     def manifest(self) -> RunManifest:
         with sqlite3.connect(self.database_path) as connection:
@@ -113,42 +174,43 @@ class WorldStore:
             raise RuntimeError("manifest hash mismatch")
         return manifest
 
-    def read_records(self) -> tuple[JournalRecord, ...]:
-        data = self.journal_path.read_bytes()
-        complete_length = data.rfind(b"\n") + 1
-        if complete_length == 0:
-            self._tail_sequence = 0
-            self._tail_hash = "0" * 64
-            self._verified_length = 0
-            return ()
-        records: list[JournalRecord] = []
+    def iter_records(self) -> Iterator[JournalRecord]:
+        """Every complete record, checked against its sequence, chain and hash, read one
+        line at a time; an incomplete last line is ignored, as a crash may leave one."""
         previous_hash = "0" * 64
+        sequence = 0
         offset = 0
-        for line in data[:complete_length].splitlines(keepends=True):
-            raw = line.rstrip(b"\r\n")
-            try:
-                record = JournalRecord.model_validate_json(raw)
-            except Exception as error:
-                raise JournalCorruption(offset, "invalid JSON record") from error
-            expected_hash = _record_hash(
-                record.sequence,
-                record.type,
-                record.payload,
-                record.previous_hash,
-            )
-            if record.sequence != len(records) + 1:
-                raise JournalCorruption(offset, "noncontiguous sequence")
-            if record.previous_hash != previous_hash:
-                raise JournalCorruption(offset, "broken hash chain")
-            if record.record_hash != expected_hash:
-                raise JournalCorruption(offset, "record hash mismatch")
-            records.append(record)
-            previous_hash = record.record_hash
-            offset += len(line)
-        self._tail_sequence = len(records)
+        with self.journal_path.open("rb") as journal:
+            for line in journal:
+                if not line.endswith(b"\n"):
+                    break
+                raw = line.rstrip(b"\r\n")
+                try:
+                    record = JournalRecord.model_validate_json(raw)
+                except Exception as error:
+                    raise JournalCorruption(offset, "invalid JSON record") from error
+                expected_hash = _record_hash(
+                    record.sequence,
+                    record.type,
+                    record.payload,
+                    record.previous_hash,
+                )
+                if record.sequence != sequence + 1:
+                    raise JournalCorruption(offset, "noncontiguous sequence")
+                if record.previous_hash != previous_hash:
+                    raise JournalCorruption(offset, "broken hash chain")
+                if record.record_hash != expected_hash:
+                    raise JournalCorruption(offset, "record hash mismatch")
+                sequence = record.sequence
+                previous_hash = record.record_hash
+                offset += len(line)
+                yield record
+        self._tail_sequence = sequence
         self._tail_hash = previous_hash
-        self._verified_length = complete_length
-        return tuple(records)
+        self._verified_length = offset
+
+    def read_records(self) -> tuple[JournalRecord, ...]:
+        return tuple(self.iter_records())
 
     def append_record(self, record_type: str, payload: dict[str, Any]) -> JournalRecord:
         if self._tail_sequence is None:
@@ -178,22 +240,62 @@ class WorldStore:
         self._verified_length += len(encoded)
         return record
 
-    def append_transition(self, state: WorldState, events: EventBatch) -> JournalRecord:
-        encoded_state = b64encode(gzip.compress(state.model_dump_json().encode())).decode()
-        return self.append_record(
-            "transition",
-            {
-                "day": state.day,
-                "state_gzip_base64": encoded_state,
-                "state_hash": state_hash(state),
-                "events": events.canonical_json(),
-            },
-        )
+    def append_transition(
+        self,
+        state: WorldState,
+        events: EventBatch,
+        *,
+        previous: WorldState | None = None,
+        parts: Parts | None = None,
+        hashed: str | None = None,
+    ) -> JournalRecord:
+        """Save a day. Format 2 saves only the changes from the day before when it has that
+        day (the last it saved, or `previous`), and the whole world every 30 days. A caller
+        that has already dumped the day (`parts`) and hashed it from that dump (`hashed`)
+        passes them, so neither is done twice."""
+        if self.journal_format == 1:
+            encoded = b64encode(gzip.compress(state.model_dump_json().encode())).decode()
+            return self.append_record(
+                "transition",
+                {
+                    "day": state.day,
+                    "state_gzip_base64": encoded,
+                    "state_hash": state_hash(state),
+                    "events": events.canonical_json(),
+                },
+            )
+        if previous is not None and (self._last is None or self._last.day != previous.day):
+            self._last = Saved(previous)
+        if parts is None:
+            parts = split_parts(state)
+            hashed = None
+        delta = None
+        last = self._last
+        if state.day % SNAPSHOT_INTERVAL and last is not None and last.day == state.day - 1:
+            delta = encode_delta(last, state, parts)
+        payload: dict[str, Any] = {
+            "day": state.day,
+            "state_hash": hashed or state_hash_v2(state, parts=parts),
+            "events": events.canonical_json(),
+        }
+        if delta is None:
+            # The same day always saves the same bytes.
+            raw = encode_snapshot(state, parts)
+            payload["state_gzip_base64"] = b64encode(
+                gzip.compress(raw, compresslevel=GZIP_LEVEL, mtime=0)
+            ).decode()
+        else:
+            payload["delta_gzip_base64"] = compress(delta)
+        record = self.append_record("transition", payload)
+        self._last = Saved(state, parts)
+        return record
 
     def save_checkpoint(self, state: WorldState) -> None:
-        raw = state.model_dump_json().encode()
+        raw = (
+            encode_snapshot(state) if self.journal_format >= 2 else state.model_dump_json().encode()
+        )
         digest = hashlib.sha256(raw).hexdigest()
-        blob = gzip.compress(raw)
+        blob = gzip.compress(raw, compresslevel=GZIP_LEVEL if self.journal_format >= 2 else 9)
         with sqlite3.connect(self.database_path) as connection:
             previous = connection.execute(
                 "SELECT content_hash FROM checkpoints WHERE day < ? ORDER BY day DESC LIMIT 1",
@@ -206,7 +308,7 @@ class WorldStore:
                 (day, state_blob, content_hash, state_hash, previous_checkpoint_hash)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (state.day, blob, digest, state_hash(state), previous_hash),
+                (state.day, blob, digest, self.state_hash(state), previous_hash),
             )
             connection.commit()
 
@@ -224,8 +326,8 @@ class WorldStore:
                 raw = gzip.decompress(blob)
                 if hashlib.sha256(raw).hexdigest() != expected_content:
                     continue
-                state = WorldState.model_validate_json(raw)
-                if state_hash(state) != expected_state:
+                state = load_state(raw)
+                if self.state_hash(state, fresh=True) != expected_state:
                     continue
                 return state
             except Exception:

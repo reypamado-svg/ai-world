@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI World — Close-zoom art proof</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <div id="topbar">
+      <div class="brand">AI World <span class="sub">Close-zoom art proof</span></div>
+      <span
+        class="chip warn"
+        title="Artwork is procedurally painted placeholder art; a licensed pack can replace it asset by asset."
+        >PROTOTYPE ARTWORK</span
+      >
+      <span
+        class="chip warn"
+        title="Village, buildings, citizens and routines are invented sample data, not simulation output."
+        >SAMPLE DATA</span
+      >
+      <span id="clock" class="clock">Sample day 1 · 08:00</span>
+      <div class="group">
+        <button id="btn-pause">❚❚ Pause</button>
+        <button data-speed="1" class="on">1×</button>
+        <button data-speed="2">2×</button>
+        <button data-speed="4">4×</button>
+      </div>
+      <span class="chip persp" title="Only the observer perspective exists in this proof.">Perspective: Observer</span>
+      <div class="spacer"></div>
+      <label class="toggle"><input type="checkbox" id="chk-footprints" /> Footprints</label>
+      <label class="toggle"><input type="checkbox" id="chk-flat" /> Depth debug</label>
+    </div>
+    <div id="stage"></div>
+    <aside id="inspector" hidden></aside>
+    <div id="controls">
+      <button id="btn-zoom-in" title="Zoom in">+</button>
+      <button id="btn-zoom-out" title="Zoom out">−</button>
+      <button id="btn-reset" title="Reset view">⌂</button>
+    </div>
+    <div id="footer">
+      <span id="perf"></span>
+      <span id="pick-note"></span>
+      <span class="note"
+        >Movement shown here is a visual approximation of sample routines, not simulation evidence. Click a person or
+        building to inspect.</span
+      >
+    </div>
+    <div id="loading">
+      <div class="box">
+        <div class="title">Painting the village…</div>
+        <div id="loading-status">Starting</div>
+        <div class="hint">All artwork is generated in your browser from code (original, no external assets).</div>
+      </div>
+    </div>
+    <script type="module" src="src/proof/main.js"></script>
+  </body>
+</html>

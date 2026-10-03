@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.ids import EntityId
-from sovereign_world.people import Person
+from sovereign_world.people import CopyOnRead, Person
 
 
 class CapabilityId(StrEnum):
@@ -104,20 +105,18 @@ class KnowledgeState(BaseModel):
 @dataclass(frozen=True, slots=True)
 class KnowledgeDayResult:
     knowledge: KnowledgeState
-    people: dict[EntityId, Person]
+    people: Mapping[EntityId, Person]
     learned: tuple[CapabilityId, ...]
     forgotten: tuple[CapabilityId, ...]
 
 
 def advance_knowledge_day(
     knowledge: KnowledgeState,
-    people: dict[EntityId, Person],
+    people: Mapping[EntityId, Person],
     day: int,
 ) -> KnowledgeDayResult:
     """Advance teaching and remove unrecorded capabilities with no living practitioner."""
-    updated_people = {
-        person_id: person.model_copy(deep=True) for person_id, person in people.items()
-    }
+    updated_people = CopyOnRead(people)
     records = {record.capability: record for record in knowledge.records}
     forgotten: list[CapabilityId] = []
     for capability, record in tuple(records.items()):

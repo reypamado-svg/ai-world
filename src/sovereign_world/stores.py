@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.capabilities import CapabilityId
@@ -15,7 +16,8 @@ from sovereign_world.ids import EntityId
 from sovereign_world.resources import Inventory, InventoryDelta, Resource
 
 if TYPE_CHECKING:
-    from sovereign_world.state import CivilizationState
+    from sovereign_world.people_store import PeopleTable, Person
+    from sovereign_world.state import CivilizationState, WorldState
     from sovereign_world.territory import Settlement
 
 BASE_CAPACITY = 2_000
@@ -186,6 +188,52 @@ def set_store(
 def store_id_at(civilization: CivilizationState, tile: HexCoord) -> EntityId | None:
     settlement = supplying(civilization, tile)
     return None if settlement is None else settlement.settlement_id
+
+
+def rows_by_store(
+    civilization: CivilizationState, table: PeopleTable, rows: np.ndarray
+) -> dict[EntityId, np.ndarray]:
+    """These rows grouped by the store supplying where each stands, each group keeping the
+    rows' order, and the stores in the order their first person appears."""
+    from sovereign_world.people_store import place_of
+
+    if not len(rows):
+        return {}
+    codes, first, where = np.unique(table.loc_code[rows], return_index=True, return_inverse=True)
+    stores: list[EntityId] = []
+    for code in codes.tolist():
+        store_id = store_id_at(civilization, place_of(code))
+        assert store_id is not None
+        stores.append(store_id)
+    order = sorted(
+        set(stores),
+        key=lambda item: min(
+            int(first[index]) for index, other in enumerate(stores) if other == item
+        ),
+    )
+    return {
+        store_id: rows[
+            np.isin(where, [index for index, other in enumerate(stores) if other == store_id])
+        ]
+        for store_id in order
+    }
+
+
+def held_captives(
+    state: WorldState, civilization_id: EntityId, settlements: set[EntityId]
+) -> dict[EntityId, Person]:
+    """Other civilizations' living people held prisoner at these settlements, by id: by
+    civilization, then in each one's row order."""
+    held: dict[EntityId, Person] = {}
+    for other_id, other in sorted(state.civilizations.items()):
+        if other_id == civilization_id:
+            continue
+        table = other.population.people.table
+        for row in np.flatnonzero(table.mask(alive=True, captive=True)).tolist():
+            person = table.person(row)
+            if person.captive_of == civilization_id and person.held_at in settlements:
+                held[table.ids[row]] = person
+    return held
 
 
 def store_at(civilization: CivilizationState, tile: HexCoord) -> Inventory:
