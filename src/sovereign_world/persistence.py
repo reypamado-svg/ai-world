@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from sovereign_world.config import RunManifest
 from sovereign_world.events import EventBatch
+from sovereign_world.journal import SNAPSHOT_INTERVAL, Saved, compress, encode_delta, split_parts
 from sovereign_world.state import WorldState, state_hash, state_hash_v2
 
 
@@ -67,6 +68,8 @@ class WorldStore:
         self._tail_hash: str | None = None
         self._verified_length: int | None = None
         self._journal_format: int | None = None
+        self._last: Saved | None = None
+        """The day this store last saved, to save the next one as the changes from it."""
 
     @classmethod
     def create(
@@ -117,6 +120,9 @@ class WorldStore:
                 },
             )
         store.save_checkpoint(initial_state)
+        if manifest.journal_format >= 2:
+            # The first day is saved as its changes from this checkpoint.
+            store._last = Saved(initial_state)
         return store
 
     @property
@@ -224,19 +230,43 @@ class WorldStore:
         self._verified_length += len(encoded)
         return record
 
-    def append_transition(self, state: WorldState, events: EventBatch) -> JournalRecord:
-        raw = state.model_dump_json().encode()
-        # Format 2 compresses reproducibly: the same day always saves the same bytes.
-        compressed = gzip.compress(raw, mtime=0) if self.journal_format >= 2 else gzip.compress(raw)
-        return self.append_record(
-            "transition",
-            {
-                "day": state.day,
-                "state_gzip_base64": b64encode(compressed).decode(),
-                "state_hash": self.state_hash(state),
-                "events": events.canonical_json(),
-            },
-        )
+    def append_transition(
+        self, state: WorldState, events: EventBatch, *, previous: WorldState | None = None
+    ) -> JournalRecord:
+        """Save a day. Format 2 saves only the changes from the day before when it has that
+        day (the last it saved, or `previous`), and the whole world every 30 days."""
+        if self.journal_format == 1:
+            encoded = b64encode(gzip.compress(state.model_dump_json().encode())).decode()
+            return self.append_record(
+                "transition",
+                {
+                    "day": state.day,
+                    "state_gzip_base64": encoded,
+                    "state_hash": state_hash(state),
+                    "events": events.canonical_json(),
+                },
+            )
+        if previous is not None and (self._last is None or self._last.day != previous.day):
+            self._last = Saved(previous)
+        parts = split_parts(state)
+        delta = None
+        last = self._last
+        if state.day % SNAPSHOT_INTERVAL and last is not None and last.day == state.day - 1:
+            delta = encode_delta(last, state, parts)
+        payload: dict[str, Any] = {
+            "day": state.day,
+            "state_hash": self.state_hash(state),
+            "events": events.canonical_json(),
+        }
+        if delta is None:
+            # The same day always saves the same bytes.
+            raw = state.model_dump_json().encode()
+            payload["state_gzip_base64"] = b64encode(gzip.compress(raw, mtime=0)).decode()
+        else:
+            payload["delta_gzip_base64"] = compress(delta)
+        record = self.append_record("transition", payload)
+        self._last = Saved(state, parts)
+        return record
 
     def save_checkpoint(self, state: WorldState) -> None:
         raw = state.model_dump_json().encode()

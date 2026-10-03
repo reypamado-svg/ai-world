@@ -94,8 +94,8 @@ def run(
     sovereigns = build_sovereigns(manifest, state.civilizations, history=recorded_councils(store))
     for _ in range(days):
         transition = advance_day(state, rng, sovereigns=sovereigns)
+        store.append_transition(transition.state, transition.events, previous=state)
         state = transition.state
-        store.append_transition(state, transition.events)
         journal_councils(store, sovereigns.values())
     store.save_checkpoint(state)
     typer.echo(f"advanced to day {state.day} ({store.state_hash(state)})")
