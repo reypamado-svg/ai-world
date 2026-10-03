@@ -1,7 +1,7 @@
 """How the engine's daily cost grows with population.
 
     PYTHONPATH=src:tests .venv/bin/python -B tests/perf/bench_people.py 4000 20000
-        [--days 30] [--profile]
+        [--days 30] [--profile] [--memory]
 
 For each population size it grows a fresh world (tests/perf/synthetic.py),
 runs scripted days, and reports milliseconds per simulated day for the day
@@ -9,6 +9,10 @@ itself, the state hash and the journal record (gzipped full state, as the
 journal writes it today), plus the process's peak memory and journal bytes per day. Not
 collected by pytest. Numbers depend on the machine; compare runs on the same
 one.
+
+With --memory it also reports the people's own memory: what one copy of every
+civilization's population takes, per living person (tracemalloc), measured on the
+grown world before the days run.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ import io
 import pstats
 import resource
 import time
+import tracemalloc
 
 from perf.synthetic import grown_world
 
@@ -31,9 +36,22 @@ from sovereign_world.state import state_hash
 SORT = "tottime"
 
 
-def bench(people: int, days: int, profile: bool) -> dict[str, float]:
+def people_bytes(state) -> float:
+    """Bytes one copy of every population takes, per living person."""
+    living = sum(len(c.population.living_ids) for c in state.civilizations.values())
+    tracemalloc.start()
+    before = tracemalloc.get_traced_memory()[0]
+    copies = [c.population.model_copy(deep=True) for c in state.civilizations.values()]
+    after = tracemalloc.get_traced_memory()[0]
+    tracemalloc.stop()
+    del copies
+    return (after - before) / max(1, living)
+
+
+def bench(people: int, days: int, profile: bool, memory: bool = False) -> dict[str, float]:
     state = grown_world(people)
     living = sum(len(c.population.living_ids) for c in state.civilizations.values())
+    per_person = people_bytes(state) if memory else 0.0
     sovereigns = {civilization_id: BaselineSovereign() for civilization_id in state.civilizations}
     rng = StableRng(state.config.seed)
     profiler = cProfile.Profile() if profile else None
@@ -69,6 +87,7 @@ def bench(people: int, days: int, profile: bool) -> dict[str, float]:
         "us_per_person_day": 1e6 * day_s / days / max(1, living),
         "journal_kb_per_day": journal_bytes / days / 1024,
         "peak_mb": peak / 1e6,
+        "people_bytes": per_person,
     }
 
 
@@ -77,14 +96,19 @@ def main() -> None:
     parser.add_argument("sizes", nargs="+", type=int)
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--memory", action="store_true")
     args = parser.parse_args()
-    print("| people | day ms | hash ms | journal ms | µs/person/day | journal KB/day | peak MB |")
-    print("|---|---|---|---|---|---|---|")
+    print(
+        "| people | day ms | hash ms | journal ms | µs/person/day | journal KB/day | peak MB "
+        "| people bytes/person |"
+    )
+    print("|---|---|---|---|---|---|---|---|")
     for size in args.sizes:
-        r = bench(size, args.days, args.profile)
+        r = bench(size, args.days, args.profile, args.memory)
         print(
             f"| {r['people']:,} | {r['day_ms']:.0f} | {r['hash_ms']:.0f} | {r['journal_ms']:.0f} | "
-            f"{r['us_per_person_day']:.1f} | {r['journal_kb_per_day']:.0f} | {r['peak_mb']:.0f} |",
+            f"{r['us_per_person_day']:.1f} | {r['journal_kb_per_day']:.0f} | {r['peak_mb']:.0f} "
+            f"| {r['people_bytes']:.0f} |",
             flush=True,
         )
 
