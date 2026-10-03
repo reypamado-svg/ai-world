@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from sovereign_world.engine import advance_day
 from sovereign_world.gateway.records import RecordedSovereign, recorded_councils
 from sovereign_world.ids import EntityId
-from sovereign_world.journal import StateCursor, decompress
+from sovereign_world.journal import StateCursor, decompress, load_state
 from sovereign_world.persistence import JournalRecord, WorldStore
 from sovereign_world.rng import StableRng
 from sovereign_world.scripted import Sovereign
@@ -27,8 +27,7 @@ class VerificationResult:
 def recorded_state(payload: dict[str, object]) -> WorldState:
     compressed = payload.get("state_gzip_base64")
     if isinstance(compressed, str):
-        raw = gzip.decompress(b64decode(compressed))
-        return WorldState.model_validate_json(raw)
+        return load_state(gzip.decompress(b64decode(compressed)))
     legacy = payload.get("state_json")
     if isinstance(legacy, str):
         return WorldState.model_validate_json(legacy)

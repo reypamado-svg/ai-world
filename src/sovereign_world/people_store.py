@@ -20,6 +20,8 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+from base64 import b64decode, b64encode
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, overload
@@ -450,6 +452,92 @@ class PeopleTable:
 
     # Saving.
 
+    def columns(self) -> dict[str, Any]:
+        """Everyone present, as plain JSON columns (snapshot version 2): numbers as packed
+        arrays, the rest as lists, or as the few values that differ from the usual one.
+        `from_columns` makes the very same table back, row for row."""
+        rows = self.rows()
+        picked = rows.tolist()
+        objs = self.objs
+        ids = list(map(self.ids.__getitem__, picked))
+        sexes = objs["sex"]
+        places = objs["location"]
+        out: dict[str, Any] = {
+            "ids": ids,
+            "alive": _pack_bits(self.alive[rows]),
+            "female": _pack_bits(
+                np.fromiter((sexes[row] is Sex.FEMALE for row in picked), bool, len(picked))
+            ),
+            "q": _pack_ints(np.fromiter((places[row].q for row in picked), np.int64, len(picked))),
+            "r": _pack_ints(np.fromiter((places[row].r for row in picked), np.int64, len(picked))),
+            "numbers": {name: _pack_ints(self.nums[name][rows]) for name in NUMBERS},
+        }
+        sparse: dict[str, Any] = {}
+        for name in (*_SPARSE, *DICTS):
+            column = objs[name]
+            values = [column[row] for row in picked]
+            if name in _DEFAULTS:
+                usual = _DEFAULTS[name]
+            elif values:
+                usual = Counter(values).most_common(1)[0][0]
+            else:
+                usual = None
+            unusual = {
+                str(position): _json_value(name, value)
+                for position, value in enumerate(values)
+                if value != usual
+            }
+            if len(unusual) * 2 > len(values):
+                sparse[name] = {"all": [_json_value(name, value) for value in values]}
+            else:
+                sparse[name] = {"usual": _json_value(name, usual), "unusual": unusual}
+        out["objects"] = sparse
+        own_ids = [objs["person_id"][row] for row in picked]
+        if own_ids != ids:
+            out["person_ids"] = own_ids
+        return out
+
+    @classmethod
+    def from_columns(cls, data: Mapping[str, Any]) -> PeopleTable:
+        ids: list[EntityId] = list(data["ids"])
+        size = len(ids)
+        table = cls(size)
+        table.size = size
+        table.ids = ids
+        table.index = {person_id: row for row, person_id in enumerate(ids)}
+        table.present[:size] = True
+        table.alive[:size] = _unpack_bits(data["alive"], size)
+        for name in NUMBERS:
+            table.nums[name][:size] = _unpack_ints(data["numbers"][name])
+        female = _unpack_bits(data["female"], size).tolist()
+        table.objs["sex"] = [Sex.FEMALE if item else Sex.MALE for item in female]
+        qs = _unpack_ints(data["q"]).tolist()
+        rs = _unpack_ints(data["r"]).tolist()
+        table.objs["location"] = [HexCoord(q, r) for q, r in zip(qs, rs, strict=True)]
+        for name, column in data["objects"].items():
+            if "all" in column:
+                table.objs[name] = [_from_json(name, value) for value in column["all"]]
+                continue
+            usual = column["usual"]
+            values = (
+                [_from_json(name, usual) for _ in range(size)]
+                if name in DICTS
+                else ([_from_json(name, usual)] * size)
+            )
+            for position, value in column["unusual"].items():
+                values[int(position)] = _from_json(name, value)
+            table.objs[name] = values
+        table.objs["person_id"] = list(data.get("person_ids", ids))
+        table.proxies = [None] * size
+        table.digest = [None] * size
+        table.origin = [None] * size
+        for row in range(size):
+            table.loc_code[row] = place_code(table.objs["location"][row])
+        table.captive[:size] = [value is not None for value in table.objs["captive_of"]]
+        table._order = None
+        table.clear_dirty()
+        return table
+
     def dump(self, mode: str) -> dict[str, dict[str, Any]]:
         """Every person, by id in row order, as the old model dumped them."""
         json = mode == "json"
@@ -492,6 +580,66 @@ class PeopleTable:
 
 
 _RECORDS: TypeAdapter[dict[EntityId, PersonRecord]] = TypeAdapter(dict[EntityId, PersonRecord])
+
+_SPARSE = (
+    "civilization_id",
+    "parent_ids",
+    "death_day",
+    "captive_of",
+    "held_at",
+    "allegiances",
+    "native_language",
+    "culture",
+    "ancestry",
+    "settled_day",
+)
+"""Fields saved in snapshot columns as their usual value and the exceptions to it."""
+
+
+def _pack_bits(flags: np.ndarray) -> str:
+    return b64encode(np.packbits(flags.astype(bool)).tobytes()).decode()
+
+
+def _unpack_bits(text: str, size: int) -> np.ndarray:
+    bits = np.unpackbits(np.frombuffer(b64decode(text), dtype=np.uint8))
+    unpacked: np.ndarray = bits[:size].astype(bool)
+    return unpacked
+
+
+def _pack_ints(values: np.ndarray) -> str:
+    return b64encode(np.asarray(values, dtype="<i8").tobytes()).decode()
+
+
+def _unpack_ints(text: str) -> np.ndarray:
+    return np.frombuffer(b64decode(text), dtype="<i8").astype(np.int64)
+
+
+_DEFAULTS: dict[str, Any] = {
+    name: PersonRecord.model_fields[name].get_default(call_default_factory=True)
+    for name in (*_SPARSE, *DICTS)
+    if not PersonRecord.model_fields[name].is_required()
+}
+"""Each field's value for a person it does not apply to: what most people hold."""
+
+
+def _json_value(name: str, value: Any) -> Any:
+    if name == "allegiances":
+        return [item.model_dump(mode="json") for item in value]
+    if name in TUPLES:
+        return list(value)
+    if name in DICTS:
+        return dict(value)
+    return value
+
+
+def _from_json(name: str, value: Any) -> Any:
+    if name == "allegiances":
+        return tuple(AllegianceChange.model_validate(item) for item in value)
+    if name in TUPLES:
+        return tuple(value)
+    if name in DICTS:
+        return dict(value)
+    return value
 
 
 def _checked(record: PersonRecord) -> dict[str, Any]:

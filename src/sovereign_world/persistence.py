@@ -17,11 +17,14 @@ from pydantic import BaseModel, ConfigDict
 from sovereign_world.config import RunManifest
 from sovereign_world.events import EventBatch
 from sovereign_world.journal import (
+    GZIP_LEVEL,
     SNAPSHOT_INTERVAL,
     Parts,
     Saved,
     compress,
     encode_delta,
+    encode_snapshot,
+    load_state,
     split_parts,
 )
 from sovereign_world.state import WorldState, state_hash, state_hash_v2
@@ -277,8 +280,10 @@ class WorldStore:
         }
         if delta is None:
             # The same day always saves the same bytes.
-            raw = state.model_dump_json().encode()
-            payload["state_gzip_base64"] = b64encode(gzip.compress(raw, mtime=0)).decode()
+            raw = encode_snapshot(state, parts)
+            payload["state_gzip_base64"] = b64encode(
+                gzip.compress(raw, compresslevel=GZIP_LEVEL, mtime=0)
+            ).decode()
         else:
             payload["delta_gzip_base64"] = compress(delta)
         record = self.append_record("transition", payload)
@@ -286,9 +291,11 @@ class WorldStore:
         return record
 
     def save_checkpoint(self, state: WorldState) -> None:
-        raw = state.model_dump_json().encode()
+        raw = (
+            encode_snapshot(state) if self.journal_format >= 2 else state.model_dump_json().encode()
+        )
         digest = hashlib.sha256(raw).hexdigest()
-        blob = gzip.compress(raw)
+        blob = gzip.compress(raw, compresslevel=GZIP_LEVEL if self.journal_format >= 2 else 9)
         with sqlite3.connect(self.database_path) as connection:
             previous = connection.execute(
                 "SELECT content_hash FROM checkpoints WHERE day < ? ORDER BY day DESC LIMIT 1",
@@ -319,7 +326,7 @@ class WorldStore:
                 raw = gzip.decompress(blob)
                 if hashlib.sha256(raw).hexdigest() != expected_content:
                     continue
-                state = WorldState.model_validate_json(raw)
+                state = load_state(raw)
                 if self.state_hash(state, fresh=True) != expected_state:
                     continue
                 return state

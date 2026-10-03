@@ -44,6 +44,64 @@ civilization's."""
 split_parts = outside_people
 
 
+GZIP_LEVEL = 6
+"""Format 2 compresses at level 6: level 9 takes seven times as long for 3% less."""
+SNAPSHOT_VERSION = 2
+_SNAPSHOT_START = b'{"snapshot_version":'
+_MAPS: dict[str, Any] = {}
+"""Each map's JSON, by its hash: a run's map never changes, so it is dumped once."""
+
+
+def _map_json(state: WorldState) -> Any:
+    key = state.world_map.content_hash()
+    found = _MAPS.get(key)
+    if found is None:
+        if len(_MAPS) >= 4:
+            _MAPS.clear()
+        found = state.model_dump(mode="json", include={"world_map": True})["world_map"]
+        _MAPS[key] = found
+    return found
+
+
+def encode_snapshot(state: WorldState, parts: Parts | None = None) -> bytes:
+    """A whole world as snapshot version 2: its map, its fields, and its people as columns
+    rather than one JSON object per person. Far quicker to make and to read at scale."""
+    world, civilizations = split_parts(state) if parts is None else parts
+    payload = {
+        "snapshot_version": SNAPSHOT_VERSION,
+        "map": _map_json(state),
+        "world": world,
+        "civilizations": civilizations,
+        "people": {
+            civilization_id: civilization.population.people.table.columns()
+            for civilization_id, civilization in state.civilizations.items()
+        },
+    }
+    return json.dumps(payload, separators=(",", ":")).encode()
+
+
+def load_state(raw: bytes) -> WorldState:
+    """A saved whole world, in either encoding: snapshot version 2, or the world's JSON."""
+    if not raw.startswith(_SNAPSHOT_START):
+        return WorldState.model_validate_json(raw)
+    data = json.loads(raw)
+    if data["snapshot_version"] != SNAPSHOT_VERSION:
+        raise ValueError(f"unknown snapshot version {data['snapshot_version']}")
+    civilizations = {
+        civilization_id: {
+            **fields,
+            "population": {
+                **fields["population"],
+                "people": PeopleView(PeopleTable.from_columns(data["people"][civilization_id])),
+            },
+        }
+        for civilization_id, fields in data["civilizations"].items()
+    }
+    return WorldState.model_validate(
+        {**data["world"], "world_map": data["map"], "civilizations": civilizations}
+    )
+
+
 def _pack(raw: bytes) -> str:
     return b64encode(raw).decode()
 
@@ -55,7 +113,7 @@ def _unpack(text: str) -> bytes:
 def compress(payload: object) -> str:
     # Keys keep their order: a saved world's maps keep the order they were filled in.
     encoded = json.dumps(payload, separators=(",", ":")).encode()
-    return b64encode(gzip.compress(encoded, mtime=0)).decode()
+    return b64encode(gzip.compress(encoded, compresslevel=GZIP_LEVEL, mtime=0)).decode()
 
 
 def decompress(text: str) -> Any:
