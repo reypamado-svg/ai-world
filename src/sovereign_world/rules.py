@@ -25,6 +25,9 @@ class Rules:
     """Food, timber and stone follow the land cover; new settlements need water."""
     sites: bool
     """Deposits, quarries, ancient ruins and troves can be worked."""
+    reach_cap: bool
+    """A settlement's influence stops growing at a town's, so borders stay local however
+    large a city grows."""
 
 
 def rules_for(version: int) -> Rules:
@@ -37,4 +40,5 @@ def rules_for(version: int) -> Rules:
         civil_research=second,
         cover_mechanics=second,
         sites=second,
+        reach_cap=second,
     )

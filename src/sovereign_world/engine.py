@@ -206,6 +206,7 @@ from sovereign_world.stores import (
 )
 from sovereign_world.stores import grade_below as storehouse_grade_below
 from sovereign_world.territory import (
+    REACH_CAP,
     SETTLEMENT_SPACING,
     Claim,
     Garrison,
@@ -5551,6 +5552,7 @@ def _advance_territory(state: WorldState) -> list[DomainEvent]:
             if occupation.active
         },
         bonuses=_hall_bonuses(state) if rules_for(state.rules_version).ranks else None,
+        reach_cap=REACH_CAP if rules_for(state.rules_version).reach_cap else None,
     )
     # Set without checking it again: advance_territory builds it in canonical order, and
     # checking 30,000 entries a day on a large map costs a third of a second.

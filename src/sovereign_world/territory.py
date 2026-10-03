@@ -24,6 +24,9 @@ DAILY_LOSS = 2
 SETTLEMENT_SIGHT = 1
 GARRISON_STRENGTH = 25
 SETTLEMENT_SPACING = 3
+REACH_CAP = 300
+"""Under rules 2, the most influence a settlement projects, its hall's included: a town of
+about 1,000 people, reaching some 25 tiles of open land."""
 
 
 class Settlement(BaseModel):
@@ -156,9 +159,12 @@ def settlement_strength(residents: int) -> int:
     return SETTLEMENT_BASE_STRENGTH + SETTLEMENT_STRENGTH_PER_ROOT * isqrt(residents)
 
 
-def _boosted(strength: int, bonus: int) -> int:
-    """A settlement's reach with its hall's bonus; an empty one still projects nothing."""
-    return strength + bonus if strength > 0 else 0
+def _boosted(strength: int, bonus: int, cap: int | None = None) -> int:
+    """A settlement's reach with its hall's bonus, within the cap if there is one; an empty
+    one still projects nothing."""
+    if strength <= 0:
+        return 0
+    return strength + bonus if cap is None else min(cap, strength + bonus)
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +359,7 @@ def advance_territory(
     occupied: Mapping[EntityId, EntityId] | None = None,
     bridges: Bridges = NO_BRIDGES,
     bonuses: Mapping[EntityId, int] | None = None,
+    reach_cap: int | None = None,
 ) -> TerritoryDayResult:
     """Drift each civilization's hold toward its influence, then settle ownership.
 
@@ -380,6 +387,7 @@ def advance_territory(
             else _boosted(
                 settlement_strength(residents.get(settlement.settlement_id, 0)),
                 (bonuses or {}).get(settlement.settlement_id, 0),
+                reach_cap,
             ),
         )
         for settlement in settlement_list
