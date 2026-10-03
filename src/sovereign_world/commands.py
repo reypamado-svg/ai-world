@@ -138,8 +138,10 @@ from sovereign_world.stores import (
     StorehouseGrade,
     StorehouseJob,
     all_stores,
+    held_captives,
     holdings,
     rank,
+    rows_by_store,
     settlement_at,
     step_materials,
     steps,
@@ -849,6 +851,40 @@ def _duties(state: WorldState, civilization_id: EntityId) -> dict[EntityId, str]
     return found
 
 
+def _known_residents(
+    state: WorldState, civilization_id: EntityId, emigrants: set[EntityId]
+) -> dict[EntityId, list[EntityId]]:
+    """`residents_by_settlement` as the council knows it: its people it has not heard are
+    taken still count where they stand."""
+    civilization = state.civilizations[civilization_id]
+    if not civilization.settlements:
+        return {}
+    table = civilization.population.people.table
+    hidden = (
+        emigrants
+        | set(civilization.known_captives)
+        | {
+            person_id
+            for journey in state.journeys
+            if journey.active and journey.sender_civilization_id == civilization_id
+            for person_id in journey.traveller_ids
+        }
+    )
+    rows = table.living_rows()
+    hidden_rows = table.rows_of(hidden)
+    if len(hidden_rows):
+        rows = rows[~np.isin(rows, hidden_rows)]
+    residents = {
+        store_id: [table.ids[row] for row in found.tolist()]
+        for store_id, found in rows_by_store(civilization, table, rows).items()
+    }
+    own_settlements = {item.settlement_id for item in civilization.settlements}
+    for person_id, person in sorted(held_captives(state, civilization_id, own_settlements).items()):
+        assert person.held_at is not None
+        residents.setdefault(person.held_at, []).append(person_id)
+    return residents
+
+
 def _people_part(
     state: WorldState,
     civilization_id: EntityId,
@@ -910,7 +946,9 @@ def _people_part(
     dead = np.flatnonzero(table.mask(alive=False))
     died = table.column("death_day", dead)
     busy = _busy_for_orders(state, civilization_id)
-    idle = free[(ages >= GROWN_DAYS) & ~table.captive[free]]
+    # Only what the council knows: its people it has not heard are taken count as idle
+    # where they stand.
+    idle = free[ages >= GROWN_DAYS]
     busy_rows = table.rows_of(busy)
     if len(busy_rows):
         idle = idle[~np.isin(idle, busy_rows)]
@@ -1006,7 +1044,7 @@ def build_council_report(
             and journey.outcome in {JourneyOutcome.FAILED, JourneyOutcome.REFUSED}
         )
     }
-    residents = residents_by_settlement(state, civilization_id)
+    residents = _known_residents(state, civilization_id, emigrants)
     people = _people_part(state, civilization_id, emigrants, residents)
     visible_events = tuple(
         event

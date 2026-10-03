@@ -20,7 +20,6 @@ from sovereign_world.commands import (
 )
 from sovereign_world.culture import ancestry, culture
 from sovereign_world.engine import advance_day
-from sovereign_world.housing import residents_by_settlement
 from sovereign_world.ids import EntityId
 from sovereign_world.languages import native, speaks
 from sovereign_world.logistics import JourneyKind, JourneyOutcome, JourneyPhase
@@ -29,6 +28,7 @@ from sovereign_world.people_store import Sex
 from sovereign_world.rng import StableRng
 from sovereign_world.scripted import BaselineSovereign
 from sovereign_world.state import WorldState
+from sovereign_world.stores import store_id_at
 
 
 def _emigrants(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
@@ -193,16 +193,31 @@ def test_the_population_summary_counts_as_one_would_by_hand(worlds) -> None:
                 and person.death_day > state.day - 365
                 for person in people.values()
             )
-            residents = residents_by_settlement(state, civilization_id)
+            # Residents as the council knows them: its free people at home (those it has
+            # not heard are taken among them) and the captives it holds there.
+            travelling = {
+                person_id
+                for journey in state.journeys
+                if journey.active and journey.sender_civilization_id == civilization_id
+                for person_id in journey.traveller_ids
+            }
+            expected: dict[EntityId, int] = {}
+            for person in free:
+                if person.person_id not in travelling:
+                    store_id = store_id_at(civilization, person.location)
+                    expected[store_id] = expected.get(store_id, 0) + 1
+            for other in state.civilizations.values():
+                for person in deepcopy(other.population.people).values():
+                    if person.alive and person.captive_of == civilization_id and person.held_at:
+                        expected[person.held_at] = expected.get(person.held_at, 0) + 1
             assert summary.residents == {
-                item.settlement_id: len(residents.get(item.settlement_id, ()))
+                item.settlement_id: expected.get(item.settlement_id, 0)
                 for item in civilization.settlements
             }
             busy = _busy_for_orders(state, civilization_id)
             assert summary.idle_workers == {
                 item.settlement_id: sum(
                     person.age_days >= GROWN_DAYS
-                    and person.captive_of is None
                     and person.location == item.tile
                     and person.person_id not in busy
                     for person in free
