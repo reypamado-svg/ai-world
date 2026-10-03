@@ -25,11 +25,21 @@ from sovereign_world.stores import (
 RUN_ID = UUID("00000000-0000-4000-8000-0000000000be")
 
 
-def grown_world(people: int, *, seed: int = 21, size: int = 48, generator: int = 2) -> WorldState:
+FOUNDING_GRANARIES = 5
+"""Granaries each grown capital starts with: a real capital's few, not one per 5,000 food."""
+
+
+def grown_world(
+    people: int, *, seed: int = 21, size: int = 48, generator: int = 2, rules: int = 1
+) -> WorldState:
     """A day-0 world whose civilizations together hold about `people` living people."""
     config = WorldConfig(seed=seed, width=size, height=size)
     manifest = RunManifest(
-        run_id=RUN_ID, engine_version="bench", config=config, generator_version=generator
+        run_id=RUN_ID,
+        engine_version="bench",
+        config=config,
+        generator_version=generator,
+        rules_version=rules,
     )
     state = build_initial_state(manifest)
     rng = StableRng(seed).stream("bench:grow")
@@ -64,7 +74,9 @@ def grown_world(people: int, *, seed: int = 21, size: int = 48, generator: int =
                 health_bp=int(rng.integers(8_000, 10_001)),
                 skills={name: int(rng.integers(100, 701)) for name in template},
             )
-        # A year of food for everyone, in enough founding granaries to hold it.
+        # A year of food for everyone. The capital's room is set to hold it directly, in a
+        # few granaries: one granary per 5,000 food would give 1,800 per civilization at
+        # 100K and swamp every copy, save and report with storehouses no real run builds.
         goods = dict(civilization.inventory.quantities)
         goods[Resource.FOOD] = goods.get(Resource.FOOD, 0) + per_civilization * 365
         total = sum(goods.values())
@@ -77,6 +89,6 @@ def grown_world(people: int, *, seed: int = 21, size: int = 48, generator: int =
                 grade=FOUNDING_GRADE,
                 built_day=0,
             )
-            for number in range(1, founding_storehouses(total) + 1)
+            for number in range(1, min(FOUNDING_GRANARIES, founding_storehouses(total)) + 1)
         )
     return state
