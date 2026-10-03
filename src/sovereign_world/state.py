@@ -6,6 +6,7 @@ import hashlib
 import json
 from uuid import UUID
 
+import numpy as np
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -542,14 +543,21 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("logistics notices must be sorted")
         if len({item.notice_id for item in notices}) != len(notices):
             raise ValueError("logistics notices must be unique")
-    person_owners: dict[EntityId, EntityId] = {}
+    person_owners: set[EntityId] = set()
     for civilization_id, civilization in state.civilizations.items():
-        for person_id, person in civilization.population.people.items():
+        table = civilization.population.people.table
+        rows = table.rows()
+        for person_id, record_id, owner in zip(
+            [table.ids[row] for row in rows.tolist()],
+            table.column("person_id", rows),
+            table.column("civilization_id", rows),
+            strict=True,
+        ):
             if person_id in person_owners:
                 raise ValueError("person IDs must be globally unique")
-            if person.person_id != person_id or person.civilization_id != civilization_id:
+            if record_id != person_id or owner != civilization_id:
                 raise ValueError("person record must match its civilization")
-            person_owners[person_id] = civilization_id
+            person_owners.add(person_id)
     missions = state.diplomatic_missions
     if missions != tuple(sorted(missions, key=lambda message: message.message_id)):
         raise ValueError("diplomatic missions must be sorted")
@@ -670,7 +678,13 @@ def validate_world(state: WorldState) -> None:
         for person_id in journey.captive_ids
     }
     for civilization_id, civilization in state.civilizations.items():
-        for person_id, person in civilization.population.people.items():
+        table = civilization.population.people.table
+        # Only captives, and anyone wrongly held somewhere, have anything to check.
+        for row in np.union1d(
+            table.rows_where_set("captive_of"), table.rows_where_set("held_at")
+        ).tolist():
+            person_id = table.ids[row]
+            person = table.person(row)
             if person.captive_of is None:
                 if person.held_at is not None:
                     raise ValueError("only captives are held at a settlement")

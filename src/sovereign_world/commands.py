@@ -6,6 +6,7 @@ from enum import StrEnum
 from itertools import pairwise
 from typing import Annotated, Any, Literal
 
+import numpy as np
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -96,6 +97,7 @@ from sovereign_world.logistics import (
     provisions_needed,
     roadwork_days,
 )
+from sovereign_world.people_store import place_code
 from sovereign_world.ranks import (
     INSTITUTION_RANK,
     INSTITUTION_SLOTS,
@@ -866,15 +868,14 @@ def build_council_report(
 def sight_of(state: WorldState, civilization_id: EntityId) -> frozenset[HexCoord]:
     """Tiles seen today from this civilization's inhabited settlements."""
     civilization = state.civilizations[civilization_id]
+    table = civilization.population.people.table
+    occupied = set(np.unique(table.loc_code[np.flatnonzero(table.mask(alive=True))]).tolist())
     return visible_tiles(
         state.world_map,
         (
             settlement.tile
             for settlement in civilization.settlements
-            if any(
-                person.alive and person.location == settlement.tile
-                for person in civilization.population.people.values()
-            )
+            if place_code(settlement.tile) in occupied
         ),
     )
 

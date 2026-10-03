@@ -10,6 +10,7 @@ import numpy as np
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.people import Person
+from sovereign_world.people_store import PeopleTable
 
 FLUENT = 50
 """Fluency at which a person counts as a speaker others can learn from."""
@@ -73,5 +74,38 @@ def learn(people: Iterable[Person]) -> int:
             level = person.languages.get(language, 0)
             if level < 100:
                 person.languages = {**person.languages, language: level + 1}
+                gained += 1
+    return gained
+
+
+def learn_tables(tables: Iterable[PeopleTable]) -> int:
+    """`learn` over whole tables (Phase 5 S6): the same points, gained in the same order,
+    but read from the columns, so people who learn nothing are not touched."""
+    living = [
+        (table, row) for table in tables for row in np.flatnonzero(table.mask(alive=True)).tolist()
+    ]
+    heard: dict[int, set[EntityId]] = {}
+    natives: list[EntityId] = []
+    for table, row in living:
+        own = table.objs["native_language"][row] or table.objs["civilization_id"][row]
+        natives.append(own)
+        tongues = heard.setdefault(int(table.loc_code[row]), set())
+        tongues.add(own)
+        tongues.update(
+            language for language, level in table.objs["languages"][row].items() if level >= FLUENT
+        )
+    spoken = {code: sorted(tongues) for code, tongues in heard.items()}
+    gained = 0
+    for (table, row), own in zip(living, natives, strict=True):
+        languages = spoken[int(table.loc_code[row])]
+        if len(languages) == 1 and languages[0] == own:
+            continue
+        for language in languages:
+            if language == own:
+                continue
+            known = table.objs["languages"][row]
+            level = known.get(language, 0)
+            if level < 100:
+                table.person(row).languages = {**known, language: level + 1}
                 gained += 1
     return gained

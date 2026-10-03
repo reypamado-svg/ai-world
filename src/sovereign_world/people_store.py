@@ -373,6 +373,12 @@ class PeopleTable:
             self._living = tuple(ids[row] for row in self.living_rows().tolist())
         return self._living
 
+    def rows_of(self, person_ids: Iterable[EntityId]) -> np.ndarray:
+        """The rows of those of these people in the table, in the order given."""
+        index = self.index
+        rows = [row for person_id in person_ids if (row := index.get(person_id)) is not None]
+        return np.array(rows, dtype=np.int64)
+
     def mask(self, *, alive: bool | None = None, captive: bool | None = None) -> np.ndarray:
         """Present rows, optionally only the living (or dead) and the free (or captive)."""
         size = self.size

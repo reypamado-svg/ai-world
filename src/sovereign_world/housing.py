@@ -12,13 +12,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from sovereign_world.capabilities import CapabilityId, CapabilityRecord
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.resources import Resource
-from sovereign_world.stores import store_id_at
+from sovereign_world.stores import held_captives, rows_by_store
 
 if TYPE_CHECKING:
     from sovereign_world.state import CivilizationState, WorldState
@@ -155,28 +156,20 @@ def residents_by_settlement(
         if journey.active and journey.sender_civilization_id == civilization_id
         for person_id in journey.traveller_ids
     }
-    residents: dict[EntityId, list[EntityId]] = {}
-    store_of: dict[HexCoord, EntityId | None] = {}
-    people = civilization.population.people
-    for person_id in civilization.population.living_ids:
-        person = people[person_id]
-        if person_id in away or person.captive_of is not None:
-            continue
-        location = person.location
-        if location not in store_of:
-            store_of[location] = store_id_at(civilization, location)
-        store_id = store_of[location]
-        assert store_id is not None
-        residents.setdefault(store_id, []).append(person_id)
+    table = civilization.population.people.table
+    rows = table.living_rows()
+    rows = rows[~table.captive[rows]]
+    away_rows = table.rows_of(away)
+    if len(away_rows):
+        rows = rows[~np.isin(rows, away_rows)]
+    residents: dict[EntityId, list[EntityId]] = {
+        store_id: [table.ids[row] for row in found.tolist()]
+        for store_id, found in rows_by_store(civilization, table, rows).items()
+    }
     own_settlements = {item.settlement_id for item in civilization.settlements}
     held = sorted(
         (person_id, person.held_at)
-        for other_id, other in state.civilizations.items()
-        if other_id != civilization_id
-        for person_id, person in other.population.people.items()
-        if person.alive
-        and person.captive_of == civilization_id
-        and person.held_at in own_settlements
+        for person_id, person in held_captives(state, civilization_id, own_settlements).items()
     )
     for person_id, held_at in held:
         assert held_at is not None
