@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from sovereign_world.ids import EntityId, IdAllocator
 from sovereign_world.people_store import AllegianceChange as AllegianceChange
+from sovereign_world.people_store import PeopleTable
 from sovereign_world.people_store import PeopleView as PeopleView
 from sovereign_world.people_store import Person as Person
 from sovereign_world.people_store import PersonRecord as PersonRecord
@@ -209,6 +210,46 @@ def _mortality_threshold(person: Person) -> tuple[int, str]:
     return threshold, "natural causes"
 
 
+def _mortality_thresholds(table: PeopleTable, rows: np.ndarray) -> np.ndarray:
+    """`_mortality_threshold`'s number for each of these rows at once."""
+    nums = table.nums
+    nutrition = np.minimum(
+        700_000, np.maximum(0, nums["nutrition_debt"][rows] - HUNGER_GRACE_DAYS) * 1_000
+    )
+    disease = np.minimum(700_000, nums["disease_load"][rows] * 50)
+    natural = np.maximum(0, nums["age_days"][rows] // 365 - 65) ** 2 * 40
+    threshold = np.minimum(999_999, nutrition + disease + natural)
+    critical: np.ndarray = np.where(nums["health_bp"][rows] <= 0, 1_000_000, threshold)
+    return critical
+
+
+def _eligible_pair_ids(table: PeopleTable) -> list[tuple[EntityId, EntityId]]:
+    """`_eligible_pairs` over a table's columns: each fit woman, in id order, with the first
+    fit man, in id order, who shares no parent with her."""
+    size = table.size
+    nums = table.nums
+    sexes = table.objs["sex"]
+    female = np.fromiter((sex is Sex.FEMALE for sex in sexes), dtype=bool, count=size)
+    age = nums["age_days"][:size]
+    fit = (
+        table.present[:size] & table.alive[:size] & (nums["health_bp"][:size] >= FERTILE_HEALTH_BP)
+    )
+    grown = age >= 18 * 365
+    women = table.ordered(np.flatnonzero(fit & female & grown & (age <= 42 * 365)))
+    men = table.ordered(np.flatnonzero(fit & ~female & grown & (age <= 60 * 365))).tolist()
+    ids = table.ids
+    parents = table.objs["parent_ids"]
+    pairs: list[tuple[EntityId, EntityId]] = []
+    for woman in women.tolist():
+        own = parents[woman]
+        for man in men:
+            if own and set(own) & set(parents[man]):
+                continue
+            pairs.append((ids[woman], ids[man]))
+            break
+    return pairs
+
+
 def _eligible_pairs(people: Mapping[EntityId, Person]) -> list[tuple[Person, Person]]:
     females = [
         person
@@ -305,17 +346,20 @@ def advance_population_day(
         births.append(BirthRecord(person_id=person_id, parent_ids=scheduled.parent_ids))
 
     candidate.scheduled_births = tuple(pending)
-    for person_id in candidate.living_ids:
-        person = candidate.people[person_id]
-        person.age_days += 1
-
-    for person_id in candidate.living_ids:
-        person = candidate.people[person_id]
-        threshold, cause = _mortality_threshold(person)
-        if int(rng.integers(0, 1_000_000)) < threshold:
-            person.alive = False
-            person.death_day = day
-            deaths.append(DeathRecord(person_id=person_id, cause=cause))
+    # Everyone living, newborns too, ages a day; then each, in id order, faces one roll.
+    # A batch of draws is the same numbers, in the same order, as one draw per person.
+    table = candidate.people.table
+    living = table.living_rows()
+    table.nums["age_days"][living] += 1
+    table.touched(living)
+    rolls = rng.integers(0, 1_000_000, size=len(living))
+    dying = rolls < _mortality_thresholds(table, living)
+    for row in living[dying].tolist():
+        person = table.person(row)
+        _, cause = _mortality_threshold(person)
+        person.alive = False
+        person.death_day = day
+        deaths.append(DeathRecord(person_id=table.ids[row], cause=cause))
 
     if eligible_mothers is None:
         conceiving = (
@@ -325,18 +369,17 @@ def advance_population_day(
         conceiving = day % 30 == 0 and bool(eligible_mothers)
     if conceiving:
         already_expectant = {birth.parent_ids[0] for birth in candidate.scheduled_births}
-        for female, male in _eligible_pairs(candidate.people):
-            if female.person_id in already_expectant:
-                continue
-            if eligible_mothers is not None and female.person_id not in eligible_mothers:
-                continue
-            if int(rng.integers(0, 1_000_000)) < 40_000:
-                pending.append(
-                    ScheduledBirth(
-                        due_day=day + 280,
-                        parent_ids=(female.person_id, male.person_id),
-                    )
-                )
+        couples = [
+            couple
+            for couple in _eligible_pair_ids(table)
+            if couple[0] not in already_expectant
+            and (eligible_mothers is None or couple[0] in eligible_mothers)
+        ]
+        # One draw per couple, in order, as a batch.
+        conceived = rng.integers(0, 1_000_000, size=len(couples)) < 40_000
+        for couple, conceives in zip(couples, conceived.tolist(), strict=True):
+            if conceives:
+                pending.append(ScheduledBirth(due_day=day + 280, parent_ids=couple))
     candidate.scheduled_births = tuple(sorted(pending, key=lambda birth: birth.due_day))
     return PopulationDayResult(
         population=candidate,
