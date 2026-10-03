@@ -16,7 +16,14 @@ from pydantic import BaseModel, ConfigDict
 
 from sovereign_world.config import RunManifest
 from sovereign_world.events import EventBatch
-from sovereign_world.journal import SNAPSHOT_INTERVAL, Saved, compress, encode_delta, split_parts
+from sovereign_world.journal import (
+    SNAPSHOT_INTERVAL,
+    Parts,
+    Saved,
+    compress,
+    encode_delta,
+    split_parts,
+)
 from sovereign_world.state import WorldState, state_hash, state_hash_v2
 
 
@@ -231,10 +238,18 @@ class WorldStore:
         return record
 
     def append_transition(
-        self, state: WorldState, events: EventBatch, *, previous: WorldState | None = None
+        self,
+        state: WorldState,
+        events: EventBatch,
+        *,
+        previous: WorldState | None = None,
+        parts: Parts | None = None,
+        hashed: str | None = None,
     ) -> JournalRecord:
         """Save a day. Format 2 saves only the changes from the day before when it has that
-        day (the last it saved, or `previous`), and the whole world every 30 days."""
+        day (the last it saved, or `previous`), and the whole world every 30 days. A caller
+        that has already dumped the day (`parts`) and hashed it from that dump (`hashed`)
+        passes them, so neither is done twice."""
         if self.journal_format == 1:
             encoded = b64encode(gzip.compress(state.model_dump_json().encode())).decode()
             return self.append_record(
@@ -248,14 +263,16 @@ class WorldStore:
             )
         if previous is not None and (self._last is None or self._last.day != previous.day):
             self._last = Saved(previous)
-        parts = split_parts(state)
+        if parts is None:
+            parts = split_parts(state)
+            hashed = None
         delta = None
         last = self._last
         if state.day % SNAPSHOT_INTERVAL and last is not None and last.day == state.day - 1:
             delta = encode_delta(last, state, parts)
         payload: dict[str, Any] = {
             "day": state.day,
-            "state_hash": self.state_hash(state),
+            "state_hash": hashed or state_hash_v2(state, parts=parts),
             "events": events.canonical_json(),
         }
         if delta is None:

@@ -370,7 +370,7 @@ class PeopleTable:
     def living_ids(self) -> tuple[EntityId, ...]:
         if self._living is None:
             ids = self.ids
-            self._living = tuple(ids[row] for row in self.living_rows().tolist())
+            self._living = tuple(map(ids.__getitem__, self.living_rows().tolist()))
         return self._living
 
     def rows_of(self, person_ids: Iterable[EntityId]) -> np.ndarray:

@@ -32,6 +32,7 @@ from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.ids import EntityId
 from sovereign_world.journal import (
     SNAPSHOT_INTERVAL,
+    _people_delta,
     apply_people_delta,
     compress,
     decompress,
@@ -343,3 +344,29 @@ def test_a_days_people_changes_rebuild_the_next_day(before_ops, after_ops) -> No
     assert table.dump("json") == view.table.dump("json")
     assert people_hash(table, fresh=True) == people_hash(view.table, fresh=True)
     assert set(IDS) >= set(view)
+
+
+@settings(max_examples=150, deadline=None)
+@given(st.lists(operation, max_size=20), st.lists(operation, max_size=20))
+def test_changes_between_copies_of_one_table_are_found_the_quick_way(before_ops, after_ops) -> None:
+    view = PeopleView()
+    oracle: dict[EntityId, PersonRecord] = {}
+    for op in before_ops:
+        if op[0] != "copy":
+            _apply(view, oracle, op)
+    # As the journal sees a day: its saved copy, and the next day's copy, changed.
+    saved = view.table.copy()
+    day = PeopleView(view.table.copy())
+    for op in after_ops:
+        if op[0] != "copy":
+            _apply(day, oracle, op)
+    quick = people_delta(saved, day.table)
+    general = _people_delta(saved, day.table)
+    # Where the general way can keep the order, both agree; where it cannot (someone left
+    # and came back), the quick way still records the day, as their leaving and arrival.
+    assert quick is not None
+    if general is not None:
+        assert quick == general
+    table = saved.copy()
+    apply_people_delta(table, json.loads(json.dumps(quick)))
+    assert table.dump("json") == day.table.dump("json")

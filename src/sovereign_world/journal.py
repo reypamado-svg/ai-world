@@ -34,24 +34,14 @@ from sovereign_world.people_store import (
     PeopleView,
     PersonRecord,
 )
-from sovereign_world.state import WorldState
+from sovereign_world.state import OutsidePeople, WorldState, outside_people
 
 SNAPSHOT_INTERVAL = 30
 """Days between whole-world snapshots."""
-EXCLUDE_PEOPLE_AND_MAP: dict[str, Any] = {
-    "world_map": True,
-    "civilizations": {"__all__": {"population": {"people"}}},
-}
-
-Parts = tuple[dict[str, Any], dict[str, dict[str, Any]]]
+Parts = OutsidePeople
 """A world as JSON without its map and people: the world's fields, and each
 civilization's."""
-
-
-def split_parts(state: WorldState) -> Parts:
-    dumped = state.model_dump(mode="json", exclude=EXCLUDE_PEOPLE_AND_MAP)
-    civilizations: dict[str, dict[str, Any]] = dumped.pop("civilizations")
-    return dumped, civilizations
+split_parts = outside_people
 
 
 def _pack(raw: bytes) -> str:
@@ -113,6 +103,70 @@ def _numbers(table: PeopleTable, rows: np.ndarray) -> dict[str, np.ndarray]:
 def people_delta(before: PeopleTable, after: PeopleTable) -> dict[str, Any] | None:
     """What changed in a civilization's people, or None when their order cannot be kept
     (then a snapshot is saved instead)."""
+    if (
+        after.base is not None
+        and before.base == after.base
+        and before.version == 0
+        and after.ids[: before.size] == before.ids
+    ):
+        return _related_delta(before, after)
+    return _people_delta(before, after)
+
+
+def _related_delta(before: PeopleTable, after: PeopleTable) -> dict[str, Any]:
+    """`people_delta` for two copies of one table, the earlier untouched since: a person
+    keeps their row, so rows are compared in place, and only rows marked as changed have
+    their text and dicts compared. Gives exactly what `_people_delta` gives."""
+    size = before.size
+    was = before.present[:size]
+    still = after.present[:size]
+    before_rows = np.flatnonzero(was)
+    staying = np.flatnonzero(was & still)
+    gone = np.flatnonzero(was & ~still)
+    added = size + np.flatnonzero(after.present[size : after.size])
+    staying_mask = np.isin(before_rows, staying) if len(gone) else None
+    numbers: dict[str, Any] = {}
+    old = _numbers(before, staying)
+    new = _numbers(after, staying)
+    for name in HASH_COLUMNS:
+        difference = new[name] - old[name]
+        changed = difference != 0
+        if not changed.any():
+            continue
+        if staying_mask is not None:
+            full = np.zeros(len(before_rows), dtype=bool)
+            full[staying_mask] = changed
+            changed_mask = full
+        else:
+            changed_mask = changed
+        numbers[name] = {
+            "mask": _pack(np.packbits(changed_mask).tobytes()),
+            "diff": _pack(difference[changed].astype("<i8").tobytes()),
+        }
+    rows: dict[str, Any] = {}
+    before_objs, after_objs = before.objs, after.objs
+    for row in staying[after.objs_dirty[staying]].tolist():
+        for name in TEXT_FIELDS:
+            first, second = before_objs[name][row], after_objs[name][row]
+            if first is not second and (
+                first != second or (isinstance(first, dict) and list(first) != list(second))
+            ):
+                rows[after.ids[row]] = row_json(after, row)
+                break
+    delta: dict[str, Any] = {}
+    if numbers:
+        delta["numbers"] = numbers
+    if len(gone):
+        delta["removed"] = [before.ids[row] for row in gone.tolist()]
+    if rows:
+        delta["rows"] = rows
+    if len(added):
+        delta["added"] = [row_json(after, row) for row in added.tolist()]
+    return delta
+
+
+def _people_delta(before: PeopleTable, after: PeopleTable) -> dict[str, Any] | None:
+    """`people_delta` for any two tables."""
     before_rows = before.rows()
     before_ids = [before.ids[row] for row in before_rows.tolist()]
     after_rows = after.rows()

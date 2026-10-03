@@ -4470,14 +4470,7 @@ def _apply_housing_policy(state: WorldState) -> list[DomainEvent]:
             )
             if grade is None or not has(civilization, settlement.tile, house_materials(grade, 1)):
                 continue
-            idle = [
-                person_id
-                for person_id in civilization.population.living_ids
-                if person_id not in busy
-                and people[person_id].location == settlement.tile
-                and people[person_id].captive_of is None
-                and people[person_id].age_days >= GROWN_DAYS
-            ][:2]
+            idle = _idle_at(people.table, settlement.tile, busy, 2)
             if len(idle) < 2:
                 continue
             events.append(
@@ -4502,6 +4495,25 @@ def _apply_housing_policy(state: WorldState) -> list[DomainEvent]:
 
 GROWN_DAYS = 16 * 365
 """The age at which a person can be set to building."""
+
+
+def _idle_at(table: PeopleTable, tile: HexCoord, busy: set[EntityId], count: int) -> list[EntityId]:
+    """Up to `count` living, free, grown people standing on the tile and not busy, lowest
+    ids first."""
+    living = table.living_rows()
+    here = living[
+        (table.loc_code[living] == place_code(tile))
+        & ~table.captive[living]
+        & (table.nums["age_days"][living] >= GROWN_DAYS)
+    ]
+    idle: list[EntityId] = []
+    for row in here.tolist():
+        person_id = table.ids[row]
+        if person_id not in busy:
+            idle.append(person_id)
+            if len(idle) == count:
+                break
+    return idle
 
 
 def _busy_at_home(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
@@ -6498,7 +6510,7 @@ def advance_day(
                         for coord in fields.get(store_id, ())
                     )
                 # People at drill eat but do not work the fields.
-                workers = sum(person_id not in drilling for person_id in local)
+                workers = len(local) - len(drilling.intersection(local))
                 produced = min(workers, farm_capacity, target_food - current_food, capacity)
                 if produced:
                     larder = larder.apply_delta(InventoryDelta(changes={Resource.FOOD: produced}))
@@ -6520,7 +6532,7 @@ def advance_day(
                 and rules_for(candidate.rules_version).cover_mechanics
             ):
                 # Hands not needed in the fields cut timber and break stone.
-                hands = sum(person_id not in drilling for person_id in local) - produced
+                hands = len(local) - len(drilling.intersection(local)) - produced
                 larder, gathered = _gather(
                     candidate.world_map, fields.get(store_id, ()), larder, hands, materials_target
                 )

@@ -80,32 +80,53 @@ def learn(people: Iterable[Person]) -> int:
 
 def learn_tables(tables: Iterable[PeopleTable]) -> int:
     """`learn` over whole tables (Phase 5 S6): the same points, gained in the same order,
-    but read from the columns, so people who learn nothing are not touched."""
-    living = [
-        (table, row) for table in tables for row in np.flatnonzero(table.mask(alive=True)).tolist()
-    ]
+    but read from the columns, so people who learn nothing are not touched.
+
+    Only where two or more languages are heard can anyone learn: everyone else hears just
+    their own."""
+    tables = list(tables)
+    living = [np.flatnonzero(table.mask(alive=True)) for table in tables]
     heard: dict[int, set[EntityId]] = {}
-    natives: list[EntityId] = []
-    for table, row in living:
-        own = table.objs["native_language"][row] or table.objs["civilization_id"][row]
-        natives.append(own)
-        tongues = heard.setdefault(int(table.loc_code[row]), set())
-        tongues.add(own)
-        tongues.update(
-            language for language, level in table.objs["languages"][row].items() if level >= FLUENT
-        )
-    spoken = {code: sorted(tongues) for code, tongues in heard.items()}
-    gained = 0
-    for (table, row), own in zip(living, natives, strict=True):
-        languages = spoken[int(table.loc_code[row])]
-        if len(languages) == 1 and languages[0] == own:
+    for table, rows in zip(tables, living, strict=True):
+        if not len(rows):
             continue
-        for language in languages:
-            if language == own:
-                continue
-            known = table.objs["languages"][row]
-            level = known.get(language, 0)
-            if level < 100:
-                table.person(row).languages = {**known, language: level + 1}
-                gained += 1
+        objs = table.objs
+        own_tongue = objs["native_language"]
+        homeland = objs["civilization_id"]
+        own_tongued = set(table.rows_where_set("native_language", rows).tolist())
+        plain = rows[~np.isin(rows, list(own_tongued))] if own_tongued else rows
+        if len(plain):
+            # Everyone in a table belongs to its civilization; those without a tongue of
+            # their own speak its language.
+            nations = {homeland[row] for row in plain.tolist()}
+            if len(nations) == 1:
+                nation = next(iter(nations))
+                for code in np.unique(table.loc_code[plain]).tolist():
+                    heard.setdefault(code, set()).add(nation)
+            else:
+                for row in plain.tolist():
+                    heard.setdefault(int(table.loc_code[row]), set()).add(homeland[row])
+        for row in own_tongued:
+            heard.setdefault(int(table.loc_code[row]), set()).add(own_tongue[row])
+        for row in table.rows_where_set("languages", rows).tolist():
+            heard.setdefault(int(table.loc_code[row]), set()).update(
+                language for language, level in objs["languages"][row].items() if level >= FLUENT
+            )
+    spoken = {code: sorted(tongues) for code, tongues in heard.items() if len(tongues) > 1}
+    if not spoken:
+        return 0
+    mixed = np.fromiter(spoken, dtype=np.int64, count=len(spoken))
+    gained = 0
+    for table, rows in zip(tables, living, strict=True):
+        objs = table.objs
+        for row in rows[np.isin(table.loc_code[rows], mixed)].tolist():
+            own = objs["native_language"][row] or objs["civilization_id"][row]
+            for language in spoken[int(table.loc_code[row])]:
+                if language == own:
+                    continue
+                known = objs["languages"][row]
+                level = known.get(language, 0)
+                if level < 100:
+                    table.person(row).languages = {**known, language: level + 1}
+                    gained += 1
     return gained

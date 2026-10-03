@@ -40,7 +40,7 @@ from perf.synthetic import RUN_ID, grown_world
 from sovereign_world import engine
 from sovereign_world.config import RunManifest
 from sovereign_world.engine import advance_day
-from sovereign_world.journal import SNAPSHOT_INTERVAL
+from sovereign_world.journal import SNAPSHOT_INTERVAL, split_parts
 from sovereign_world.persistence import WorldStore
 from sovereign_world.replay import verify_run
 from sovereign_world.rng import StableRng
@@ -183,10 +183,12 @@ def bench(
             if profiler:
                 profiler.disable()
             t1 = time.perf_counter()
-            state_hash_v2(state)
+            # Dumped once and hashed from that dump, as a run's save does.
+            parts = split_parts(state)
+            hashed = state_hash_v2(state, parts=parts)
             t2 = time.perf_counter()
             before = store.journal_path.stat().st_size
-            record = store.append_transition(state, transition.events)
+            record = store.append_transition(state, transition.events, parts=parts, hashed=hashed)
             t3 = time.perf_counter()
             written = store.journal_path.stat().st_size - before
             (snapshots if "state_gzip_base64" in record.payload else deltas).append(written)

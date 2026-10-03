@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 from uuid import UUID
 
 import numpy as np
@@ -227,9 +228,14 @@ def _digest(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def hash_parts(state: WorldState, *, fresh: bool = False) -> dict[str, object]:
-    """What hash v2 is made of: the map's own hash, everything outside the people, and each
-    civilization's fields and people, hashed apart."""
+OutsidePeople = tuple[dict[str, Any], dict[str, dict[str, Any]]]
+"""A world as JSON without its map and people: the world's fields, and each
+civilization's."""
+
+
+def outside_people(state: WorldState) -> OutsidePeople:
+    """The world dumped without its map and people, in one pass: what hash v2 hashes and
+    what a format-2 journal compares from day to day."""
     dumped = state.model_dump(
         mode="json",
         exclude={
@@ -237,7 +243,17 @@ def hash_parts(state: WorldState, *, fresh: bool = False) -> dict[str, object]:
             "civilizations": {"__all__": {"population": {"people"}}},
         },
     )
-    civilizations = dumped.pop("civilizations")
+    civilizations: dict[str, dict[str, Any]] = dumped.pop("civilizations")
+    return dumped, civilizations
+
+
+def hash_parts(
+    state: WorldState, *, fresh: bool = False, parts: OutsidePeople | None = None
+) -> dict[str, object]:
+    """What hash v2 is made of: the map's own hash, everything outside the people, and each
+    civilization's fields and people, hashed apart. `parts` is `outside_people(state)`
+    when the caller has it already."""
+    dumped, civilizations = outside_people(state) if parts is None else parts
     return {
         "version": 2,
         "map": state.world_map.content_hash(),
@@ -252,11 +268,13 @@ def hash_parts(state: WorldState, *, fresh: bool = False) -> dict[str, object]:
     }
 
 
-def state_hash_v2(state: WorldState, *, fresh: bool = False) -> str:
+def state_hash_v2(
+    state: WorldState, *, fresh: bool = False, parts: OutsidePeople | None = None
+) -> str:
     """Hash version 2 of the whole world: the same for the same state, as hash v1 is, but
     built from parts so that most of it is not worked out again each day. `fresh` works
     every part out from scratch, as verification does."""
-    return _digest(hash_parts(state, fresh=fresh))
+    return _digest(hash_parts(state, fresh=fresh, parts=parts))
 
 
 def build_initial_state(manifest: RunManifest) -> WorldState:
@@ -547,12 +565,19 @@ def validate_world(state: WorldState) -> None:
     for civilization_id, civilization in state.civilizations.items():
         table = civilization.population.people.table
         rows = table.rows()
-        for person_id, record_id, owner in zip(
-            [table.ids[row] for row in rows.tolist()],
-            table.column("person_id", rows),
-            table.column("civilization_id", rows),
-            strict=True,
+        ids = list(map(table.ids.__getitem__, rows.tolist()))
+        records = table.column("person_id", rows)
+        owners = table.column("civilization_id", rows)
+        if (
+            records == ids
+            and set(owners) <= {civilization_id}
+            and len(set(ids)) == len(ids)
+            and person_owners.isdisjoint(ids)
         ):
+            person_owners.update(ids)
+            continue
+        # Something is wrong: find the first person at fault, as each is checked in turn.
+        for person_id, record_id, owner in zip(ids, records, owners, strict=True):
             if person_id in person_owners:
                 raise ValueError("person IDs must be globally unique")
             if record_id != person_id or owner != civilization_id:
