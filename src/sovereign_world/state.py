@@ -45,6 +45,7 @@ from sovereign_world.logistics import (
     LogisticsNotice,
 )
 from sovereign_world.people import Population, create_founders
+from sovereign_world.people_store import people_hash
 from sovereign_world.ranks import RealmRank, SettlementRank
 from sovereign_world.research import ResearchAssignment
 from sovereign_world.resources import Inventory, Resource
@@ -218,6 +219,43 @@ def _canonical_payload(state: WorldState) -> str:
 
 def state_hash(state: WorldState) -> str:
     return hashlib.sha256(_canonical_payload(state).encode()).hexdigest()
+
+
+def _digest(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def hash_parts(state: WorldState, *, fresh: bool = False) -> dict[str, object]:
+    """What hash v2 is made of: the map's own hash, everything outside the people, and each
+    civilization's fields and people, hashed apart."""
+    dumped = state.model_dump(
+        mode="json",
+        exclude={
+            "world_map": True,
+            "civilizations": {"__all__": {"population": {"people"}}},
+        },
+    )
+    civilizations = dumped.pop("civilizations")
+    return {
+        "version": 2,
+        "map": state.world_map.content_hash(),
+        "world": _digest(dumped),
+        "civilizations": {
+            civilization_id: {
+                "fields": _digest(civilizations[civilization_id]),
+                "people": people_hash(civilization.population.people.table, fresh=fresh),
+            }
+            for civilization_id, civilization in sorted(state.civilizations.items())
+        },
+    }
+
+
+def state_hash_v2(state: WorldState, *, fresh: bool = False) -> str:
+    """Hash version 2 of the whole world: the same for the same state, as hash v1 is, but
+    built from parts so that most of it is not worked out again each day. `fresh` works
+    every part out from scratch, as verification does."""
+    return _digest(hash_parts(state, fresh=fresh))
 
 
 def build_initial_state(manifest: RunManifest) -> WorldState:

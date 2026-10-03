@@ -17,6 +17,8 @@ Saves are exactly as before: a people mapping dumps to the same JSON, and loads 
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, overload
@@ -115,11 +117,13 @@ class PeopleTable:
     __slots__ = (
         "alive",
         "capacity",
+        "digest",
         "dirty",
         "ids",
         "index",
         "nums",
         "objs",
+        "origin",
         "present",
         "proxies",
         "shared",
@@ -141,6 +145,11 @@ class PeopleTable:
         }
         self.objs: dict[str, list[Any]] = {name: [] for name in (*OBJECTS, *DICTS)}
         self.proxies: list[Person | None] = []
+        self.digest: list[bytes | None] = []
+        """Each row's hash of its text and dict fields, for hash v2; None when it must be
+        worked out again."""
+        self.origin: list[tuple[dict[Any, int], ...] | None] = []
+        """A row's dicts as they were when last handed out, to see whether they changed."""
 
     # Growth and bookkeeping.
 
@@ -166,11 +175,26 @@ class PeopleTable:
     def unshare(self, row: int) -> None:
         """Give a row its own skill, language and held-skill dicts."""
         if self.shared[row]:
+            original = tuple(self.objs[name][row] for name in DICTS)
             for name in DICTS:
                 column = self.objs[name]
                 column[row] = dict(column[row])
             self.shared[row] = False
+            # The shared dicts are never changed again: they show what the row held.
+            if self.origin[row] is None:
+                self.origin[row] = original
             self.mark(row)
+
+    def handing_out(self, row: int) -> None:
+        """A row's dict is about to be handed out, and may be changed in place."""
+        if self.shared[row]:
+            self.unshare(row)
+        elif self.origin[row] is None:
+            self.origin[row] = tuple(dict(self.objs[name][row]) for name in DICTS)
+
+    def changed(self, row: int) -> None:
+        """A row's text or dict fields were written: its digest must be worked out again."""
+        self.digest[row] = None
 
     def dirty_blocks(self) -> tuple[int, ...]:
         return tuple(int(block) for block in np.flatnonzero(self.dirty))
@@ -198,6 +222,8 @@ class PeopleTable:
         for name in DICTS:
             self.objs[name].append(dict(values[name]))
         self.proxies.append(None)
+        self.digest.append(None)
+        self.origin.append(None)
         self.size += 1
         self.mark(row)
         return row
@@ -211,6 +237,8 @@ class PeopleTable:
             self.objs[name][row] = values[name]
         for name in DICTS:
             self.objs[name][row] = dict(values[name])
+        self.digest[row] = None
+        self.origin[row] = None
         self.mark(row)
 
     def values(self, row: int) -> dict[str, Any]:
@@ -259,6 +287,8 @@ class PeopleTable:
         other.nums = {name: column.copy() for name, column in self.nums.items()}
         other.objs = {name: list(column) for name, column in self.objs.items()}
         other.proxies = [None] * self.size
+        other.digest = list(self.digest)
+        other.origin = [None] * self.size
         return other
 
     # Saving.
@@ -404,14 +434,14 @@ class _Object[T](_Column[T]):
 
     def write(self, table: PeopleTable, row: int, value: T) -> None:
         table.objs[self.name][row] = _coerce(self.name, value)
+        table.changed(row)
 
 
 class _Dict[T](_Column[T]):
     __slots__ = ()
 
     def read(self, table: PeopleTable, row: int) -> T:
-        if table.shared[row]:
-            table.unshare(row)
+        table.handing_out(row)
         value: T = table.objs[self.name][row]
         return value
 
@@ -421,6 +451,7 @@ class _Dict[T](_Column[T]):
         if not isinstance(value, Mapping):
             raise ValueError(f"{self.name} must be a mapping, not {value!r}")
         table.objs[self.name][row] = {key: int(amount) for key, amount in value.items()}
+        table.changed(row)
 
 
 def _coerce(name: str, value: Any) -> Any:
@@ -677,3 +708,66 @@ class PeopleView(MutableMapping[EntityId, Person]):
             validate,
             serialization=core_schema.plain_serializer_function_ser_schema(dump, info_arg=True),
         )
+
+
+HASH_COLUMNS: tuple[str, ...] = ("alive", *NUMBERS)
+"""The number columns of hash v2, in order."""
+TEXT_FIELDS: tuple[str, ...] = tuple(
+    name for name in FIELDS if name not in NUMBERS and name != "alive"
+)
+"""The text, tuple and dict fields each row's digest covers, in order."""
+
+
+def _canonical(name: str, value: Any) -> Any:
+    if name == "sex":
+        return value.value
+    if name == "location":
+        return [value.q, value.r]
+    if name == "allegiances":
+        return [item.model_dump(mode="json") for item in value]
+    if name in TUPLES:
+        return list(value)
+    if name in DICTS:
+        return sorted([str(key), amount] for key, amount in value.items())
+    return value
+
+
+def _row_digest(table: PeopleTable, row: int) -> bytes:
+    payload = [_canonical(name, table.objs[name][row]) for name in TEXT_FIELDS]
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(encoded).digest()
+
+
+def people_hash(table: PeopleTable, *, fresh: bool = False) -> str:
+    """Hash v2 of a civilization's people: their number columns as one matrix, and a digest
+    per person of everything else, in row order. Rows whose text and dicts are unchanged
+    keep their digest from day to day; `fresh` works every digest out again."""
+    rows = table.rows()
+    matrix = np.stack(
+        [table.alive[rows].astype(np.int64), *(table.nums[name][rows] for name in NUMBERS)]
+    ).astype("<i8")
+    digests = table.digest
+    origin = table.origin
+    objs = table.objs
+    parts: list[bytes] = []
+    for row in rows.tolist():
+        digest = None if fresh else digests[row]
+        handed = origin[row]
+        if (
+            digest is not None
+            and handed is not None
+            and any(objs[name][row] != before for name, before in zip(DICTS, handed, strict=True))
+        ):
+            digest = None
+        if digest is None:
+            digest = _row_digest(table, row)
+            if not fresh:
+                digests[row] = digest
+        if not fresh:
+            origin[row] = None
+        parts.append(digest)
+    hasher = hashlib.sha256(b"people-v2")
+    hasher.update(len(parts).to_bytes(8, "little"))
+    hasher.update(matrix.tobytes())
+    hasher.update(b"".join(parts))
+    return hasher.hexdigest()

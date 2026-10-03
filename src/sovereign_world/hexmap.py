@@ -164,6 +164,15 @@ class WorldMap:
         return index.get(edge_key(first, second))
 
     def content_hash(self) -> str:
+        # The map never changes within a run, so its hash is worked out once.
+        cached = self.__dict__.get("_content_hash")
+        if isinstance(cached, str):
+            return cached
+        digest = self._compute_hash()
+        object.__setattr__(self, "_content_hash", digest)
+        return digest
+
+    def _compute_hash(self) -> str:
         payload: dict[str, object] = {
             "width": self.width,
             "height": self.height,

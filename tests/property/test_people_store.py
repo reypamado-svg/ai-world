@@ -7,7 +7,7 @@ from hypothesis import strategies as st
 
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
-from sovereign_world.people_store import PeopleView, Person, PersonRecord
+from sovereign_world.people_store import PeopleView, Person, PersonRecord, people_hash
 
 IDS = [EntityId(f"person:{number:010d}") for number in range(12)]
 
@@ -90,8 +90,16 @@ def test_the_store_matches_a_dict_of_records(ops) -> None:
     for op in ops:
         if op[0] == "copy":
             snapshots.append((deepcopy(view), _expected(oracle, "json")))
+            view = deepcopy(view)
             continue
         _apply(view, oracle, op)
+        # Hash v2 of the people: cached, from scratch, and from a saved and reloaded copy.
+        cached = people_hash(view.table)
+        assert cached == people_hash(view.table, fresh=True)
+        reloaded = PeopleView.of(
+            {key: PersonRecord(**value) for key, value in view.table.dump("python").items()}
+        )
+        assert cached == people_hash(reloaded.table, fresh=True)
     assert list(view) == list(oracle)
     assert view.table.dump("json") == _expected(oracle, "json")
     assert view.table.dump("python") == _expected(oracle, "python")

@@ -4,9 +4,9 @@ Recorded before people moved into columns: for each scenario, every day's state 
 the full saved state on a few days. The engine must reproduce every hash, and each saved
 state must load and save again byte for byte.
 
-    PYTHONPATH=src:tests .venv/bin/python -B tests/parity.py
+    PYTHONPATH=src:tests .venv/bin/python -B tests/parity.py [v2]
 
-rewrites the fixtures; do that only on purpose.
+rewrites the fixtures (with `v2`, only the hash-v2 lists); do that only on purpose.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.engine import advance_day
 from sovereign_world.rng import StableRng
 from sovereign_world.scripted import BaselineSovereign
-from sovereign_world.state import WorldState, build_initial_state, state_hash
+from sovereign_world.state import WorldState, build_initial_state, state_hash, state_hash_v2
 
 FIXTURES = Path(__file__).parent / "fixtures" / "parity"
 DAYS = 320
@@ -70,8 +70,19 @@ def hashes_path(scenario: Scenario) -> Path:
     return FIXTURES / f"{scenario.name}-hashes.json"
 
 
+def hashes_v2_path(scenario: Scenario) -> Path:
+    return FIXTURES / f"{scenario.name}-hashes-v2.json"
+
+
 def state_path(scenario: Scenario, day: int) -> Path:
     return FIXTURES / f"{scenario.name}-day{day:03d}.json.gz"
+
+
+def record_v2() -> None:
+    """Record hash v2 for every day of each scenario (added in S5; v1 is never rewritten)."""
+    for scenario in SCENARIOS:
+        hashes = [state_hash_v2(state, fresh=True) for state in run(scenario)]
+        hashes_v2_path(scenario).write_text(json.dumps(hashes, indent=0) + "\n")
 
 
 def record() -> None:
@@ -88,4 +99,6 @@ def record() -> None:
 
 
 if __name__ == "__main__":
-    record()
+    import sys
+
+    record_v2() if sys.argv[1:] == ["v2"] else record()
