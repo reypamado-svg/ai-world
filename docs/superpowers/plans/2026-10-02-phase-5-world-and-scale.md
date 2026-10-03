@@ -370,3 +370,38 @@ Planned with Fable 5.1. Built in five commits.
 | Daily capacities across the four starts | food 116–214, timber 14–140, stone 1–19 |
 
 **Growth limit lifted.** The S2 timber limit is gone: woods renew, and stone comes from loose rock and quarries. Growth is now bounded by food and births, as under rules 1.
+
+## S4 as built: every person real, kept in columns
+
+Planned with Fable 5.1. Built in five commits.
+
+**The store** (`people_store.py`).
+- **Tables:** a civilization's people live in one `PeopleTable`:
+  - numbers in numpy columns;
+  - ids, places, family, allegiances and skills in plain lists;
+  - one row per person.
+- **`Person`:** a two-slot row of the table, made once per row. It is read and written exactly as before, and every write is checked as the old model checked it.
+- **`PeopleView`:** the id-to-person mapping a population holds. It saves and loads the very same JSON as before.
+- **Copying:** copying a table copies its columns. Skill, language and held-skill dicts are shared until a row's are first read.
+- **Dirty blocks:** writes mark their block of 1,024 rows dirty, for S5.
+- **Overlays:** `CopyOnRead` is now an overlay. It copies a person only when that person is looked up. Exploration, teaching, journeys and embassies hand back only the people they copied, instead of copying and re-merging everyone.
+- **Kept as columns:** `age_days` stays its own column, because for the dead it differs from day − birth day, depending on how they died. Skills stay dicts, because a skill of 0 is saved and hashed.
+
+**Nothing changes in the results.**
+- All 14 reference runs keep every daily hash.
+- Two new parity scenarios, recorded before the change (320 days each, rules 1 and rules 2), replay every day's hash, and their saved worlds load and save again byte for byte.
+- A property test runs random sequences of inserts, removals, writes, in-place dict writes, detached copies and table copies against a dict of the old model. It finds the same saves, order and living/dead ids, and copies untouched by later writes.
+
+**Measurements** (this container, which runs about 1.35× slower than S0's):
+
+| People | Measure | Before | After |
+|---|---|---|---|
+| 20,000 | µs per person per day | 73.5 | **38.3** |
+| 100,000 | Day | 7.26 s | **3.87 s** (38.7 µs per person) |
+| 100,000 | One copy of every population | 1,980 bytes per person | 249 |
+| 100,000 | The people store in all | about 2 KB per person (about 200 MB) | about 750 bytes per person (**75 MB**) |
+| 100,000 | Peak process memory | 919 MB | 836 MB |
+
+Both targets are met: at most 40 µs per person per day, and at most 150 MB for people at 100K. The peak is still dominated by the full JSON save made each day.
+
+**Left for S5.** At 100K the hash takes 6.2 s and the saved day 4.8 s (2.9 MB). S5 hashes and saves only what changed.
