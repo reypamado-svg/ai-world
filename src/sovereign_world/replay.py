@@ -12,7 +12,7 @@ from sovereign_world.ids import EntityId
 from sovereign_world.persistence import WorldStore
 from sovereign_world.rng import StableRng
 from sovereign_world.scripted import Sovereign
-from sovereign_world.state import WorldState, state_hash
+from sovereign_world.state import WorldState
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +36,10 @@ def _recorded_state(payload: dict[str, object]) -> WorldState:
 def replay_run(store: WorldStore, target_day: int | None = None) -> WorldState:
     records = store.read_records()
     if target_day is None:
-        latest = max((int(record.payload["day"]) for record in records), default=None)
+        latest = max(
+            (int(record.payload["day"]) for record in records if record.type == "transition"),
+            default=None,
+        )
         if latest is None:
             # Nothing journaled yet: the run starts at its first checkpoint, day 0 or its fork.
             return store.load_checkpoint()
@@ -47,7 +50,7 @@ def replay_run(store: WorldStore, target_day: int | None = None) -> WorldState:
         if record.type != "transition" or int(record.payload["day"]) != target_day:
             continue
         state = _recorded_state(record.payload)
-        if state_hash(state) != record.payload["state_hash"]:
+        if store.state_hash(state, fresh=True) != record.payload["state_hash"]:
             raise RuntimeError(f"state hash mismatch at day {target_day}")
         return state
     return store.load_checkpoint(at_or_before=target_day)
@@ -59,12 +62,12 @@ def verify_run(store: WorldStore) -> VerificationResult:
     # A forked run begins at its fork, not at day zero.
     start = store.load_checkpoint(at_or_before=days[0] - 1) if days else store.load_checkpoint()
     last_day = start.day
-    last_hash = state_hash(start)
+    last_hash = store.state_hash(start, fresh=True)
     for record in records:
         if record.type != "transition":
             continue
         state = _recorded_state(record.payload)
-        actual_hash = state_hash(state)
+        actual_hash = store.state_hash(state, fresh=True)
         if actual_hash != record.payload["state_hash"]:
             raise RuntimeError(f"state hash mismatch at journal sequence {record.sequence}")
         last_day = state.day
@@ -100,11 +103,11 @@ def rederive_run(store: WorldStore) -> VerificationResult:
         state = advance_day(state, rng, sovereigns=sovereigns).state
         if (
             int(record.payload["day"]) != state.day
-            or state_hash(state) != record.payload["state_hash"]
+            or store.state_hash(state) != record.payload["state_hash"]
         ):
             raise RuntimeError(f"rederived state differs from the journal at day {state.day}")
     return VerificationResult(
         verified_through_day=state.day,
-        state_hash=state_hash(state),
+        state_hash=store.state_hash(state),
         records=len(records),
     )

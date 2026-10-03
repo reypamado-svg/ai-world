@@ -13,6 +13,8 @@ CURRENT_GENERATOR = 3
 """The world generator new runs use; see ``RunManifest.generator_version``."""
 CURRENT_RULES = 2
 """The rules new runs use; see ``RunManifest.rules_version``."""
+CURRENT_JOURNAL_FORMAT = 2
+"""How new runs save their days; see ``RunManifest.journal_format``."""
 
 
 class WorldConfig(BaseModel):
@@ -88,6 +90,10 @@ class RunManifest(BaseModel):
     rules_version: int = Field(default=1, ge=1, le=CURRENT_RULES)
     """Which rules the world runs under. Version 2 adds houses, ranks and civil research;
     runs from before versions were recorded used 1, and keep it when replayed."""
+    journal_format: int = Field(default=1, ge=1, le=CURRENT_JOURNAL_FORMAT)
+    """How the run's days are saved. Format 1 saves the whole world each day and hashes it
+    whole (hash version 1); format 2 saves snapshots and the changes between them, and
+    hashes the world in parts (hash version 2). Runs from before formats used 1."""
 
     @classmethod
     def new(
@@ -99,6 +105,7 @@ class RunManifest(BaseModel):
             config=config,
             generator_version=CURRENT_GENERATOR,
             rules_version=rules_version,
+            journal_format=CURRENT_JOURNAL_FORMAT,
         )
 
     def content_hash(self) -> str:
@@ -111,6 +118,7 @@ class RunManifest(BaseModel):
             "forked_at_day": None,
             "generator_version": 1,
             "rules_version": 1,
+            "journal_format": 1,
         }
         for key, default in defaults.items():
             if dumped.get(key) == default:

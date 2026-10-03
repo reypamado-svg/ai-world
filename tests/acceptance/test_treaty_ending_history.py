@@ -213,4 +213,4 @@ def test_treaties_end_by_evidence_and_turn_travellers_away(tmp_path: Path) -> No
 
     validate_world(state)
     assert state_hash(replay_run(store)) == state_hash(state)
-    assert verify_run(store).state_hash == state_hash(state)
+    assert verify_run(store).state_hash == store.state_hash(state)

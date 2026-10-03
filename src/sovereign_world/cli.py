@@ -10,6 +10,7 @@ import typer
 
 from sovereign_world.config import (
     CURRENT_GENERATOR,
+    CURRENT_JOURNAL_FORMAT,
     CURRENT_RULES,
     BudgetConfig,
     RunManifest,
@@ -22,7 +23,7 @@ from sovereign_world.gateway.records import journal_councils, recorded_councils
 from sovereign_world.persistence import WorldStore
 from sovereign_world.replay import rederive_run, replay_run, verify_run
 from sovereign_world.rng import StableRng
-from sovereign_world.state import build_initial_state, state_hash, validate_world
+from sovereign_world.state import build_initial_state, validate_world
 
 app = typer.Typer(
     help="Create, run, inspect, checkpoint, replay, and verify a sovereign world.",
@@ -68,6 +69,7 @@ def initialize(
             "config": config,
             "generator_version": CURRENT_GENERATOR,
             "rules_version": CURRENT_RULES,
+            "journal_format": CURRENT_JOURNAL_FORMAT,
             **_settings(sovereigns),
         }
     )
@@ -76,7 +78,7 @@ def initialize(
     if unknown:
         raise typer.BadParameter(f"no such civilizations: {sorted(unknown)}")
     WorldStore.create(directory, manifest, state)
-    typer.echo(f"initialized day 0 at {directory} ({state_hash(state)})")
+    typer.echo(f"initialized day 0 at {directory} ({WorldStore(directory).state_hash(state)})")
 
 
 @app.command()
@@ -96,15 +98,17 @@ def run(
         store.append_transition(state, transition.events)
         journal_councils(store, sovereigns.values())
     store.save_checkpoint(state)
-    typer.echo(f"advanced to day {state.day} ({state_hash(state)})")
+    typer.echo(f"advanced to day {state.day} ({store.state_hash(state)})")
 
 
 @app.command()
 def inspect(directory: Path) -> None:
     """Print a non-mutating summary of the latest verified state."""
-    state = replay_run(WorldStore(directory))
+    store = WorldStore(directory)
+    state = replay_run(store)
     typer.echo(f"day: {state.day}")
-    typer.echo(f"state hash: {state_hash(state)}")
+    typer.echo(f"journal format: {store.journal_format}")
+    typer.echo(f"state hash: {store.state_hash(state)}")
     for civilization_id in sorted(state.civilizations):
         civilization = state.civilizations[civilization_id]
         typer.echo(
@@ -131,8 +135,9 @@ def replay(
     day: int | None = typer.Option(None, min=0, help="Target day; latest by default."),
 ) -> None:
     """Reconstruct a historical state without changing the live run."""
-    state = replay_run(WorldStore(directory), target_day=day)
-    typer.echo(f"replayed day {state.day} ({state_hash(state)})")
+    store = WorldStore(directory)
+    state = replay_run(store, target_day=day)
+    typer.echo(f"replayed day {state.day} ({store.state_hash(state)})")
 
 
 @app.command()
@@ -143,7 +148,7 @@ def verify(directory: Path) -> None:
     result = verify_run(store)
     replayed = replay_run(store, target_day=result.verified_through_day)
     validate_world(replayed)
-    if state_hash(replayed) != result.state_hash:
+    if store.state_hash(replayed, fresh=True) != result.state_hash:
         raise typer.Exit(code=1)
     checkpoint_state = store.load_checkpoint()
     validate_world(checkpoint_state)
@@ -154,7 +159,7 @@ def verify(directory: Path) -> None:
             raise typer.Exit(code=1)
     typer.echo(
         f"verified through day {result.verified_through_day} "
-        f"({result.state_hash}, {result.records} records)"
+        f"({result.state_hash}, {result.records} records, journal format {store.journal_format})"
     )
 
 
@@ -178,6 +183,8 @@ def fork(
             "forked_at_day": state.day,
             "generator_version": parent.generator_version,
             "rules_version": parent.rules_version,
+            # A fork's journal is new, so it is saved in the current format.
+            "journal_format": CURRENT_JOURNAL_FORMAT,
             **_settings(sovereigns),
         }
     )
