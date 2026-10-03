@@ -452,6 +452,7 @@ Before S5, at 100,000 people, the hash took 6.2 s and saving a day 4.8 s (2.9 MB
 - **Journal:** 71–103 MB a year, under the 200 MB target. 100×100 stays under 150 MB, so the territory map needs no compact delta of its own (C6b not built).
 - **Hash:** 0.17 s at 48×48 meets the 0.2 s target; at 100×100 it is 0.27 s. Most of that is dumping the world's fields (the territory map grows with the map), which saving a day dumps again. S6 can share one dump between the two.
 - **Memory:** the peak rose by about 230 MB at 100K, because the journal keeps the day before (its fields and a copy of its people tables) to save the next day's changes. S6's 1 GB target covers this.
+- **A small world runs faster too:** the observer throughput run (seed 21, 48×48, a year, journal included) does 13.1 days a second, against 7.0 in Phase 4.
 - **Verification** works every hash from scratch: about 2.5–3 s a simulated day at 100K, so a year takes about 15–18 minutes.
 
 **Defaults taken** (the user can change them at review):
