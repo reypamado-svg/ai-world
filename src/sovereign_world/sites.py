@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
 from sovereign_world.ids import EntityId
+from sovereign_world.resources import Resource
 
 
 class SiteKind(StrEnum):
@@ -65,6 +66,16 @@ RANKED_BY: dict[SiteKind, str] = {
 }
 """Within its band, a site goes where this tile value is highest: ore and stone where they lie,
 a ruin on once-farmed soil, a trove hidden in the woods."""
+
+WORKED_KINDS: frozenset[SiteKind] = frozenset({SiteKind.ORE_DEPOSIT, SiteKind.QUARRY})
+"""Sites a party can work for days, carrying home what it takes (rules version 2)."""
+YIELD_PER_WORKER_DAY: dict[SiteKind, int] = {SiteKind.ORE_DEPOSIT: 2, SiteKind.QUARRY: 4}
+PRODUCT: dict[SiteKind, Resource] = {
+    SiteKind.ORE_DEPOSIT: Resource.ORE,
+    SiteKind.QUARRY: Resource.STONE,
+}
+MAX_WORK_DAYS = 60
+"""The longest a party stays at a deposit or quarry."""
 
 START_CLEARANCE = 2
 """No site lies this close to any start, or closer."""

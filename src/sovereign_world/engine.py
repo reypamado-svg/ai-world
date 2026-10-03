@@ -171,6 +171,7 @@ from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView, grade_below, grades_of
 from sovereign_world.rules import rules_for
 from sovereign_world.scripted import Sovereign
+from sovereign_world.sites import PRODUCT, YIELD_PER_WORKER_DAY
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.stores import (
     STOREHOUSE_GRADES,
@@ -475,6 +476,7 @@ DISPATCH_EVENT = {
     JourneyKind.PETITION: "people_released",
     JourneyKind.SALVAGE: "salvagers_dispatched",
     JourneyKind.SPY: "spies_dispatched",
+    JourneyKind.EXTRACTION: "extractors_dispatched",
 }
 RETURNED_EVENT = {
     JourneyKind.ROADWORK: "road_crew_returned",
@@ -484,6 +486,7 @@ RETURNED_EVENT = {
     JourneyKind.PETITION: "petitioners_returned",
     JourneyKind.SALVAGE: "salvagers_returned",
     JourneyKind.SPY: "spies_returned",
+    JourneyKind.EXTRACTION: "extractors_returned",
 }
 PLUNDER_ORDER = (
     Resource.FOOD,
@@ -580,6 +583,7 @@ def _dispatch_journey(
         departed_day=state.day,
         objective=command.war_objective if kind is JourneyKind.CAMPAIGN else None,
         watch_days=command.watch_days if kind is JourneyKind.SPY else 0,
+        work_days=command.work_days if kind is JourneyKind.EXTRACTION else 0,
         wreck_roads=command.wreck_roads and kind is JourneyKind.CAMPAIGN,
         carry_per_person=(
             war_party_carry(civilization)
@@ -1108,6 +1112,17 @@ def _advance_journeys(
             continue
         if journey.kind is JourneyKind.SALVAGE:
             events.extend(_salvage(state, journey))
+            continue
+        if journey.kind is JourneyKind.EXTRACTION:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "extractors_at_work",
+                    str(journey.sender_civilization_id),
+                    str(journey.journey_id),
+                )
+            )
             continue
         if journey.kind is JourneyKind.SPY:
             events.append(
@@ -2562,6 +2577,95 @@ def _catch(
             }
         ),
     )
+    return events
+
+
+def _advance_extraction(state: WorldState) -> list[DomainEvent]:
+    """Rules version 2: workers at a deposit or quarry take what they can each day, and turn
+    home when their days are done, their packs are full, the site is spent, or none is left."""
+    events: list[DomainEvent] = []
+    sites = {site.tile: site for site in state.sites}
+    for journey in sorted(state.journeys, key=lambda item: item.journey_id):
+        if not journey.working:
+            continue
+        people = state.civilizations[journey.sender_civilization_id].population.people
+        living = sum(
+            (person := people.get(person_id)) is not None and person.alive
+            for person_id in journey.traveller_ids
+        )
+        site = sites[journey.route[-1]]
+        room = (
+            journey.carry_per_person * len(journey.traveller_ids)
+            - journey.provisions_packed
+            - sum(journey.cargo.values())
+        )
+        taken = min(living * YIELD_PER_WORKER_DAY[site.kind], site.remaining, max(room, 0))
+        cargo = dict(journey.cargo)
+        if taken:
+            product = PRODUCT[site.kind]
+            cargo[product] = cargo.get(product, 0) + taken
+            site = site.model_copy(
+                update={
+                    "remaining": site.remaining - taken,
+                    "opened_day": site.opened_day if site.opened_day is not None else state.day,
+                    "spent_day": state.day if site.remaining == taken else None,
+                }
+            )
+            sites[site.tile] = site
+            events.append(
+                _event(
+                    state,
+                    EventPhase.WORK,
+                    "site_worked",
+                    str(journey.sender_civilization_id),
+                    str(site.site_id),
+                    units=taken,
+                    product=product.value,
+                )
+            )
+            if site.remaining == 0:
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.WORK,
+                        "site_exhausted",
+                        str(journey.sender_civilization_id),
+                        str(site.site_id),
+                    )
+                )
+        worked = journey.days_worked + (1 if living else 0)
+        reason = (
+            "no_one_left"
+            if not living
+            else "spent"
+            if site.remaining == 0
+            else "full"
+            if room - taken <= 0
+            else "done"
+            if worked >= journey.work_days
+            else None
+        )
+        update: dict[str, object] = {"cargo": cargo, "days_worked": worked}
+        if reason is not None:
+            update |= {
+                "working": False,
+                "phase": JourneyPhase.RETURNING,
+                "outcome": JourneyOutcome.DELIVERED if cargo else JourneyOutcome.FAILED,
+                "carrying_cargo": bool(cargo),
+            }
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "extractors_left_site",
+                    str(journey.sender_civilization_id),
+                    str(journey.journey_id),
+                    reason=reason,
+                    units=sum(cargo.values()),
+                )
+            )
+        _replace_journey(state, journey.model_copy(update=update))
+    state.sites = tuple(sites[tile] for tile in sorted(sites))
     return events
 
 
@@ -6124,6 +6228,8 @@ def advance_day(
     events.extend(journey_events)
     events.extend(_resolve_war(candidate, rng))
     events.extend(_advance_espionage(candidate, rng))
+    if rules_for(candidate.rules_version).sites:
+        events.extend(_advance_extraction(candidate))
     fed_on_the_road = fed_on_the_road | _march_captives(candidate)
     events.extend(_check_tribute(candidate))
     _settle_newcomers(candidate)

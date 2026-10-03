@@ -7,7 +7,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from math import ceil
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from sovereign_world.armoury import WAR_GEAR, cargo_load, slowed, slows
 from sovereign_world.bridges import (
@@ -36,6 +43,7 @@ from sovereign_world.roads import (
     step_labour,
     steps_to,
 )
+from sovereign_world.sites import MAX_WORK_DAYS
 from sovereign_world.tolls import TollGate, TollRules, cargo_charge, detour, food_charge
 from sovereign_world.travel import (
     CROSSING_COST,
@@ -90,6 +98,9 @@ class JourneyKind(StrEnum):
     """Spies watching a foreign settlement for a while, then bringing home what they saw."""
     COURIER = "courier"
     """A spy's companion carrying the findings so far home ahead of the others."""
+    EXTRACTION = "extraction"
+    """Workers going to a deposit or quarry, working it for some days, then carrying home
+    what they can bear (rules version 2)."""
 
 
 INTERNAL_KINDS = frozenset(
@@ -101,6 +112,7 @@ INTERNAL_KINDS = frozenset(
         JourneyKind.DEPOSIT,
         JourneyKind.HAUL,
         JourneyKind.SALVAGE,
+        JourneyKind.EXTRACTION,
     }
 )
 ROUND_TRIP_KINDS = frozenset(
@@ -112,8 +124,11 @@ ROUND_TRIP_KINDS = frozenset(
         JourneyKind.PETITION,
         JourneyKind.SALVAGE,
         JourneyKind.SPY,
+        JourneyKind.EXTRACTION,
     }
 )
+LOADING_KINDS = frozenset({JourneyKind.SALVAGE, JourneyKind.EXTRACTION})
+"""Internal parties that load goods at the end of their route and carry them home."""
 SPYING_KINDS = frozenset({JourneyKind.SPY, JourneyKind.COURIER})
 CARRYING_KINDS = frozenset({JourneyKind.DEPOSIT, JourneyKind.HAUL})
 """Internal journeys that carry goods to one of their own stores."""
@@ -220,6 +235,21 @@ class Journey(BaseModel):
     """Spies at the end of their route, watching, until their days are done."""
     findings: Estimate | None = None
     """What the spies, or their courier, carry home."""
+    work_days: int = Field(default=0, ge=0, le=MAX_WORK_DAYS)
+    """How many days an extraction party means to work its deposit or quarry."""
+    days_worked: int = Field(default=0, ge=0)
+    working: bool = False
+    """An extraction party at its site, working, until it leaves."""
+
+    @model_serializer(mode="wrap")
+    def _omit_unused(self, handler: SerializerFunctionWrapHandler) -> object:
+        # Journeys from before extraction parties, and every other kind, dump as before.
+        dumped = handler(self)
+        if isinstance(dumped, dict):
+            for key, default in (("work_days", 0), ("days_worked", 0), ("working", False)):
+                if dumped.get(key) == default:
+                    dumped.pop(key, None)
+        return dumped
 
     @model_validator(mode="after")
     def valid_shape(self) -> Journey:
@@ -258,6 +288,17 @@ class Journey(BaseModel):
             raise ValueError("only spies watch, at the end of their route")
         if self.watched > self.watch_days:
             raise ValueError("spies watch no longer than they meant to")
+        extraction = self.kind is JourneyKind.EXTRACTION
+        if extraction != (self.work_days > 0):
+            raise ValueError("only extraction parties, and all of them, set out to work")
+        if self.working and (
+            not extraction
+            or self.phase is not JourneyPhase.OUTBOUND
+            or self.route_index != len(self.route) - 1
+        ):
+            raise ValueError("only extraction parties work, at the end of their route")
+        if self.days_worked > self.work_days:
+            raise ValueError("a party works no longer than it meant to")
         if self.kind not in SPYING_KINDS and self.findings is not None:
             raise ValueError("only spies and their couriers carry findings")
         if self.kind is JourneyKind.COURIER and self.findings is None:
@@ -275,7 +316,7 @@ class Journey(BaseModel):
         if (
             internal
             and self.kind not in CARRYING_KINDS
-            and self.kind is not JourneyKind.SALVAGE
+            and self.kind not in LOADING_KINDS
             and (self.cargo or self.carrying_cargo)
         ):
             raise ValueError("internal journeys carry no trade cargo")
@@ -629,11 +670,12 @@ def advance_journeys_day(
                         "carrying_cargo": False,
                         "completed_day": day,
                         "encamped": False,
+                        "working": False,
                     }
                 )
             )
             continue
-        if journey.encamped or journey.waiting or journey.watching:
+        if journey.encamped or journey.waiting or journey.watching or journey.working:
             # A camp, or petitioners at a gate, stay where they are; they only eat and forage.
             updated.append(journey)
             continue
@@ -739,6 +781,12 @@ def advance_journeys_day(
             if journey.kind is JourneyKind.SPY:
                 # Spies settle in to watch; the engine keeps their count of days.
                 moved = moved.model_copy(update={"arrived_day": day, "watching": True})
+                arrived.append(moved)
+                updated.append(moved)
+                continue
+            if journey.kind is JourneyKind.EXTRACTION:
+                # Workers set to; the engine counts their days and what they take.
+                moved = moved.model_copy(update={"arrived_day": day, "working": True})
                 arrived.append(moved)
                 updated.append(moved)
                 continue

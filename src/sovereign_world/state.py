@@ -583,10 +583,10 @@ def validate_world(state: WorldState) -> None:
             person = sender.population.people[person_id]
             if person.alive and person.location != journey.route[journey.route_index]:
                 raise ValueError("living travellers must stand on their route position")
-        # Salvagers have done their errand at the ruin and carry its goods home.
+        # Salvagers and extractors have done their errand and carry its goods home.
         if (
             journey.carrying_cargo
-            and journey.kind.value != "salvage"
+            and journey.kind.value not in {"salvage", "extraction"}
             and journey.outcome
             not in {
                 JourneyOutcome.PENDING,

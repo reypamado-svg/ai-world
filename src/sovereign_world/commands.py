@@ -126,7 +126,7 @@ from sovereign_world.roads import (
     materials_for,
 )
 from sovereign_world.rules import rules_for
-from sovereign_world.sites import SiteKind
+from sovereign_world.sites import MAX_WORK_DAYS, WORKED_KINDS, SiteKind
 from sovereign_world.state import CivilizationState, WorldState
 from sovereign_world.stores import (
     STOREHOUSE_GRADES,
@@ -233,6 +233,8 @@ class DirectOrderKind(StrEnum):
     SEND_COURIER = "send_courier"
     FOUND_INSTITUTION = "found_institution"
     STAFF_INSTITUTION = "staff_institution"
+    EXTRACT = "extract"
+    """Rules version 2: send workers to a deposit or quarry to work it for some days."""
 
 
 MESSAGE_ORDERS = frozenset(
@@ -256,6 +258,7 @@ JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.HAUL_GOODS: JourneyKind.HAUL,
     DirectOrderKind.RELEASE_PEOPLE: JourneyKind.PETITION,
     DirectOrderKind.SALVAGE: JourneyKind.SALVAGE,
+    DirectOrderKind.EXTRACT: JourneyKind.EXTRACTION,
     DirectOrderKind.SEND_SPY: JourneyKind.SPY,
 }
 CAMP_ORDERS = frozenset(
@@ -366,6 +369,8 @@ class DirectOrder(BaseModel):
     priority: int = Field(default=50, ge=0, le=100)
     house_count: int = Field(default=1, ge=1, le=MAX_HOUSES_PER_ORDER)
     """Rules version 2: how many houses a shelter project raises, one after another."""
+    work_days: int = Field(default=0, ge=0, le=MAX_WORK_DAYS)
+    """Rules version 2: days an extraction party works its deposit or quarry."""
     house_grade: HouseGrade | None = None
     """Rules version 2: the kind of house to raise; none means the best this people knows."""
 
@@ -468,6 +473,7 @@ _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("ranks", {}),
     ("realm_rank", None),
     ("land", {}),
+    ("extractions", []),
 )
 """Report fields added since council-3, and the value at which each is left out, so reports
 from older worlds read, and so prompt, exactly as before."""
@@ -567,6 +573,8 @@ class CouncilReport(BaseModel):
     """The civilization's rank: chiefdom, kingdom or empire (rules version 2)."""
     land: dict[EntityId, LandView] = Field(default_factory=dict)
     """What each settlement's land yields at most each day (rules version 2)."""
+    extractions: tuple[Journey, ...] = ()
+    """This civilization's parties out at deposits and quarries."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -774,6 +782,13 @@ def build_council_report(
         rules_version=state.rules_version,
         housing=_housing_views(state, civilization_id),
         land=_land_views(state, civilization_id),
+        extractions=tuple(
+            journey
+            for journey in state.journeys
+            if journey.active
+            and journey.kind is JourneyKind.EXTRACTION
+            and journey.sender_civilization_id == civilization_id
+        ),
         house_jobs=civilization.house_jobs,
         ranks=dict(civilization.ranks_reached),
         realm_rank=(
@@ -1170,7 +1185,8 @@ def journey_supplies(
             crew,
             command.extra_provisions
             + toll_food
-            + (crew * command.watch_days if kind is JourneyKind.SPY else 0),
+            + (crew * command.watch_days if kind is JourneyKind.SPY else 0)
+            + (crew * command.work_days if kind is JourneyKind.EXTRACTION else 0),
         )
         if kind is JourneyKind.SPY:
             # Spies pack what they can bear and forage through a long watch.
@@ -1379,6 +1395,18 @@ def _internal_journey_error(
         return error("invalid_destination", "goods are hauled to another of their own settlements")
     if kind is JourneyKind.SALVAGE and destination not in {ruin.tile for ruin in state.ruins}:
         return error("invalid_destination", "salvagers go to a ruin")
+    if kind is JourneyKind.EXTRACTION:
+        if not rules_for(state.rules_version).sites:
+            return error("invalid_journey", "this world's rules have no worked sites")
+        if not any(
+            view.tile == destination and view.kind in WORKED_KINDS and view.remaining > 0
+            for view in known_sites(state, civilization)
+        ):
+            return error("invalid_destination", "extractors go to a deposit or quarry they know of")
+        if not 1 <= command.work_days <= MAX_WORK_DAYS:
+            return error("invalid_stay", f"a party works 1 to {MAX_WORK_DAYS} days")
+    elif command.work_days:
+        return error("invalid_stay", "only an extraction party sets out to work")
     if kind is JourneyKind.SETTLEMENT and (
         foreign
         or any(tile.distance(destination) < SETTLEMENT_SPACING for tile in known_settlements)
