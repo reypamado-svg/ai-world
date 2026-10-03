@@ -114,6 +114,7 @@ from sovereign_world.institutions import (
     serving_tiles,
     staff_of,
 )
+from sovereign_world.land import food_capacity
 from sovereign_world.languages import LEARNING_INTERVAL, learn, native
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
@@ -991,6 +992,7 @@ def _advance_journeys(
             treaty.treaty_id for treaty in state.active_treaties if treaty.in_force
         ),
         world_map=state.world_map,
+        forage_bonus=rules_for(state.rules_version).cover_mechanics,
         arrival_allowed=lambda journey: _arrival_allowed(state, journey),
         roads=grades_of(state.roads),
         tolls=_toll_rules(state),
@@ -6186,11 +6188,19 @@ def advance_day(
             # Under siege the fields lie outside the walls, beyond reach.
             if labor_priority > 0 and current_food < target_food and store_id not in blockaded:
                 capacity = larder.capacity - larder.total_units
-                farm_capacity = sum(
-                    (candidate.world_map.tile(coord).soil // 200)
-                    + (2 if candidate.world_map.tile(coord).has_water else 0)
-                    for coord in fields.get(store_id, ())
-                )
+                if rules_for(candidate.rules_version).cover_mechanics:
+                    farm_capacity = food_capacity(
+                        candidate.world_map,
+                        fields.get(store_id, ()),
+                        irrigation=knows(civilization.capabilities, CapabilityId.IRRIGATION),
+                        fishing=knows(civilization.capabilities, CapabilityId.FISHING),
+                    )
+                else:
+                    farm_capacity = sum(
+                        (candidate.world_map.tile(coord).soil // 200)
+                        + (2 if candidate.world_map.tile(coord).has_water else 0)
+                        for coord in fields.get(store_id, ())
+                    )
                 # People at drill eat but do not work the fields.
                 workers = sum(person_id not in drilling for person_id in local)
                 produced = min(workers, farm_capacity, target_food - current_food, capacity)

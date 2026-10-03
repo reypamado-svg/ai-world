@@ -19,6 +19,7 @@ from sovereign_world.bridges import (
     span_needed,
     spans_planned,
 )
+from sovereign_world.cover import forage_bp
 from sovereign_world.espionage import MAX_WATCH_DAYS, Estimate
 from sovereign_world.hexmap import HexCoord, Terrain, WorldMap, edge_key
 from sovereign_world.ids import EntityId
@@ -371,10 +372,20 @@ def provisions_needed(days: int, travellers: int, extra: int = 0) -> int:
     return travellers * (days + margin) + extra
 
 
-def forage_chance_bp(world_map: WorldMap, coord: HexCoord) -> int:
-    """Chance, in basis points, that one traveller finds a day's food on this tile."""
+def forage_chance_bp(world_map: WorldMap, coord: HexCoord, *, cover: bool = False) -> int:
+    """Chance, in basis points, that one traveller finds a day's food on this tile.
+
+    With `cover` (rules version 2), woods and wetland add to it: a tile all wood, a tenth."""
     tile = world_map.tile(coord)
-    return FORAGE_TERRAIN_BP[tile.terrain] + tile.soil * 3 + (1_500 if tile.river else 0)
+    chance = FORAGE_TERRAIN_BP[tile.terrain] + tile.soil * 3 + (1_500 if tile.river else 0)
+    if cover and tile.cover:
+        chance += forage_bp(tile.cover) // FORAGE_COVER_DIVISOR
+    return chance
+
+
+FORAGE_COVER_DIVISOR = 10
+FORAGE_HAZARD_CAUSE = "forage hazard"
+"""Reserved for wild animals met while foraging; nothing causes it yet."""
 
 
 class NoticeKind(StrEnum):
@@ -534,6 +545,7 @@ def advance_journeys_day(
     tolls: TollRules | None = None,
     halts: Callable[[Journey, HexCoord], bool] | None = None,
     bridges: Bridges = NO_BRIDGES,
+    forage_bonus: bool = False,
 ) -> JourneyDayResult:
     """Move each active party one route tile, resolving deaths, hazards, and delays.
 
@@ -864,7 +876,9 @@ def advance_journeys_day(
         if journey.provisions and not remaining:
             exhausted_ids.append(journey.journey_id)
         if unfed:
-            chance = forage_chance_bp(world_map, journey.route[journey.route_index])
+            chance = forage_chance_bp(
+                world_map, journey.route[journey.route_index], cover=forage_bonus
+            )
             stream = rng.stream(f"day:{day}:logistics:forage:{journey.journey_id}")
             found = 0
             for person in unfed:

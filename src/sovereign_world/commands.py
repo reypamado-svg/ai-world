@@ -34,6 +34,7 @@ from sovereign_world.bridges import (
     spans_planned,
 )
 from sovereign_world.capabilities import CapabilityId
+from sovereign_world.cover import WET_FIELD
 from sovereign_world.culture import ancestry, culture
 from sovereign_world.diplomacy import (
     ActiveTreaty,
@@ -68,6 +69,14 @@ from sovereign_world.institutions import (
     InstitutionKind,
     serving_tiles,
     staff_of,
+)
+from sovereign_world.land import (
+    fields_by_settlement,
+    food_capacity,
+    irrigated_fields,
+    stone_capacity,
+    timber_capacity,
+    water_near,
 )
 from sovereign_world.languages import native, speaks
 from sovereign_world.logistics import (
@@ -419,6 +428,20 @@ class SiteView(BaseModel):
     as_of_day: int
 
 
+class LandView(BaseModel):
+    """What a settlement's fields, woods and rock yield at most each day (rules version 2)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    food_per_day: int
+    timber_per_day: int
+    stone_per_day: int
+    watered: bool
+    """Water on or beside the settlement."""
+    irrigable_fields: int
+    """Its fields with a river or wetland, which irrigation makes yield half again."""
+
+
 class HousingView(BaseModel):
     """A settlement's houses, the room they give, and who it has to house."""
 
@@ -439,6 +462,7 @@ _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("house_jobs", []),
     ("ranks", {}),
     ("realm_rank", None),
+    ("land", {}),
 )
 """Report fields added since council-3, and the value at which each is left out, so reports
 from older worlds read, and so prompt, exactly as before."""
@@ -536,6 +560,8 @@ class CouncilReport(BaseModel):
     """Each settlement's rank (rules version 2); a settlement not listed is a village."""
     realm_rank: RealmRank | None = None
     """The civilization's rank: chiefdom, kingdom or empire (rules version 2)."""
+    land: dict[EntityId, LandView] = Field(default_factory=dict)
+    """What each settlement's land yields at most each day (rules version 2)."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -545,6 +571,31 @@ class CouncilReport(BaseModel):
                 if key in dumped and dumped[key] in (empty, None, ()):
                     dumped.pop(key)
         return dumped
+
+
+def _land_views(state: WorldState, civilization_id: EntityId) -> dict[EntityId, LandView]:
+    if not rules_for(state.rules_version).cover_mechanics:
+        return {}
+    civilization = state.civilizations[civilization_id]
+    fields = fields_by_settlement(civilization)
+    irrigation = knows(civilization.capabilities, CapabilityId.IRRIGATION)
+    fishing = knows(civilization.capabilities, CapabilityId.FISHING)
+    world_map = state.world_map
+    return {
+        settlement.settlement_id: LandView(
+            food_per_day=food_capacity(
+                world_map,
+                fields.get(settlement.settlement_id, ()),
+                irrigation=irrigation,
+                fishing=fishing,
+            ),
+            timber_per_day=timber_capacity(world_map, fields.get(settlement.settlement_id, ())),
+            stone_per_day=stone_capacity(world_map, fields.get(settlement.settlement_id, ())),
+            watered=water_near(world_map, settlement.tile),
+            irrigable_fields=irrigated_fields(world_map, fields.get(settlement.settlement_id, ())),
+        )
+        for settlement in civilization.settlements
+    }
 
 
 def _housing_views(state: WorldState, civilization_id: EntityId) -> dict[EntityId, HousingView]:
@@ -717,6 +768,7 @@ def build_council_report(
         known_sites=known_sites(state, civilization),
         rules_version=state.rules_version,
         housing=_housing_views(state, civilization_id),
+        land=_land_views(state, civilization_id),
         house_jobs=civilization.house_jobs,
         ranks=dict(civilization.ranks_reached),
         realm_rank=(
@@ -1330,6 +1382,12 @@ def _internal_journey_error(
             "invalid_destination",
             "a new settlement needs land not seen as foreign, three tiles from any settlement",
         )
+    if (
+        kind is JourneyKind.SETTLEMENT
+        and rules_for(state.rules_version).cover_mechanics
+        and not water_near(state.world_map, destination)
+    ):
+        return error("invalid_destination", "a new settlement needs water on its tile or beside it")
     if kind is JourneyKind.GARRISON and (foreign or destination in known_settlements):
         return error(
             "invalid_destination", "a garrison holds land that is not a settlement or foreign"
@@ -1525,7 +1583,7 @@ def _civil_research_error(
 
 
 WETLAND_INDEX = COVER_CLASSES.index(CoverClass.WETLAND)
-IRRIGATION_WETLAND = 1_000
+IRRIGATION_WETLAND = WET_FIELD
 """A field with this much wetland (basis points), or a river, can be irrigated."""
 
 

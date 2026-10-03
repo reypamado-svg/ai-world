@@ -21,6 +21,10 @@ class Rules:
     """Settlements and the realm earn ranks, and ranks unlock works and orders."""
     civil_research: bool
     """Writing, irrigation, herbal care, fishing, surveying and organised logistics."""
+    cover_mechanics: bool
+    """Food, timber and stone follow the land cover; new settlements need water."""
+    sites: bool
+    """Deposits, quarries, ancient ruins and troves can be worked."""
 
 
 def rules_for(version: int) -> Rules:
@@ -31,4 +35,6 @@ def rules_for(version: int) -> Rules:
         decrees_expire=second,
         ranks=second,
         civil_research=second,
+        cover_mechanics=second,
+        sites=second,
     )

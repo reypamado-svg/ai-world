@@ -23,7 +23,7 @@ from dataclasses import replace
 import numpy as np
 
 from sovereign_world.geography import SNOW_BELOW, _Grid, _noise
-from sovereign_world.hexmap import COVER_CLASSES, COVER_TOTAL, CoverClass, Terrain, WorldMap
+from sovereign_world.hexmap import COVER_CLASSES, COVER_TOTAL, CoverClass, Terrain, Tile, WorldMap
 from sovereign_world.rng import StableRng
 
 OPEN, WOOD, SCRUB, WETLAND, ROCK, SAND, SNOWFIELD = range(len(COVER_CLASSES))
@@ -174,3 +174,33 @@ def generate_cover(world_map: WorldMap, rng: StableRng, attempt: int) -> WorldMa
 def share(cover: tuple[int, ...], item: CoverClass) -> int:
     """A tile's share of one cover class, in basis points (0 without cover)."""
     return cover[COVER_CLASSES.index(item)] if cover else 0
+
+
+# What the land offers, from its cover (rules version 2). These are also where wild herds
+# will graze and browse when they come.
+
+WET_FIELD = 1_000
+"""A tile with this much wetland (basis points) counts as watered, like one on a river."""
+FAUNA_STREAM = "fauna"
+"""Reserved random sub-stream for wild animals (`day:{day}:fauna:{civilization_id}`); never
+drawn from yet."""
+
+
+def graze_bp(cover: tuple[int, ...]) -> int:
+    """Ground that can be farmed or grazed: open land and half the scrub."""
+    return cover[OPEN] + cover[SCRUB] // 2
+
+
+def browse_bp(cover: tuple[int, ...]) -> int:
+    """Ground browsers feed on: wood and half the scrub (reserved for herds)."""
+    return cover[WOOD] + cover[SCRUB] // 2
+
+
+def forage_bp(cover: tuple[int, ...]) -> int:
+    """Ground with nuts, berries, game and fowl: wood and wetland."""
+    return cover[WOOD] + cover[WETLAND]
+
+
+def watered(tile: Tile) -> bool:
+    """Water on the tile: open water, a river, or a tenth of it wetland."""
+    return tile.has_water or bool(tile.cover and tile.cover[WETLAND] >= WET_FIELD)
