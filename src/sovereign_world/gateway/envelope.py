@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sovereign_world.commands import Command, CommandEnvelope, CouncilReport
 
 REPLY_SCHEMA_VERSION = 1
+ENVELOPE_SCHEMA_VERSION = 2
+"""Envelopes made from model replies (council-5): orders may count their workers."""
 MAX_REPLY_BYTES = 64_000
 """Replies larger than this are refused before they are read."""
 COMMAND_ALLOWANCE = 8
@@ -63,7 +65,7 @@ def parse_reply(text: str) -> SovereignReply:
 
 def to_envelope(reply: SovereignReply, report: CouncilReport) -> CommandEnvelope:
     return CommandEnvelope(
-        schema_version=1,
+        schema_version=ENVELOPE_SCHEMA_VERSION,
         civilization_id=report.civilization_id,
         council_day=report.day,
         correlation_id=report.report_id,

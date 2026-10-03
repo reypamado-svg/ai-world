@@ -12,7 +12,7 @@ from collections.abc import Sequence
 
 from sovereign_world.armoury import RECIPES
 from sovereign_world.bridges import BRIDGE_LABOUR, BRIDGE_MATERIALS, BRIDGING_GRADE, MASONRY
-from sovereign_world.commands import CouncilReport
+from sovereign_world.commands import COUNTED_ORDERS, MAX_WORKER_COUNT, CouncilReport
 from sovereign_world.gateway.envelope import COMMAND_ALLOWANCE, reply_schema
 from sovereign_world.gateway.memory import Budgets, retrieved, state_summary, transcript
 from sovereign_world.gateway.records import CouncilRecord
@@ -58,7 +58,8 @@ PROMPT_VERSION = "council-5"
 council-4 added houses, ranks, rank buildings and civil research, told only to worlds under
 rules version 2, and the reply fields that order them.
 council-5 sums up the people (`population`, `notable_people`) instead of listing every one,
-and tells rules-2 worlds how far a settlement's hold can reach."""
+tells rules-2 worlds how far a settlement's hold can reach, and lets their orders count
+workers at a settlement instead of naming them (`worker_count`, `settlement_id`)."""
 
 
 def _days(tenths: int) -> str:
@@ -303,6 +304,18 @@ def land_rule() -> str:
     )
 
 
+def workers_rule() -> str:
+    """How work at home may be ordered by counting workers instead of naming them."""
+    kinds = ", ".join(sorted(kind.value for kind in COUNTED_ORDERS))
+    return (
+        "Your report counts each settlement's idle grown-ups (population.idle_workers) and "
+        "names some of your people (notable_people). For work at home "
+        f"({kinds}) you may give worker_count and settlement_id instead of worker_ids: the "
+        "lowest-numbered idle grown-ups there are set to it, and the order is refused if "
+        f"too few are idle. At most {MAX_WORKER_COUNT} to an order."
+    )
+
+
 def charter(report: CouncilReport) -> str:
     """The identity charter: the same for every turn of a prompt version."""
     schema = json.dumps(reply_schema(), sort_keys=True, separators=(",", ":"))
@@ -318,6 +331,7 @@ def charter(report: CouncilReport) -> str:
         f"{travel_rule()}\n\n"
         + (
             f"{housing_rule()}\n\n{ranks_rule()}\n\n{buildings_rule()}\n\n{land_rule()}\n\n"
+            f"{workers_rule()}\n\n"
             if report.rules_version >= 2
             else ""
         )

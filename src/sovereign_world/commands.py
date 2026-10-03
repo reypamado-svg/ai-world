@@ -283,6 +283,8 @@ REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
 
 
 MAX_CLAIMED_TILES = 256
+MAX_WORKER_COUNT = 100
+"""The most workers one counted order sets to a duty."""
 
 
 class ControlView(BaseModel):
@@ -377,6 +379,21 @@ class DirectOrder(BaseModel):
     """Rules version 2: days an extraction party works its deposit or quarry."""
     house_grade: HouseGrade | None = None
     """Rules version 2: the kind of house to raise; none means the best this people knows."""
+    worker_count: int | None = Field(default=None, ge=1, le=MAX_WORKER_COUNT)
+    """Rules version 2: for work at home, how many idle grown-ups at `settlement_id` to set
+    to it, instead of naming them in `worker_ids`."""
+    settlement_id: EntityId | None = None
+    """Rules version 2: the settlement a counted order's workers are taken from."""
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_counts(self, handler: SerializerFunctionWrapHandler) -> object:
+        # Orders that name their workers dump exactly as before counts existed.
+        dumped = handler(self)
+        if isinstance(dumped, dict):
+            for key in ("worker_count", "settlement_id"):
+                if key in dumped and dumped[key] is None:
+                    dumped.pop(key)
+        return dumped
 
 
 Command = Annotated[Decree | DirectOrder, Field(union_mode="left_to_right")]
@@ -385,7 +402,8 @@ Command = Annotated[Decree | DirectOrder, Field(union_mode="left_to_right")]
 class CommandEnvelope(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    schema_version: int = Field(ge=1, le=1)
+    schema_version: int = Field(ge=1, le=2)
+    """1, or 2 for envelopes that may count workers instead of naming them."""
     civilization_id: EntityId
     council_day: int = Field(ge=0)
     correlation_id: str
@@ -471,21 +489,27 @@ class HousingView(BaseModel):
 
 GROWN_DAYS = 16 * 365
 """The age at which a person can be set to work at home."""
+FIGHTING_YEARS = 60
+"""The oldest a person drills or fights."""
 ELDER_YEARS = 65
 """The age from which a person counts as an elder: when old age starts to tell."""
 NOTABLE_PEOPLE = 40
 """How many of its people a council report names, with what they are doing."""
 
 
-def idle_at(table: PeopleTable, tile: HexCoord, busy: set[EntityId], count: int) -> list[EntityId]:
+def idle_at(
+    table: PeopleTable, tile: HexCoord, busy: set[EntityId], count: int, *, fit: bool = False
+) -> list[EntityId]:
     """Up to `count` living, free, grown people standing on the tile and not busy, lowest
-    ids first."""
+    ids first; with `fit`, only those able to fight."""
     living = table.living_rows()
-    here = living[
-        (table.loc_code[living] == place_code(tile))
-        & ~table.captive[living]
-        & (table.nums["age_days"][living] >= GROWN_DAYS)
-    ]
+    ages = table.nums["age_days"][living]
+    wanted = (
+        (table.loc_code[living] == place_code(tile)) & ~table.captive[living] & (ages >= GROWN_DAYS)
+    )
+    if fit:
+        wanted &= (ages // 365 <= FIGHTING_YEARS) & (table.nums["health_bp"][living] > 0)
+    here = living[wanted]
     idle: list[EntityId] = []
     for row in here.tolist():
         person_id = table.ids[row]
@@ -2553,6 +2577,62 @@ def _treaty_end_error(
     return None
 
 
+COUNTED_ORDERS = frozenset(
+    {
+        DirectOrderKind.START_PROJECT,
+        DirectOrderKind.FOUND_INSTITUTION,
+        DirectOrderKind.STAFF_INSTITUTION,
+        DirectOrderKind.BUILD_STOREHOUSE,
+        DirectOrderKind.BUILD_WALLS,
+        DirectOrderKind.BUILD_TOWERS,
+        DirectOrderKind.REPAIR_WALLS,
+        DirectOrderKind.CRAFT_EQUIPMENT,
+        DirectOrderKind.RESEARCH,
+        DirectOrderKind.DRILL,
+    }
+)
+"""Work at home whose workers an order may count instead of naming (rules version 2)."""
+
+
+def _counted_workers(
+    command: DirectOrder, civilization_id: EntityId, state: WorldState, busy: set[EntityId]
+) -> tuple[DirectOrder, CommandError | None]:
+    """A counted order with the people it takes named: the lowest-numbered idle grown-ups
+    at its settlement, none already busy or set to another order in this council."""
+
+    def refused(code: str, message: str) -> tuple[DirectOrder, CommandError | None]:
+        return command, CommandError(command_id=command.command_id, code=code, message=message)
+
+    if not rules_for(state.rules_version).worker_counts:
+        return refused("invalid_workers", "this world's rules take named workers only")
+    if command.kind not in COUNTED_ORDERS:
+        return refused("invalid_workers", "a worker count goes with work at home")
+    if command.worker_ids:
+        return refused("invalid_workers", "name the workers or count them, not both")
+    if command.worker_count is None or command.settlement_id is None:
+        return refused("invalid_workers", "a worker count names its settlement")
+    civilization = state.civilizations[civilization_id]
+    settlement = next(
+        (item for item in civilization.settlements if item.settlement_id == command.settlement_id),
+        None,
+    )
+    if settlement is None:
+        return refused("unknown_settlement", "no such settlement of this civilization")
+    chosen = idle_at(
+        civilization.population.people.table,
+        settlement.tile,
+        busy,
+        command.worker_count,
+        fit=command.kind is DirectOrderKind.DRILL,
+    )
+    if len(chosen) < command.worker_count:
+        return refused(
+            "too_few_idle_workers",
+            f"{len(chosen)} idle at {settlement.settlement_id}, {command.worker_count} asked",
+        )
+    return command.model_copy(update={"worker_ids": tuple(chosen)}), None
+
+
 def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandValidation:
     if envelope.civilization_id not in state.civilizations:
         return CommandValidation(
@@ -2594,6 +2674,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     already_travelling = _travelling_people(state, envelope.civilization_id)
     garrisoned = _garrisoned_people(state, envelope.civilization_id)
     drilling = _drilling_people(state, envelope.civilization_id)
+    working = {
+        person_id
+        for order in state.civilizations[envelope.civilization_id].work_orders
+        for person_id in order.worker_ids
+    }
     reserved_cargo: Reserved = {}
     upgrading: set[EntityId] = set()
     walling: set[HexCoord] = set()
@@ -2612,6 +2697,23 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
         seen.add(command.command_id)
         if isinstance(command, DirectOrder):
             command_error: CommandError | None = None
+            if command.worker_count is not None or command.settlement_id is not None:
+                # Counted workers become named ones; every check below then sees them.
+                command, counted_error = _counted_workers(
+                    command,
+                    envelope.civilization_id,
+                    state,
+                    already_travelling
+                    | garrisoned
+                    | drilling
+                    | teaching_people
+                    | working
+                    | committed_travellers
+                    | committed_at_home,
+                )
+                if counted_error is not None:
+                    errors.append(counted_error)
+                    continue
             if command.kind is DirectOrderKind.START_PROJECT and (
                 command.project_id is None or command.project_kind is None
             ):

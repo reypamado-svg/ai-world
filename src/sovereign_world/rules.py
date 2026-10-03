@@ -28,6 +28,9 @@ class Rules:
     reach_cap: bool
     """A settlement's influence stops growing at a town's, so borders stay local however
     large a city grows."""
+    worker_counts: bool
+    """Orders for work at home may count their workers at a settlement instead of naming
+    them."""
 
 
 def rules_for(version: int) -> Rules:
@@ -41,4 +44,5 @@ def rules_for(version: int) -> Rules:
         cover_mechanics=second,
         sites=second,
         reach_cap=second,
+        worker_counts=second,
     )
