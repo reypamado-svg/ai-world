@@ -24,7 +24,7 @@ class VerificationResult:
     records: int
 
 
-def _recorded_state(payload: dict[str, object]) -> WorldState:
+def recorded_state(payload: dict[str, object]) -> WorldState:
     compressed = payload.get("state_gzip_base64")
     if isinstance(compressed, str):
         raw = gzip.decompress(b64decode(compressed))
@@ -56,9 +56,9 @@ def recorded_states(
                 )
             yield record, cursor.apply_delta(decompress(compressed))
         elif store.journal_format == 1:
-            yield record, _recorded_state(payload)
+            yield record, recorded_state(payload)
         else:
-            yield record, cursor.load_snapshot(_recorded_state(payload))
+            yield record, cursor.load_snapshot(recorded_state(payload))
 
 
 def replay_run(store: WorldStore, target_day: int | None = None) -> WorldState:
