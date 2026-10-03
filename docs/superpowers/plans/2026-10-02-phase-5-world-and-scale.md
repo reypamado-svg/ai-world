@@ -405,3 +405,55 @@ Planned with Fable 5.1. Built in five commits.
 Both targets are met: at most 40 µs per person per day, and at most 150 MB for people at 100K. The peak is still dominated by the full JSON save made each day.
 
 **Left for S5.** At 100K the hash takes 6.2 s and the saved day 4.8 s (2.9 MB). S5 hashes and saves only what changed.
+
+## S5 as built: save and hash only what changed (journal format 2)
+
+Planned with Fable 5.1. Built in six commits, plus these docs.
+
+**Two formats, side by side.**
+- **Format 1** is every run made before S5. Each day saves the whole world, gzipped, and hashes it with version 1. Old runs keep this format, carry on in it, and replay, verify and rederive exactly as before. A committed 5-day format-1 run (`tests/fixtures/format-one`) proves it.
+- **Format 2** is every new run and every fork, whatever its rules. `RunManifest.journal_format` is 2 for them; it is 1 by default and then left out of the manifest hash, so old manifests keep theirs.
+
+**Hash version 2** (`state_hash_v2`). The sha256 of a small JSON of parts:
+- the map's own hash, worked out once (the map never changes);
+- the world's fields without the map and people, from one dump;
+- for each civilization, the hash of its fields and the hash of its people.
+
+The people hash covers the present rows in order: one matrix of the number columns, and one digest per row of everything else. Row digests are kept between days and redone only for rows written to, or whose skill or language map changed. Verification always works everything out from scratch, and a property test checks that the cached, fresh and reloaded hashes agree after every operation. Version 1 is unchanged, so the 14 reference runs and both parity scenarios keep every hash.
+
+**The format-2 journal** (`journal.py`):
+- **Header:** the first record names the format and hash version; the store refuses a journal whose header disagrees with its manifest.
+- **Whole-world snapshots:** the creation checkpoint, then day 30, 60, ..., and any day that does not follow the last one saved (a gap, or a store opened afresh without the day before). Gzip has no timestamp, so the same day saves the same bytes.
+- **A day's changes**, against the day before:
+  - world and civilization fields that changed (`set`) or became empty (`unset`);
+  - for each civilization's people: the number columns as a packed mask of changed rows and their differences, the ids gone, the full row of anyone whose other fields changed, and the newcomers in order;
+  - the day's events, as before.
+- **Rebuilding:** `StateCursor` takes the snapshot at or before a day and applies each day's changes. Replay, verify and the observer's reader all use it.
+
+**Proof that nothing is lost.**
+- Both parity scenarios (320 days each, rules 1 and 2) and a war ending in a ceded colony rebuild every day with the recorded hashes, v1 and v2. On the saved fixture days the rebuilt world is byte-identical.
+- Identical runs save identical journals.
+- A flipped byte fails the record checksum; a re-chained, edited change fails verification; changes without the day before are refused; a cut-off last line is ignored and the run carries on.
+- Runs with recorded councils rederive from them alone.
+- A property test applies random people changes and checks that rebuilding gives exactly the next day.
+- The phase exit scenarios now record in format 2.
+
+**The observer's reader** (`observer/reader.py`): `RunReader(root)` lists the saved days, gives the world on any day (forward reading rebuilds each day from the one before), that day's events, the councils, and new days on `refresh()`. It reads both formats. It keeps the journal's records in memory; O2 decides what to page out.
+
+**Measurements** (`tests/perf/bench_people.py`, 31 days, format 2, this container):
+
+| People | Map | Day | Hash v2 | Saving a day | Verify, per day | Changes per day | Snapshot | Journal per year | Peak memory |
+|---|---|---|---|---|---|---|---|---|---|
+| 20,000 | 48×48 | 0.85 s | 67 ms | 0.25 s | 0.59 s | 43 KB | 0.9 MB | 26 MB | 292 MB |
+| 100,000 | 48×48 | 4.17 s | 170 ms | 0.90 s | 2.46 s | 69 KB | 3.8 MB | 71 MB | 1,067 MB |
+| 100,000 | 100×100 | 5.14 s | 266 ms | 1.14 s | 2.96 s | 148 KB | 4.1 MB | 103 MB | 1,166 MB |
+
+Before S5, at 100,000 people, the hash took 6.2 s and saving a day 4.8 s (2.9 MB a day, over 1 GB a year).
+- **Journal:** 71–103 MB a year, under the 200 MB target. 100×100 stays under 150 MB, so the territory map needs no compact delta of its own (C6b not built).
+- **Hash:** 0.17 s at 48×48 meets the 0.2 s target; at 100×100 it is 0.27 s. Most of that is dumping the world's fields (the territory map grows with the map), which saving a day dumps again. S6 can share one dump between the two.
+- **Memory:** the peak rose by about 230 MB at 100K, because the journal keeps the day before (its fields and a copy of its people tables) to save the next day's changes. S6's 1 GB target covers this.
+- **Verification** works every hash from scratch: about 2.5–3 s a simulated day at 100K, so a year takes about 15–18 minutes.
+
+**Defaults taken** (the user can change them at review):
+- A fork is saved in format 2, even from a format-1 run: the format is storage, not rules.
+- No extra SQLite checkpoints every 30 days; `run` still saves one at its end.

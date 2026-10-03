@@ -83,6 +83,10 @@ Each world directory contains:
 
 - `world.sqlite3`: the immutable manifest and compressed checkpoints.
 - `journal.jsonl`: append-only, checksummed transition records linked by hashes.
+
+**Journal formats.** `inspect` and `verify` print a run's format.
+- **Format 2** (new runs and every fork): the journal opens with a header record. Each day saves only what changed since the day before; the whole world is saved every 30 days, and after any gap. Hashes use version 2, worked out in parts, so a large world hashes and saves in a fraction of the time.
+- **Format 1** (runs made before this): the whole world every day, hash version 1. Old runs keep their format, carry on in it, and replay and verify exactly as before. A fork of an old run is saved in format 2.
 - `world.sqlite3-wal` and `world.sqlite3-shm`: temporary SQLite files that may appear while a command is running.
 
 Copy the entire directory when backing up or moving a world. Do not edit either authoritative file; verification will report corruption rather than silently accepting a changed history.
