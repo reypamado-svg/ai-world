@@ -691,8 +691,8 @@ def _change_allegiance(
     origin = state.civilizations[origin_id]
     destination = state.civilizations[destination_id]
     _release_duties(state, origin_id, frozenset(person_ids))
-    origin_people = dict(origin.population.people)
-    destination_people = dict(destination.population.people)
+    origin_people = origin.population.people
+    destination_people = destination.population.people
     for person_id in person_ids:
         person = origin_people.pop(person_id)
         held = {skill: value // 4 for skill, value in person.skills.items() if value // 4}
@@ -730,7 +730,6 @@ def _change_allegiance(
     )
     origin.population = origin.population.model_copy(
         update={
-            "people": origin_people,
             "scheduled_births": tuple(
                 birth
                 for birth in origin.population.scheduled_births
@@ -740,7 +739,6 @@ def _change_allegiance(
     )
     destination.population = destination.population.model_copy(
         update={
-            "people": destination_people,
             "scheduled_births": tuple(
                 sorted(
                     (*destination.population.scheduled_births, *following_mother),
@@ -1017,7 +1015,7 @@ def _advance_journeys(
     state.journeys = result.journeys
     for civilization_id, people in result.people_by_civilization.items():
         civilization = state.civilizations[civilization_id]
-        civilization.population = civilization.population.model_copy(update={"people": people})
+        civilization.population.people.update(people)
     kinds = {journey.journey_id: journey.kind for journey in result.journeys}
     events: list[DomainEvent] = []
     for journey_id in result.delayed_ids:
@@ -1356,11 +1354,11 @@ def _advance_journeys(
             )
         )
         if journey.kind is JourneyKind.SPY and survivors:
-            people = state.civilizations[sender_id].population.people
+            spies = state.civilizations[sender_id].population.people
             for person_id in survivors:
-                people[person_id].skills = {
-                    **people[person_id].skills,
-                    SPYCRAFT: people[person_id].skills.get(SPYCRAFT, 0) + 1,
+                spies[person_id].skills = {
+                    **spies[person_id].skills,
+                    SPYCRAFT: spies[person_id].skills.get(SPYCRAFT, 0) + 1,
                 }
             if journey.findings is not None:
                 events.append(_file_spy_report(state, journey, by_courier=False))
@@ -6050,9 +6048,7 @@ def advance_day(
         civilization.known_tiles = tuple(
             observation.tile for observation in civilization.observations
         )
-        civilization.population = civilization.population.model_copy(
-            update={"people": expedition_result.people}
-        )
+        civilization.population.people.update(expedition_result.people)
         for tile in expedition_result.observed_tiles:
             events.append(
                 _event(
@@ -6160,7 +6156,7 @@ def advance_day(
     candidate.diplomatic_missions = diplomacy_result.missions
     for civilization_id, people in diplomacy_result.people_by_civilization.items():
         civilization = candidate.civilizations[civilization_id]
-        civilization.population = civilization.population.model_copy(update={"people": people})
+        civilization.population.people.update(people)
     for message in diplomacy_result.delivered:
         # Any word from a party that broke a treaty makes plain the treaty is over.
         _tell_treaty_ends(
@@ -6527,9 +6523,7 @@ def advance_day(
         )
         civilization.capabilities = knowledge_result.knowledge.records
         civilization.teaching_assignments = knowledge_result.knowledge.assignments
-        civilization.population = civilization.population.model_copy(
-            update={"people": knowledge_result.people}
-        )
+        civilization.population.people.update(knowledge_result.people)
         for capability in knowledge_result.learned:
             events.append(
                 _event(
@@ -6599,9 +6593,7 @@ def advance_day(
         )
         civilization.capabilities = mortality_knowledge_result.knowledge.records
         civilization.teaching_assignments = mortality_knowledge_result.knowledge.assignments
-        civilization.population = civilization.population.model_copy(
-            update={"people": mortality_knowledge_result.people}
-        )
+        civilization.population.people.update(mortality_knowledge_result.people)
         for capability in mortality_knowledge_result.learned:
             events.append(
                 _event(

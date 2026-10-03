@@ -506,7 +506,7 @@ class PeopleView(MutableMapping[EntityId, Person]):
     def __getitem__(self, person_id: EntityId) -> Person:
         return Person._at(self._table, self._table.index[person_id])
 
-    def get(self, person_id: EntityId, default: Any = None) -> Any:
+    def get(self, person_id: EntityId, default: Person | None = None) -> Person | None:  # type: ignore[override]
         row = self._table.index.get(person_id)
         return default if row is None else Person._at(self._table, row)
 

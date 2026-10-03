@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId, IdAllocator
+from sovereign_world.people_store import AllegianceChange as AllegianceChange
+from sovereign_world.people_store import PeopleView as PeopleView
+from sovereign_world.people_store import Person as Person
+from sovereign_world.people_store import PersonRecord as PersonRecord
+from sovereign_world.people_store import Sex as Sex
 from sovereign_world.worldgen import StartingRegion
 
 # Unfed days the body's reserves absorb before hunger adds any risk of death.
@@ -23,61 +27,8 @@ FED_HEALTH_GAIN_BP = 35
 FERTILE_HEALTH_BP = 8_000
 
 
-class Sex(StrEnum):
-    FEMALE = "female"
-    MALE = "male"
-
-
 SETTLING_DAYS = 365
 """A person who changes civilization has a quarter of each skill held back this long."""
-
-
-class AllegianceChange(BaseModel):
-    """The day a person became a member of another civilization, and why."""
-
-    model_config = ConfigDict(frozen=True)
-
-    day: int = Field(ge=0)
-    from_civilization_id: EntityId
-    to_civilization_id: EntityId
-    reason: str
-
-
-class Person(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
-
-    person_id: EntityId
-    civilization_id: EntityId
-    sex: Sex
-    birth_day: int
-    age_days: int = Field(ge=0)
-    location: HexCoord
-    parent_ids: tuple[EntityId, ...] = ()
-    health_bp: int = Field(default=10_000, ge=0, le=10_000)
-    nutrition_debt: int = Field(default=0, ge=0)
-    disease_load: int = Field(default=0, ge=0, le=10_000)
-    skills: dict[str, int] = Field(default_factory=dict)
-    alive: bool = True
-    death_day: int | None = None
-    captive_of: EntityId | None = None
-    """The civilization holding this person prisoner; they keep their own allegiance."""
-    held_at: EntityId | None = None
-    """The captor's settlement holding them; none while they march with a war party."""
-    allegiances: tuple[AllegianceChange, ...] = ()
-    """Every change of civilization in this person's life, oldest first."""
-    native_language: EntityId | None = None
-    """The language this person grew up with; none means that of their civilization."""
-    languages: dict[EntityId, int] = Field(default_factory=dict)
-    """Fluency, 0 to 100, in each language learned besides their native one."""
-    culture: EntityId | None = None
-    """The culture this person lives by; none means that of their civilization."""
-    assimilation: int = Field(default=0, ge=0, le=100)
-    """How far, out of 100, a newcomer has become one of their civilization's people."""
-    ancestry: tuple[EntityId, ...] = ()
-    """The cultures of this person's forebears; none means their native language's alone."""
-    held_skills: dict[str, int] = Field(default_factory=dict)
-    """Skill held back while a newcomer settles in; restored on `settled_day`."""
-    settled_day: int | None = None
 
 
 class ScheduledBirth(BaseModel):
@@ -89,19 +40,18 @@ class ScheduledBirth(BaseModel):
 
 class Population(BaseModel):
     civilization_id: EntityId
-    people: dict[EntityId, Person]
+    people: PeopleView
+    """Everyone this civilization has had, alive or dead, kept in columns."""
     scheduled_births: tuple[ScheduledBirth, ...] = ()
     next_sequence: int = Field(default=1, ge=1)
 
     @property
     def living_ids(self) -> tuple[EntityId, ...]:
-        return tuple(sorted(person_id for person_id, person in self.people.items() if person.alive))
+        return self.people.living_ids()
 
     @property
     def dead_ids(self) -> tuple[EntityId, ...]:
-        return tuple(
-            sorted(person_id for person_id, person in self.people.items() if not person.alive)
-        )
+        return self.people.dead_ids()
 
 
 FoundingPopulation = Population
@@ -119,7 +69,7 @@ class CopyOnRead(dict[EntityId, Person]):
 
     __slots__ = ("_copied",)
 
-    def __init__(self, people: dict[EntityId, Person]) -> None:
+    def __init__(self, people: Mapping[EntityId, Person]) -> None:
         super().__init__(people)
         self._copied: set[EntityId] = set()
 
@@ -156,7 +106,7 @@ class PopulationDayResult:
     deaths: tuple[DeathRecord, ...]
 
     @property
-    def people(self) -> dict[EntityId, Person]:
+    def people(self) -> PeopleView:
         return self.population.people
 
 
@@ -188,7 +138,7 @@ def create_founders(
         )
     return Population(
         civilization_id=civilization_id,
-        people=people,
+        people=PeopleView.of(people),
         next_sequence=allocator.next_sequence,
     )
 
@@ -229,7 +179,7 @@ def _mortality_threshold(person: Person) -> tuple[int, str]:
     return threshold, "natural causes"
 
 
-def _eligible_pairs(people: dict[EntityId, Person]) -> list[tuple[Person, Person]]:
+def _eligible_pairs(people: Mapping[EntityId, Person]) -> list[tuple[Person, Person]]:
     females = [
         person
         for person in people.values()

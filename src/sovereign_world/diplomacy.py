@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -272,7 +273,7 @@ def _delivered_words(
 
 def advance_diplomacy_day(
     missions: tuple[DiplomaticMessage, ...],
-    people_by_civilization: dict[EntityId, dict[EntityId, Person]],
+    people_by_civilization: Mapping[EntityId, Mapping[EntityId, Person]],
     *,
     day: int,
     rng: StableRng,

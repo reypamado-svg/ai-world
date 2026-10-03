@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
@@ -70,7 +71,7 @@ class ExpeditionDayResult:
 
 def advance_expeditions(
     expeditions: tuple[Expedition, ...],
-    people: dict[EntityId, Person],
+    people: Mapping[EntityId, Person],
     world_map: WorldMap,
     day: int,
     *,

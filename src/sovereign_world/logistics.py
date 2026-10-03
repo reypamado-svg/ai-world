@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from math import ceil
@@ -575,7 +575,7 @@ def _roll(rng: StableRng, day: int, journey: Journey, purpose: str) -> int:
 
 def advance_journeys_day(
     journeys: tuple[Journey, ...],
-    people_by_civilization: dict[EntityId, dict[EntityId, Person]],
+    people_by_civilization: Mapping[EntityId, Mapping[EntityId, Person]],
     *,
     day: int,
     rng: StableRng,

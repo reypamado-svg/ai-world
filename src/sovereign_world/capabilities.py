@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -111,7 +112,7 @@ class KnowledgeDayResult:
 
 def advance_knowledge_day(
     knowledge: KnowledgeState,
-    people: dict[EntityId, Person],
+    people: Mapping[EntityId, Person],
     day: int,
 ) -> KnowledgeDayResult:
     """Advance teaching and remove unrecorded capabilities with no living practitioner."""
