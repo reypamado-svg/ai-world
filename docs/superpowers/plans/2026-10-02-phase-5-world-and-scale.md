@@ -543,3 +543,90 @@ Council days also became cheap. At 100K a report takes 49 ms instead of 202 ms p
 - Under rules 1 (no reach cap), territory on large maps is still the costliest step: 195 ms a day at 100K.
 - Verification still works every hash from scratch.
 - A counted order is resolved against the true state, as named orders always were. A capture the council has not heard of can therefore leave it one idle worker short of what its report showed.
+
+## S7 as built: the observer shows 100,000 people
+
+Planned with Fable 5.1 from measurements of the observer at 821aacf. Built in five commits plus these docs. The engine did not change; the Python suite was not touched.
+
+**What you can open**
+- `index.html?people=100000` loads 100,000 synthetic people, 25,000 at each capital, every one an individual you can click, inspect and follow.
+- `index.html?people=100000&measure=auto` measures your PC. It spends 10 s in each band and then shows a table; **Copy** gives the full JSON to send back.
+
+**Measurements** (headless Chromium in this container, software GL, 1600 × 900). Frame intervals here are not those of a real GPU. The JS update time (our own per-frame work, timed over 60 steps with the clock paused) and the memory are comparable.
+
+| | Before (5,000 SAMPLE citizens) | After: 5,000 people | After: 50,000 people | After: 100,000 people |
+|---|---|---|---|---|
+| JS update, settlement band | 35.7 ms | 0.8 ms | 1.7 ms | 2.6 ms |
+| JS update, local band | 5.3 ms | 1.2 ms | 1.8 ms | 1.1 ms |
+| Frame update with the clock running, avg / p95 (settlement) | 39.5 / 80.8 ms | 4.7 / 12.7 ms | 6.2 / 15.6 ms | 6.6 / 15.2 ms |
+| JS heap | 73–122 MB | 16–22 MB | 18–33 MB | 23–35 MB |
+| Art atlas and village ground | 224.8 MB | 41.9 MB | 41.9 MB | 41.9 MB |
+| People's own data | about 19 KB a person | 36 bytes a person | 36 bytes a person | 36 bytes a person (3.6 MB) |
+
+`crowd.test.mjs` measures the crowd alone at 50,000 people: 330 bytes of heap a person, all pools included.
+
+**Targets for "not straining a normal PC"** (1920 × 1080, a 2019-class laptop). Some can be measured only on your PC:
+
+| Target | Goal | Here | Your PC |
+|---|---|---|---|
+| Frame interval p95, every band | ≤ 20 ms | (software GL: not meaningful) | |
+| JS update | ≤ 8 ms avg, ≤ 16 ms p95 | 6.6 ms avg; p95 15.2 ms (settlement), 16.9 ms (regional, while streaming) | |
+| Textures | atlas ≤ 60, patches ≤ 138, terrain ≤ 128 MB | 41.9; 37.5; 52.5 MB peak | |
+| JS heap | ≤ 150 MB | 35 MB | |
+| First frame | ≤ 10 s | 27–30 s (painting the art; unchanged by S7) | |
+
+**What changed**
+- **C0, harness:** `__observer.atlasStats()` and `tests/measure.mjs --citizens` with JS update times. The "before" numbers above.
+- **C1, atlas diet (224.8 → 41.9 MB):**
+  - pages of 2048 px, packed tallest-first once all art is added, with no mipmaps;
+  - people, nature, props, crops and vehicles kept at screen size (painted at twice the size, then halved); buildings keep twice the size;
+  - each citizen frame is painted once with white accents. A cropped accent mask beside it is tinted with the civilization's colour when drawn, so four civilizations cost no more frames than one;
+  - village ground baked at half resolution;
+  - `textureBytes()` is exact.
+- **C2, population feed and settlement plans:**
+  - `PeopleFrame` (`src/data/population.js`) keeps people as typed columns: civilization, tile, settlement, sex, age, health, duty, design and house, with ids kept as numbers;
+  - `syntheticPopulation` fills it deterministically, five to a house, with a simple age pyramid and fixed shares of duties;
+  - a settlement plan lays out wards of 64 m blocks (16 houses each) in rings around the core until everyone has a house, and moves the fields beyond the wards. 25,000 people live within 685 m;
+  - everyone follows one of nine daily routines by duty, sampled into a table of phases per minute, and walks the streets between home and work. Placing 100,000 people takes 9 ms.
+- **C3, crowd layer:**
+  - **settlement band:** the quality's crowd budget nearest the centre are animated sprites with a tinted accent; the rest in view are still particles; ward houses are sprites;
+  - **local band:** houses are static particles and people are dots per 8, 16 or 32 m cell. A click lists the cell's people in the inspector;
+  - **further out:** a badge per capital;
+  - wards are painted into the ground: streets between the blocks and yards inside them;
+  - picking is exact for sprites and particles, and the selected person is always drawn or pinned, so anyone can be followed.
+- **C4, budgets:** the patch and terrain caches scale with the screen's device pixels, up to 2.33 times:
+  - patches 96 MB × f, with 192 px patches from 3.5 M device pixels;
+  - terrain 128 MB × f, at most 192 MB;
+  - recomputed on resize;
+  - the Measurements panel shows each cache's use against its cap.
+- **C5, measuring at 100K:** the `?measure=auto` tour and `tests/measure.mjs --people`.
+
+**Defaults taken** (the user can change them at review)
+- The 100,000 live equally at the four capitals, 25,000 each.
+- Ward houses are static and cannot be picked.
+- Buildings keep twice-size art; everything else is screen size.
+- Mipmaps are off. If the local band shimmers on your PC, they can be turned on for the building page only (+6 MB).
+- The terrain cap is 128 MB at 1600 × 900 and grows to 192 MB.
+- `?citizens` stays, for the existing tests.
+- A local-band click lists the cell's people.
+- Particles use a still frame; walking frames for particles come later.
+
+**Known**
+- Still particles are drawn over ward houses. Only people beyond the crowd budget, away from the centre of the view, are particles.
+- Crowd people walking through a capital's core are drawn over the SAMPLE village's buildings.
+- The old `?citizens=5000` path still makes two sprites per citizen (38.5 ms of JS at 5,000). It is kept for the existing tests; the crowd replaces it for large numbers.
+- Loading takes 27–30 s here, nearly all of it painting the art. S7 did not change that.
+- Routines are the same for everyone with the same duty, offset by up to half an hour; walks follow the street grid in an L.
+
+**Handoff to O2.** The O2 reader fills the same `PeopleFrame` columns from `RunReader.state_at(day)`:
+- ids are the engine's person numbers;
+- the tile comes from `location`;
+- the settlement is the store whose tile matches;
+- age and health come from the columns;
+- duty comes from work orders, institution staff, scholars and drills, with grown-ups otherwise farmers.
+
+The settlement plan should then be sized from the engine's `housing` (houses per settlement) instead of residents ÷ 5. Which house each person lives in stays presentation.
+
+**Checks**
+- The observer suite passes: 70 tests, one file at a time.
+- New tests: `atlas`, `population`, `settlement-plan`, `crowd` (at 5,000 and 50,000 people) and `budgets`.
