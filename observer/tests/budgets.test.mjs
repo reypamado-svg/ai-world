@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { serve } from './serve.mjs';
 import { budgetsFor, screenFactor } from '../src/ui/budgets.js';
+import { patchTextureBytes } from '../src/render/patch-layer.js';
 
 test('caps follow the screen, within their floors and ceilings', () => {
   const small = budgetsFor(1280, 720);
@@ -26,11 +27,24 @@ test('caps follow the screen, within their floors and ceilings', () => {
   for (const b of [budgetsFor(3840, 2160), budgetsFor(1920, 1080, 2), budgetsFor(7680, 4320)]) {
     assert.equal(b.factor, 2.33);
     assert.equal(b.patchBytes, Math.round(96e6 * 2.33));
+    assert.equal(b.patchEntries, Math.round(320 * 2.33 * (256 / 192) ** 2), 'smaller patches, more of them');
     assert.equal(b.terrainBytes, 192e6);
     assert.equal(b.terrainEntries, 384);
     assert.equal(b.patchPx, 192);
   }
   assert.equal(screenFactor(1920, 1080, 2), screenFactor(3840, 2160, 1));
+  // Bytes govern: the entry cap never binds before the byte cap (the user's PC hit 746 of 746 entries
+  // at 150 of 224 MB before entries followed the patch area).
+  for (const [w, h, dpr] of [
+    [1280, 720, 1],
+    [1920, 1080, 1],
+    [2560, 1440, 1],
+    [2552, 1283, 1.5],
+    [3840, 2160, 1],
+  ]) {
+    const b = budgetsFor(w, h, dpr);
+    assert.ok(b.patchEntries * patchTextureBytes(b.patchPx) >= b.patchBytes, `bytes govern at ${w} x ${h} @ ${dpr}`);
+  }
   // Monotonic in screen size.
   let last = 0;
   for (const w of [800, 1280, 1600, 1920, 2560, 3200, 3840]) {
@@ -87,6 +101,7 @@ for (const [w, h] of [
     for (const k of ['patchBytes', 'patchEntries', 'patchPx', 'terrainBytes', 'terrainEntries'])
       assert.equal(b[k], expected[k], k);
     assert.equal(r.caps.patches.maxBytes, b.patchBytes);
+    assert.equal(r.caps.patches.maxEntries, b.patchEntries);
     assert.equal(r.caps.terrain.maxBytes, b.terrainBytes);
     assert.equal(r.caps.patchPx, b.patchPx);
     for (const p of r.peaks) {

@@ -20,6 +20,12 @@ import { hash2 } from '../sim/rng.js';
 export const PATCH_SIZES = Array.from({ length: 10 }, (_, i) => 3200 / 2 ** i);
 /** Texels per patch side (plus one texel of bleed on each side); very large screens use 192 (S7 budgets). */
 export const PATCH_PX = 256;
+/** GPU bytes of one patch texture of `px` texels a side: the bleed border, RGBA, and a third for mipmaps. */
+export function patchTextureBytes(px) {
+  const W = px + 2;
+  return W * W * 4 * 1.34;
+}
+
 /** A texel is never more than this many screen pixels across. */
 const MAX_TEXEL_PX = 1.9;
 const NEIGHBOURS = [
@@ -291,7 +297,7 @@ export class PatchLayer {
     sprite.setFromMatrix(new PIXI.Matrix(m * K, (m * K) / 2, -m * K, (m * K) / 2, A.x, A.y));
     sprite.zIndex = level;
     this.container.addChild(sprite);
-    this.cache.set(key, { sprite, texture }, W * W * 4 * 1.34, pinned);
+    this.cache.set(key, { sprite, texture }, patchTextureBytes(this.px), pinned);
     this.baked += 1;
     this.bakeMs += performance.now() - t0;
   }
