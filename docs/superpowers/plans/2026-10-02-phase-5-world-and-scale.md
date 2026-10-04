@@ -567,15 +567,17 @@ Planned with Fable 5.1 from measurements of the observer at 821aacf. Built in fi
 
 **Targets for "not straining a normal PC"** (1920 × 1080, a 2019-class laptop). Some can be measured only on your PC:
 
-| Target | Goal | Here | Your PC (first run)* |
-|---|---|---|---|
-| Frame interval p95, every band | ≤ 20 ms | (software GL: not meaningful) | 4.3–8.3 ms (238 fps) |
-| JS update | ≤ 8 ms avg, ≤ 16 ms p95 | 6.6 ms avg; p95 15.2 ms (settlement), 16.9 ms (regional, while streaming) | 0.4–1.7 ms avg; 0.6–6.5 ms p95 |
-| Textures | atlas ≤ 60, patches ≤ 138 (1080p cap), terrain ≤ 128 MB | 41.9; 37.5; 52.5 MB peak | 41.9; 150.5 (this screen's cap is 224); 68.2 MB |
-| JS heap | ≤ 150 MB | 35 MB | 54–134 MB |
-| First frame | ≤ 10 s | 27–30 s (painting the art; unchanged by S7) | not recorded (S7b adds it) |
+| Target | Goal | Here | Your PC (first run)* | Your PC (second run, after S7b)** |
+|---|---|---|---|---|
+| Frame interval p95, every band | ≤ 20 ms | (software GL: not meaningful) | 4.3–8.3 ms (238 fps) | 4.3 ms in every band (about 240 fps) |
+| JS update | ≤ 8 ms avg, ≤ 16 ms p95 | 6.6 ms avg; p95 15.2 ms (settlement), 16.9 ms (regional, while streaming) | 0.4–1.7 ms avg; 0.6–6.5 ms p95 | 0.2–1.3 ms avg; 0.4–1.8 ms p95 |
+| Textures | atlas ≤ 60, patches ≤ 138 (1080p cap), terrain ≤ 128 MB | 41.9; 37.5; 52.5 MB peak | 41.9; 150.5 (this screen's cap is 224); 68.2 MB | 41.9; 97.8 (485 of 1,326 entries, no evictions); 64.2 MB |
+| JS heap | ≤ 150 MB | 35 MB | 54–134 MB | 44–120 MB |
+| First frame | ≤ 10 s | 27–30 s (painting the art; unchanged by S7) | not recorded (S7b adds it) | 3.8 s |
 
 \* Edge 154 on Windows, 2552 × 1283 at 1.5 device pixel ratio (7.4 M device pixels, caps × 2.33). The camera was moved during this first tour: its stops ended at zooms 2.6, 0.061 and 0.787 instead of 1.0, 0.1 and 0.0053. So the "regional" row measured the settlement band, and the regional band was not measured. That hand-zooming across eight patch levels also filled the patch cache to its entry cap (746 of 746, 1,001 evictions); a held view needs 80 to 270 patches. S7b holds the camera during the tour.
+
+\*\* The same PC and screen after S7b. No stop was touched, and each row measured its own band (zooms 1.0, 0.1, 0.0053 and the whole world). The page was ready, with its first frame, 3.8 s after navigation began; painting the citizen designs took 2 of those seconds. No patch or terrain evictions happened during any stop. Every target is met.
 
 **What changed**
 - **C0, harness:** `__observer.atlasStats()` and `tests/measure.mjs --citizens` with JS update times. The "before" numbers above.
@@ -647,3 +649,18 @@ Planned with Fable 5.1 from the first `?people=100000&measure=auto` result on th
   `tour.test.mjs` wheels, drags and clicks during the tour and checks the camera did not move.
 
 **To measure again:** open `index.html?people=100000&measure=auto`, keep hands off until the table appears (about 50 s after loading), press **Copy** and send the text.
+
+## Phase 5 complete
+
+All nine of the user's asks are built and measured:
+1. Mixed land cover, in the engine (S1, S3).
+2. Speeds of 1× to 100× (S1).
+3. Houses, settlement ranks and realm ranks (S2).
+4. Seams for wild animals (S3).
+5. Civilizations spaced further apart (S1).
+6. 2–4 AI civilizations (S1).
+7. Balanced sites (S1, S3).
+8. 100,000 real people at 0.7 s a simulated day (S4–S6), shown and followable in the observer on the user's PC at about 240 fps (S7).
+9. The atlas cut from 225 MB to 42 MB, with patch caches that follow the screen (S7, S7b).
+
+Next is O2 (the read-only reader and a recorded run in the observer), planned in the phase-4 observer plan's sequence.
