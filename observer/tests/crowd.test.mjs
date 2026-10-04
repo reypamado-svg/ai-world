@@ -14,11 +14,14 @@ let browser;
 before(async () => {
   server = await serve(0);
   browser = await chromium.launch({
+    // --expose-gc: the memory test collects garbage before reading the heap, so it measures
+    // what is kept rather than what has not been collected yet.
     args: [
       '--use-angle=swiftshader',
       '--enable-unsafe-swiftshader',
       '--ignore-gpu-blocklist',
       '--enable-precise-memory-info',
+      '--js-flags=--expose-gc',
     ],
   });
 });
@@ -178,6 +181,10 @@ test('50,000 people cost little memory and little time a frame', async () => {
             ts.push(performance.now() - t);
           }
           times[band] = ts.reduce((a, b) => a + b, 0) / ts.length;
+        }
+        for (let i = 0; i < 3; i += 1) {
+          window.gc();
+          await new Promise((r) => setTimeout(r, 50));
         }
         return { heap: performance.memory.usedJSHeapSize, times };
       }),
