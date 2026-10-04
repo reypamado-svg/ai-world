@@ -31,6 +31,7 @@ import { Minimap } from './ui/minimap.js';
 import { Inspector } from './ui/inspector.js';
 import { FrameStats, jsHeapBytes } from './ui/perf.js';
 import { Quality } from './ui/quality.js';
+import { budgetsFor } from './ui/budgets.js';
 import { scaleCitizens } from './data/sample/citizens.js';
 import { syntheticPopulation } from './data/synthetic/people.js';
 import { CrowdLayout, plansFor } from './world/settlement-plan.js';
@@ -41,6 +42,15 @@ const SYNTHETIC = params.get('source') === 'synthetic';
 const DEBUG = params.has('debug') || SYNTHETIC;
 // ?people=N: N synthetic people (up to 200,000) shared among the capitals (S7).
 const PEOPLE = Math.max(0, Number(params.get('people') ?? 0) || 0);
+// ?measure=auto: after loading, tour each band for TOUR_S seconds and show a copyable table (S7).
+const AUTO_MEASURE = params.get('measure') === 'auto';
+const TOUR_S = Math.max(1, Number(params.get('tourSeconds') ?? 10) || 10);
+const TOUR = [
+  ['settlement', 1.0],
+  ['local', 0.1],
+  ['regional', 'tile-3000'],
+  ['atlas', 'home'],
+];
 const $ = (id) => document.getElementById(id);
 
 function setStatus(text) {
@@ -79,6 +89,9 @@ class ObserverApp {
       minZoom: zoomForTilePx(1700, this.R),
     });
     this.world.addChild(this.patches.container);
+    // Engine worlds take their cache caps from the screen (the synthetic test world keeps its own).
+    this.screenBudgets = source instanceof TerrainSource;
+    this.applyBudgets();
     this.villageData = extras.village ?? null;
     this.population = extras.population ?? null;
     if (extras.village) {
@@ -194,6 +207,44 @@ class ObserverApp {
     }
   }
 
+  /** Cache caps for the current screen size; recomputed on resize. */
+  applyBudgets() {
+    const { width, height } = this.pixi.screen;
+    this.budgets = budgetsFor(width, height, this.pixi.renderer.resolution);
+    if (!this.screenBudgets) return;
+    const b = this.budgets;
+    this.terrain.setBudget({ bytes: b.terrainBytes, entries: b.terrainEntries });
+    this.patches.setBudget({ bytes: b.patchBytes, entries: b.patchEntries, px: b.patchPx });
+  }
+
+  /** Caps, use, peaks and evictions of each GPU cache, for the Measurements panel. */
+  caches() {
+    const t = this.terrain.stats().gpu;
+    const p = this.patches.stats();
+    return {
+      terrain: {
+        maxBytes: t.maxBytes,
+        maxEntries: t.maxEntries,
+        bytes: Math.round(t.bytes),
+        entries: t.entries,
+        peakBytes: Math.round(t.peakBytes),
+        evictions: t.evictions,
+      },
+      patches: {
+        maxBytes: p.maxBytes,
+        maxEntries: p.maxEntries,
+        bytes: Math.round(p.bytes),
+        entries: p.entries,
+        peakBytes: Math.round(p.peakBytes),
+        evictions: p.evictions,
+        bakeMsAvg: Number(p.bakeMsAvg.toFixed(2)),
+      },
+      atlas: { bytes: this.atlas ? Math.round(this.atlas.textureBytes() + this.groundBytes) : 0 },
+      patchPx: p.px,
+      screen: this.budgets,
+    };
+  }
+
   setPaused(v) {
     this.paused = v;
     const b = $('btn-pause');
@@ -305,6 +356,8 @@ class ObserverApp {
         height: this.pixi.screen.height,
         devicePixelRatio: window.devicePixelRatio,
       },
+      caches: this.caches(),
+      tour: this.tourRows ?? null,
       sampleCitizens: this.village ? this.village.renderer.people.length : 0,
       people: this.population ? this.population.frame.length : 0,
       stats: this.stats(),
@@ -402,11 +455,12 @@ class ObserverApp {
     $('btn-measure')?.addEventListener('click', () => {
       const panel = $('measure');
       panel.hidden = !panel.hidden;
-      if (!panel.hidden) $('measure-json').textContent = JSON.stringify(this.measurement(), null, 1);
+      if (!panel.hidden) this.renderMeasurements();
     });
+    this.pixi.renderer.on('resize', () => this.applyBudgets());
     $('btn-copy')?.addEventListener('click', async () => {
       const text = JSON.stringify(this.measurement(), null, 1);
-      $('measure-json').textContent = text;
+      this.renderMeasurements();
       try {
         await navigator.clipboard.writeText(text);
         $('btn-copy').textContent = 'Copied';
@@ -417,6 +471,94 @@ class ObserverApp {
     setInterval(() => {
       if (this.selected) this.inspector?.render();
     }, 500);
+  }
+
+  /** Point the camera for a tour stop: the crowd's busiest ward (or the village) at a zoom, or the whole world. */
+  tourView(zoom) {
+    this.follow = false;
+    if (zoom === 'home') {
+      Object.assign(this.camera, this.home);
+      return;
+    }
+    const z = zoom === 'tile-3000' ? zoomForTilePx(3000, this.R) : zoom;
+    const target = this.crowd ? this.crowd.worldPosition(this.crowd.busiestId()) : null;
+    if (target) {
+      this.camera.x = target.x;
+      this.camera.y = target.y;
+      this.camera.zoom = z;
+    } else this.goToVillage(z);
+  }
+
+  /**
+   * The measurement tour: TOUR_S seconds in each band with the clock running,
+   * then frame intervals, our own update time, counts and caches per band.
+   */
+  async tour(seconds = TOUR_S) {
+    const rows = [];
+    this.setPaused(false);
+    for (const [band, zoom] of TOUR) {
+      this.tourView(zoom);
+      $('perf-tour').textContent = `Measuring the ${band} band (${seconds} s)…`;
+      await new Promise((r) => setTimeout(r, 1500)); // let streaming settle first
+      this.frameStats = new FrameStats(4000);
+      this.intervalStats = new FrameStats(4000);
+      await new Promise((r) => setTimeout(r, seconds * 1000));
+      const s = this.stats();
+      rows.push({
+        band,
+        zoom: s.zoom,
+        frameMsAvg: s.frameMsAvg,
+        frameMsP95: s.frameMsP95,
+        updateMsAvg: s.updateMsAvg,
+        updateMsP95: s.updateMsP95,
+        visible: s.visible,
+        visibleFull: s.visibleFull,
+        terrainMB: Number((s.gpuBytes / 1e6).toFixed(1)),
+        patchMB: Number((s.patchBytes / 1e6).toFixed(1)),
+        atlasMB: Number((s.atlasBytes / 1e6).toFixed(1)),
+        heapMB: s.jsHeapBytes ? Number((s.jsHeapBytes / 1e6).toFixed(1)) : null,
+      });
+    }
+    $('perf-tour').textContent = '';
+    this.tourRows = rows;
+    $('measure').hidden = false;
+    this.renderMeasurements();
+    return rows;
+  }
+
+  /** The caps table and the full measurement JSON. */
+  renderMeasurements() {
+    const m = this.measurement();
+    const mb = (v) => (v / 1e6).toFixed(1);
+    const c = m.caches;
+    const row = (name, x) =>
+      `<tr><td>${name}</td><td>${mb(x.bytes)} / ${mb(x.maxBytes)}</td><td>${x.entries} / ${x.maxEntries}</td><td>${mb(x.peakBytes)}</td><td>${x.evictions}</td></tr>`;
+    const table = $('measure-caps');
+    if (table) {
+      table.innerHTML = `<tr><th>GPU cache</th><th>MB used / cap</th><th>entries / cap</th><th>peak MB</th><th>evictions</th></tr>
+        ${row('Terrain', c.terrain)}${row(`Ground patches (${c.patchPx} px, bake ${c.patches.bakeMsAvg} ms)`, c.patches)}
+        <tr><td>Art atlas and village ground</td><td>${mb(c.atlas.bytes)}</td><td colspan="3">fixed</td></tr>
+        <tr><td colspan="5">Screen ${c.screen.devicePixels.toLocaleString('en')} device pixels: caps × ${c.screen.factor}</td></tr>`;
+    }
+    const tour = $('measure-tour');
+    if (tour && this.tourRows) {
+      const cols = [
+        'band',
+        'frameMsAvg',
+        'frameMsP95',
+        'updateMsAvg',
+        'updateMsP95',
+        'visible',
+        'terrainMB',
+        'patchMB',
+        'atlasMB',
+        'heapMB',
+      ];
+      tour.innerHTML = `<tr>${cols.map((k) => `<th>${k}</th>`).join('')}</tr>${this.tourRows
+        .map((r) => `<tr>${cols.map((k) => `<td>${r[k] ?? '—'}</td>`).join('')}</tr>`)
+        .join('')}`;
+    }
+    $('measure-json').textContent = JSON.stringify(m, null, 1);
   }
 
   run() {
@@ -631,18 +773,7 @@ function buildApi(app) {
       app.frame(0, false);
     },
     /** Someone out of doors in the middle of the first capital's wards. */
-    crowdBusiest: () => {
-      const c = app.crowd;
-      const plan = c.plans[0];
-      let best = null;
-      for (const i of c.frame.rowsOf(0)) {
-        const s = c.stateOf(i);
-        if (s.inside) continue;
-        const d = Math.abs(Math.hypot(s.x, s.y) - plan.wardRadius / 2);
-        if (!best || d < best.d) best = { d, i };
-      }
-      return c.frame.idOf(best ? best.i : c.frame.rowsOf(0)[0]);
-    },
+    crowdBusiest: () => app.crowd.busiestId(),
     /** How a person is drawn now: 'actor', 'particle' or null. */
     crowdDrawnAs: (id) => app.crowd.drawnAs(id),
     /** Canvas point of the largest dot in view (local band). */
@@ -692,6 +823,16 @@ function buildApi(app) {
       pixiManaged: app.pixi.renderer.texture?.managedTextures?.filter(Boolean).length ?? null,
     }),
     measurement: () => app.measurement(),
+    /** Run the measurement tour (as ?measure=auto does); resolves to its rows. */
+    tour: (seconds) => app.tour(seconds),
+    /** Point the camera as the tour does: a zoom, 'tile-3000' or 'home'. */
+    viewTour: (zoom) => {
+      app.tourView(zoom);
+      app.frame(0, false);
+    },
+    /** The cache caps for this screen (ui/budgets.js) and each cache's use. */
+    budgets: () => app.budgets,
+    caches: () => app.caches(),
     setQuality: (mode) => app.quality.setMode(mode),
     villageInfo: () =>
       app.villageData
@@ -817,6 +958,7 @@ async function main() {
   app.run();
   window.__observer = buildApi(app);
   $('loading').hidden = true;
+  if (AUTO_MEASURE) app.tour();
 }
 
 main().catch((err) => {

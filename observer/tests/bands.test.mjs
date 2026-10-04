@@ -226,18 +226,25 @@ test('ground patches and trees settle within their budgets while zooming into th
         decor: o.stats().decorSprites,
       });
     }
-    return rows;
+    return { rows, budgets: o.budgets() };
   });
+  const { rows, budgets } = r;
+  // The caps come from the screen (ui/budgets.js); at this window's size they are the base caps.
+  assert.equal(budgets.patchBytes, 96e6);
+  assert.equal(budgets.patchEntries, 320);
   let last = Infinity;
-  for (const row of r) {
+  for (const row of rows) {
     assert.ok(row.complete, `zoom ${row.zoom} did not settle`);
     assert.ok(row.size <= last, `patch size grew to ${row.size} at zoom ${row.zoom}`);
     last = row.size;
-    assert.ok(row.entries <= 320 && row.bytes <= 96e6, `patch cache over budget: ${JSON.stringify(row)}`);
+    assert.ok(
+      row.entries <= budgets.patchEntries && row.bytes <= budgets.patchBytes,
+      `patch cache over budget: ${JSON.stringify(row)}`,
+    );
   }
-  assert.ok(r[0].size >= 1600, `first patches are ${r[0].size} m`);
-  assert.ok(r.at(-1).size <= 50, `last patches are ${r.at(-1).size} m`);
-  assert.ok(r.at(-1).decor > 0, 'bushes and trees appear up close');
+  assert.ok(rows[0].size >= 1600, `first patches are ${rows[0].size} m`);
+  assert.ok(rows.at(-1).size <= 50, `last patches are ${rows.at(-1).size} m`);
+  assert.ok(rows.at(-1).decor > 0, 'bushes and trees appear up close');
 });
 
 test('camera, zoom and follow never change presentation positions; pause freezes them', async () => {

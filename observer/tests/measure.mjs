@@ -1,5 +1,6 @@
-// Browser rendering measurements at 400, 2,000 and 5,000 SAMPLE citizens (or --citizens=a,b,c).
-// Usage: node tests/measure.mjs <outdir> [--quality=high] [--citizens=1000,5000]
+// Browser rendering measurements at 400, 2,000 and 5,000 SAMPLE citizens (or --citizens=a,b,c),
+// or with --people=a,b,c at that many synthetic people (S7 crowd), centred on a busy ward.
+// Usage: node tests/measure.mjs <outdir> [--quality=high] [--citizens=1000,5000] [--people=1000,100000]
 //
 // In this container Chromium renders with software GL, so frame times are NOT
 // representative of a real GPU. The JS update time (`jsUpdateMs`, our own frame()
@@ -11,10 +12,12 @@ import { serve } from './serve.mjs';
 
 const out = process.argv[2] ?? 'captures';
 const quality = (process.argv.find((a) => a.startsWith('--quality=')) ?? '--quality=high').split('=')[1];
-const citizens = (process.argv.find((a) => a.startsWith('--citizens=')) ?? '--citizens=400,2000,5000')
+const peopleArg = process.argv.find((a) => a.startsWith('--people='));
+const citizens = (peopleArg ?? process.argv.find((a) => a.startsWith('--citizens=')) ?? '--citizens=400,2000,5000')
   .split('=')[1]
   .split(',')
   .map(Number);
+const query = (n) => (peopleArg ? `people=${n}&citizens=0` : `citizens=${n}`);
 await mkdir(out, { recursive: true });
 const server = await serve(0);
 const browser = await chromium.launch({
@@ -30,7 +33,7 @@ const atlases = [];
 for (const n of citizens) {
   const page = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
   const t0 = Date.now();
-  await page.goto(`http://127.0.0.1:${server.address().port}/index.html?citizens=${n}&quality=${quality}`);
+  await page.goto(`http://127.0.0.1:${server.address().port}/index.html?${query(n)}&quality=${quality}`);
   await page.waitForFunction(() => window.__observer?.ready || window.__observerError, null, { timeout: 600000 });
   const loadMs = Date.now() - t0;
   atlases.push({ citizens: n, ...(await page.evaluate(() => window.__observer.atlasStats())) });
@@ -41,12 +44,16 @@ for (const n of citizens) {
     ['regional', 'tile-3000'],
     ['atlas', 'home'],
   ]) {
-    await page.evaluate((z) => {
-      const o = window.__observer;
-      o.setPaused(false);
-      if (z === 'home') o.home();
-      else o.viewVillage(z === 'tile-3000' ? o.zoomForTilePx(3000) : z);
-    }, zoom);
+    await page.evaluate(
+      ([z, people]) => {
+        const o = window.__observer;
+        o.setPaused(false);
+        if (people) o.viewTour(z);
+        else if (z === 'home') o.home();
+        else o.viewVillage(z === 'tile-3000' ? o.zoomForTilePx(3000) : z);
+      },
+      [zoom, !!peopleArg],
+    );
     await page.evaluate(() => window.__observer.settle());
     await page.waitForTimeout(6000); // let the ticker run in real time
     const m = await page.evaluate(() => window.__observer.measurement());
@@ -66,7 +73,7 @@ for (const n of citizens) {
         jsUpdateP95: Number(times[Math.floor(times.length * 0.95)].toFixed(2)),
       };
     });
-    rows.push({ citizens: n, view, loadMs, ...m.stats, ...js });
+    rows.push({ [peopleArg ? 'people' : 'citizens']: n, view, loadMs, ...m.stats, ...js });
     console.log(
       n,
       view,
@@ -80,7 +87,7 @@ for (const n of citizens) {
 await browser.close();
 server.close();
 const cols = [
-  'citizens',
+  peopleArg ? 'people' : 'citizens',
   'view',
   'frameMsAvg',
   'frameMsP95',

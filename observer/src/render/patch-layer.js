@@ -18,7 +18,7 @@ import { hash2 } from '../sim/rng.js';
 
 /** Patch sides in metres, coarse to fine. */
 export const PATCH_SIZES = Array.from({ length: 10 }, (_, i) => 3200 / 2 ** i);
-/** Texels per patch side (plus one texel of bleed on each side). */
+/** Texels per patch side (plus one texel of bleed on each side); very large screens use 192 (S7 budgets). */
 export const PATCH_PX = 256;
 /** A texel is never more than this many screen pixels across. */
 const MAX_TEXEL_PX = 1.9;
@@ -80,8 +80,8 @@ const GRAIN_PERIODS = [64, 12];
 const pxPerMetre = (zoom) => K * Math.SQRT2 * zoom;
 
 /** Index into PATCH_SIZES for a zoom: the coarsest patch whose texels stay small enough on screen. */
-export function patchLevelFor(zoom) {
-  const limit = (MAX_TEXEL_PX * PATCH_PX) / pxPerMetre(zoom);
+export function patchLevelFor(zoom, px = PATCH_PX) {
+  const limit = (MAX_TEXEL_PX * px) / pxPerMetre(zoom);
   const i = PATCH_SIZES.findIndex((s) => s <= limit);
   return i < 0 ? PATCH_SIZES.length - 1 : i;
 }
@@ -92,8 +92,18 @@ export class PatchLayer {
    * interior(): the current interior colour field (world/interior.js makeInterior);
    * minZoom: patches are drawn from this zoom on.
    */
-  constructor({ PIXI, terrain, interior, minZoom, gpuBytes = 96e6, maxEntries = 320, bakesPerFrame = 2 }) {
+  constructor({
+    PIXI,
+    terrain,
+    interior,
+    minZoom,
+    gpuBytes = 96e6,
+    maxEntries = 320,
+    bakesPerFrame = 2,
+    px = PATCH_PX,
+  }) {
     this.PIXI = PIXI;
+    this.px = px;
     this.terrain = terrain;
     this.interior = interior;
     this.minZoom = minZoom;
@@ -179,7 +189,7 @@ export class PatchLayer {
       this.level = null;
       return;
     }
-    const level = patchLevelFor(zoom);
+    const level = patchLevelFor(zoom, this.px);
     this.level = level;
     const wanted = this.visiblePatches(view, level);
     this.visible = wanted.length;
@@ -222,8 +232,8 @@ export class PatchLayer {
     const t0 = performance.now();
     const { PIXI } = this;
     const size = PATCH_SIZES[level];
-    const m = size / PATCH_PX; // metres per texel
-    const W = PATCH_PX + 2;
+    const m = size / this.px; // metres per texel
+    const W = this.px + 2;
     // Texel 0 lies one texel outside the patch (the bleed); everything is drawn relative to it.
     const ox = i * size - m;
     const oy = j * size - m;
@@ -343,9 +353,25 @@ export class PatchLayer {
     for (const key of [...this.cache.map.keys()]) if (!this.shown?.has(key)) this.cache.delete(key);
   }
 
+  /** New caps (bytes, entries) and patch size in texels; a new size drops the patches baked at the old one. */
+  setBudget({ bytes, entries, px = this.px }) {
+    if (px !== this.px) {
+      this.cache.clear();
+      this.px = px;
+    }
+    this.cache.maxBytes = bytes;
+    this.cache.maxEntries = entries;
+    this.cache.trim();
+  }
+
   stats() {
     const c = this.cache.stats();
     return {
+      px: this.px,
+      maxBytes: c.maxBytes,
+      maxEntries: c.maxEntries,
+      peakEntries: c.peakEntries,
+      evictions: c.evictions,
       level: this.level,
       size: this.level === null ? null : PATCH_SIZES[this.level],
       visible: this.visible,

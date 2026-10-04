@@ -328,7 +328,7 @@ export class CrowdLayer {
       const o = site.offset;
       site.badge.visible = zoom < 0.3;
       site.badge.scale.set(1 / zoom);
-      site.badge.position.set(o.x - 120 / zoom, o.y - 20 / zoom);
+      site.badge.position.set(o.x - 120 / zoom, o.y - 52 / zoom);
       site.badge.alpha = 1 - smooth(0.15, 0.3, zoom);
     }
     st.visible = visible.length;
@@ -591,6 +591,19 @@ export class CrowdLayer {
     if (!v) return null;
     const p = project(v.x, v.y, 0.9);
     return toCanvas(p.x + v.site.offset.x, p.y + v.site.offset.y);
+  }
+
+  /** Someone out of doors halfway out through the first capital's wards (a busy place to look). */
+  busiestId() {
+    const plan = this.plans[0];
+    let best = null;
+    for (const i of this.frame.rowsOf(0)) {
+      const s = this.stateOf(i);
+      if (s.inside) continue;
+      const d = Math.abs(Math.hypot(s.x, s.y) - plan.wardRadius / 2);
+      if (!best || d < best.d) best = { d, i };
+    }
+    return this.frame.idOf(best ? best.i : this.frame.rowsOf(0)[0]);
   }
 
   has(id) {

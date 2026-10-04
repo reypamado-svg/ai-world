@@ -528,6 +528,13 @@ export class TerrainLayer {
     for (const key of [...this.textures.map.keys()]) if (!this.shown?.has(key)) this.textures.delete(key);
   }
 
+  /** New GPU caps for the terrain textures (S7 budgets); evicts down to them. */
+  setBudget({ bytes, entries }) {
+    this.textures.maxBytes = bytes;
+    this.textures.maxEntries = entries;
+    this.textures.trim(new Set(this.visibleKeys));
+  }
+
   stats() {
     return {
       level: this.level,

@@ -311,7 +311,7 @@ button.on {
   position: fixed;
   left: 270px;
   bottom: 44px;
-  width: 420px;
+  width: min(600px, calc(100vw - 290px));
   max-height: 60vh;
   overflow: auto;
   z-index: 7;
@@ -329,6 +329,18 @@ button.on {
 #measure p {
   color: var(--muted);
   margin: 6px 0;
+}
+#measure table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6px 0 8px;
+  font-size: 11px;
+}
+#measure th,
+#measure td {
+  text-align: left;
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--line);
 }
 #measure pre {
   font-size: 11px;
