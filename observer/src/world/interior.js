@@ -73,6 +73,8 @@ const C = {
   shrub: rgb('#7c7a48'),
   marsh: rgb('#5e7b55'),
   pond: rgb('#4a8199'),
+  street: rgb('#9a8460'),
+  yard: rgb('#86884e'),
 };
 
 // Land cover (generator 3): seven shares per tile, in the engine's class order.
@@ -306,6 +308,29 @@ function fieldColour(f, x, y, under) {
 }
 
 /**
+ * A ward of 64 m blocks (S7 settlement plans): packed-earth streets 8 m wide
+ * between the blocks, trodden yards inside them. `blocks` holds `i * 4096 + j`
+ * for each block centred at (i, j) * 64 m from the ward's origin.
+ */
+function wardColour(f, x, y, under) {
+  const B = 64;
+  const lx = x - f.x;
+  const ly = y - f.y;
+  if (Math.hypot(lx, ly) > f.r) return null;
+  const has = (i, j) => f.blocks.has(i * 4096 + j);
+  const i = Math.round(lx / B);
+  const j = Math.round(ly / B);
+  const ex = B / 2 - Math.abs(lx - i * B); // distance to the block's edge, across x
+  const ey = B / 2 - Math.abs(ly - j * B);
+  const ni = i + Math.sign(lx - i * B);
+  const nj = j + Math.sign(ly - j * B);
+  const street = (ex < 4 && (has(i, j) || has(ni, j))) || (ey < 4 && (has(i, j) || has(i, nj)));
+  if (street) return mix(under, C.street, 0.85);
+  if (has(i, j)) return mix(under, C.yard, 0.45);
+  return null;
+}
+
+/**
  * Build a sampler over the plane.
  *   tileAt(q, r) -> { terrain, elevation, moisture, temperature, timber, stone } or null (off the map: ocean);
  *   lakes: Set of "q,r" water tiles that are lakes; features: [{ kind: 'fields', x, y, r0, r1 }].
@@ -408,9 +433,9 @@ export function makeInterior({ R, tileAt, lakes = new Set(), features = [] }) {
       colour = mix(colour, water ? C.shallows : C.beach, k * 0.85);
     }
     for (const f of features) {
-      if (f.kind !== 'fields') continue;
-      const field = fieldColour(f, x, y, colour);
-      if (field) colour = field;
+      const painted =
+        f.kind === 'fields' ? fieldColour(f, x, y, colour) : f.kind === 'ward' ? wardColour(f, x, y, colour) : null;
+      if (painted) colour = painted;
     }
     return colour;
   }

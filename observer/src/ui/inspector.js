@@ -34,13 +34,33 @@ export class Inspector {
 
   show(id) {
     this.selected = id;
+    this.list = null;
     this.render();
+  }
+
+  /** A list of people to choose from (a crowd dot's cell). */
+  showList(ids, title) {
+    this.selected = null;
+    this.list = { ids, title };
+    const shown = ids.slice(0, 60);
+    this.el.hidden = false;
+    this.el.innerHTML = `
+      <header><div><h2>${title}</h2><span class="tag">choose a person</span></div>
+      <button class="x" data-act="close" aria-label="Close">×</button></header>
+      <ul class="people">${shown
+        .map((id) => {
+          const o = this.hooks.lookup(id);
+          return `<li><a href="#" data-person="${id}">${o?.label ?? id}</a> <span class="muted">${o?.person.record.role ?? ''}, ${o?.person.record.age ?? ''}</span></li>`;
+        })
+        .join(
+          '',
+        )}</ul>${ids.length > shown.length ? `<p class="muted">and ${ids.length - shown.length} more</p>` : ''}`;
   }
 
   render() {
     const el = this.el;
     if (!this.selected) {
-      el.hidden = true;
+      if (!this.list) el.hidden = true;
       return;
     }
     const o = this.hooks.lookup(this.selected);
@@ -65,14 +85,14 @@ export class Inspector {
           .join(', ') || 'Not recorded';
       const following = this.hooks.isFollowing();
       el.innerHTML = `
-        <header><div><h2>${rec.label}</h2><span class="tag">observer-assigned name · sample</span></div>
+        <header><div><h2>${rec.label}</h2><span class="tag">observer-assigned name · ${rec.provenance ?? 'sample'}</span></div>
         <button class="x" data-act="close" aria-label="Close">×</button></header>
         <dl>
           <dt>ID</dt><dd class="mono">${o.id}</dd>
-          <dt>Civilization</dt><dd><span class="swatch" style="background:${CIV_COLORS[civ]}"></span>${civilizationLabel(CIV_NAMES[civ])} <span class="tag">sample</span></dd>
+          <dt>Civilization</dt><dd><span class="swatch" style="background:${CIV_COLORS[civ]}"></span>${civilizationLabel(CIV_NAMES[civ])} <span class="tag">${rec.provenance ?? 'sample'}</span></dd>
           <dt>Age</dt><dd>${rec.age} (${rec.sex})</dd>
           <dt>Household</dt><dd class="muted">${rec.household}</dd>
-          <dt>Family</dt><dd class="muted">Not recorded in this sample</dd>
+          <dt>Family</dt><dd class="muted">Not recorded in this ${rec.provenance ?? 'sample'}</dd>
           <dt>Occupation</dt><dd>${rec.role}</dd>
           <dt>Skills</dt><dd>${skills}</dd>
           <dt>Health</dt><dd>${rec.health}</dd>

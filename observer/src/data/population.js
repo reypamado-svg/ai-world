@@ -125,6 +125,7 @@ export class PeopleFrame {
       household: `House ${this.house[i] + 1}`,
       skills: {},
       events: ['Synthetic population (S7): a stand-in for the recorded run'],
+      provenance: 'synthetic',
     };
   }
 

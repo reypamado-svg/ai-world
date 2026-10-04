@@ -21,6 +21,7 @@ import { TerrainLayer } from './render/terrain-layer.js';
 import { PatchLayer } from './render/patch-layer.js';
 import { DecorLayer } from './render/decor.js';
 import { VillageLayer, bandOf } from './render/village-layer.js';
+import { CrowdLayer } from './render/crowd-layer.js';
 import { CapitalMarkers, SiteMarkers } from './render/markers.js';
 import { Atlas } from './render/art/atlas.js';
 import { CIV_COLORS } from './render/art/registry.js';
@@ -86,7 +87,13 @@ class ObserverApp {
       const rings = this.population
         ? this.population.plans.map((plan, k) => ({ ...this.population.origins[k], ...plan.fieldRing }))
         : [v.fieldRing];
-      this.terrain.setFeatures(rings.map((ring) => ({ kind: 'fields', ...ring })));
+      const wards = (this.population?.plans ?? []).map((plan, k) => ({
+        kind: 'ward',
+        ...this.population.origins[k],
+        r: plan.wardRadius + 8,
+        blocks: new Set(plan.blocks.map(([i, j]) => i * 4096 + j)),
+      }));
+      this.terrain.setFeatures([...rings.map((ring) => ({ kind: 'fields', ...ring })), ...wards]);
       this.decor = new DecorLayer({
         PIXI,
         atlas: extras.atlas,
@@ -103,6 +110,10 @@ class ObserverApp {
         ground: extras.ground.container,
       });
       this.world.addChild(this.village.container);
+      if (this.population) {
+        this.crowd = new CrowdLayer({ PIXI, atlas: extras.atlas, population: this.population });
+        this.world.addChild(this.crowd.container);
+      }
       this.atlas = extras.atlas;
       this.groundBytes = extras.ground.bytes;
     }
@@ -170,7 +181,7 @@ class ObserverApp {
     if (this.village) {
       const r = this.village.renderer;
       this.inspector = new Inspector($('inspector'), {
-        lookup: (id) => r.byId.get(id),
+        lookup: (id) => r.byId.get(id) ?? this.crowd?.lookup(id) ?? null,
         occupancy: () => r.occupancy,
         isFollowing: () => this.follow,
         onClose: () => this.select(null),
@@ -215,7 +226,7 @@ class ObserverApp {
     if (advance) this.t += (deltaMS / 1000) * this.speed;
     if (this.village && this.follow && this.selected) {
       this.village.renderer.update(this.animT);
-      const target = this.village.worldPosition(this.selected);
+      const target = this.village.worldPosition(this.selected) ?? this.crowd?.worldPosition(this.selected);
       if (target) this.camera.followTowards(target, deltaMS);
     }
     this.camera.clamp();
@@ -234,6 +245,10 @@ class ObserverApp {
         showFootprints: this.showFootprints,
         crowdBudget: this.settings?.crowdBudget ?? Infinity,
       });
+      this.crowd?.update(this.animT, margin, this.camera.zoom, {
+        selected: this.selected,
+        crowdBudget: this.crowdBudgetOverride ?? this.settings?.crowdBudget ?? Infinity,
+      });
     }
     this.markers?.update(this.camera.zoom);
     this.sites?.update(this.camera.zoom);
@@ -244,7 +259,15 @@ class ObserverApp {
   stats() {
     const t = this.terrain.stats();
     const p = this.patches.stats();
-    const v = this.village?.counts() ?? {};
+    const v = { ...(this.village?.counts() ?? {}) };
+    if (this.crowd) {
+      // R9 counts add the crowd to the SAMPLE village's people.
+      const c = this.crowd.counts();
+      for (const k of ['worldPopulation', 'indoor', 'outdoor', 'visible', 'visibleFull', 'visibleSimplified'])
+        v[k] = (v[k] ?? 0) + c[k];
+      v.resident = (v.resident ?? 0) + c.worldPopulation;
+      v.crowdDots = c.dots;
+    }
     const iv = this.intervalStats.summary();
     return {
       fps: Math.round(this.pixi.ticker.FPS),
@@ -283,15 +306,28 @@ class ObserverApp {
         devicePixelRatio: window.devicePixelRatio,
       },
       sampleCitizens: this.village ? this.village.renderer.people.length : 0,
+      people: this.population ? this.population.frame.length : 0,
       stats: this.stats(),
       note: 'Browser rendering only. Simulation throughput is measured separately.',
     };
   }
 
+  /** The person or building under a canvas point; the crowd is drawn on top, so it is asked first. */
   pickAt(cx, cy) {
     if (!this.village) return null;
     const w = this.camera.screenToWorld(this.world, cx, cy);
-    return this.village.pick(w.x, w.y, this.camera.zoom);
+    return this.crowd?.pick(w.x, w.y, this.camera.zoom) ?? this.village.pick(w.x, w.y, this.camera.zoom);
+  }
+
+  /** Select what a pick found: one person or building, or a list of people (a local-band dot). */
+  applyPick(hit) {
+    if (hit?.list) {
+      this.selected = null;
+      this.follow = false;
+      this.inspector?.showList(hit.list, `${hit.count} people here (${hit.cell} m cell)`);
+      return;
+    }
+    this.select(hit ? hit.hit.id : null);
   }
 
   bindInput() {
@@ -316,8 +352,9 @@ class ObserverApp {
       if (drag && drag.moved <= 4) {
         const rect = canvas.getBoundingClientRect();
         const hit = this.pickAt(e.clientX - rect.left, e.clientY - rect.top);
-        this.select(hit ? hit.hit.id : null);
-        $('pick-note').textContent = hit && hit.count > 1 ? `${hit.count} here · click again to cycle` : '';
+        this.applyPick(hit);
+        $('pick-note').textContent =
+          hit && !hit.list && hit.count > 1 ? `${hit.count} here · click again to cycle` : '';
       }
       drag = null;
     });
@@ -560,10 +597,73 @@ function buildApi(app) {
     sites: () => app.source.sites ?? [],
     pickAt: (cx, cy) => {
       const hit = app.pickAt(cx, cy);
-      app.select(hit ? hit.hit.id : null);
+      app.applyPick(hit);
       app.frame(0, false);
-      return hit ? hit.hit.id : null;
+      return hit && !hit.list ? hit.hit.id : null;
     },
+    /** A local-band click: the ids listed in the inspector, or null. */
+    pickList: (cx, cy) => {
+      const hit = app.pickAt(cx, cy);
+      app.applyPick(hit);
+      return hit?.list ?? null;
+    },
+    // ---- the crowd (?people=N)
+    crowdCounts: () => ({ ...app.crowd.counts(), ...app.crowd.stat }),
+    crowdBudget: () => app.crowdBudgetOverride ?? app.settings?.crowdBudget ?? Infinity,
+    /** Override the crowd's full-sprite budget (null: the quality's). */
+    setCrowdBudget: (n) => {
+      app.crowdBudgetOverride = n;
+      app.frame(0, false);
+    },
+    /** Where a person is now: world ground-plane metres, indoors or not, walking or not. */
+    crowdState: (id) => {
+      const i = app.crowd.frame.indexOf(id);
+      const s = app.crowd.stateOf(i);
+      const o = app.population.origins[app.crowd.frame.settlement[i]];
+      return { x: s.x + o.x, y: s.y + o.y, inside: s.inside, moving: s.moving, anim: s.anim, activity: s.activity };
+    },
+    /** Centre the camera on a person, optionally `offsetPx` screen pixels left of them. */
+    viewPerson: (id, zoom, offsetPx = 0) => {
+      const p = app.crowd.worldPosition(id);
+      app.camera.zoom = zoom;
+      app.camera.x = p.x - offsetPx / zoom;
+      app.camera.y = p.y;
+      app.frame(0, false);
+    },
+    /** Someone out of doors in the middle of the first capital's wards. */
+    crowdBusiest: () => {
+      const c = app.crowd;
+      const plan = c.plans[0];
+      let best = null;
+      for (const i of c.frame.rowsOf(0)) {
+        const s = c.stateOf(i);
+        if (s.inside) continue;
+        const d = Math.abs(Math.hypot(s.x, s.y) - plan.wardRadius / 2);
+        if (!best || d < best.d) best = { d, i };
+      }
+      return c.frame.idOf(best ? best.i : c.frame.rowsOf(0)[0]);
+    },
+    /** How a person is drawn now: 'actor', 'particle' or null. */
+    crowdDrawnAs: (id) => app.crowd.drawnAs(id),
+    /** Canvas point of the largest dot in view (local band). */
+    crowdDotPoint: () => {
+      let best = null;
+      for (const site of app.crowd.sites) {
+        if (!site.root.visible || !site.dots.visible) continue;
+        for (const q of site.dots.particleChildren) {
+          const p = toCanvas(q.x + site.offset.x, q.y + site.offset.y);
+          const { width, height } = app.pixi.screen;
+          if (p.x < 0 || p.y < 0 || p.x > width || p.y > height) continue;
+          if (!best || q.n > best.n) best = { n: q.n, ...p };
+        }
+      }
+      return best;
+    },
+    personPinPoint: (id) => {
+      const p = app.crowd.worldPosition(id);
+      return toCanvas(p.x, p.y);
+    },
+    canvasCentre: () => ({ x: app.pixi.screen.width / 2, y: app.pixi.screen.height / 2 }),
     select: (id) => {
       app.select(id);
       app.frame(0, false);
@@ -574,6 +674,7 @@ function buildApi(app) {
     selection: () => (app.selected ? { id: app.selected, following: app.follow } : null),
     /** Canvas point over a drawn person's body (for click tests), or null. */
     personCanvasPoint: (id) => {
+      if (app.crowd?.has(id)) return app.crowd.drawnAs(id) ? app.crowd.canvasPoint(id, toCanvas) : null;
       const o = v.renderer.byId.get(id);
       if (!o || o.hidden || !o.sprite.visible) return null;
       const off = v.offset;
