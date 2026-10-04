@@ -22,6 +22,7 @@ import { PatchLayer } from './render/patch-layer.js';
 import { DecorLayer } from './render/decor.js';
 import { VillageLayer, bandOf } from './render/village-layer.js';
 import { CrowdLayer } from './render/crowd-layer.js';
+import { RunOverlays } from './render/run-overlays.js';
 import { CapitalMarkers, SiteMarkers } from './render/markers.js';
 import { Atlas } from './render/art/atlas.js';
 import { CIV_COLORS } from './render/art/registry.js';
@@ -36,12 +37,17 @@ import { scaleCitizens } from './data/sample/citizens.js';
 import { syntheticPopulation } from './data/synthetic/people.js';
 import { CrowdLayout, plansFor } from './world/settlement-plan.js';
 import { VILLAGE_RADIUS_M } from './data/sample/village.js';
+import { RunSource } from './data/run-source.js';
+import { APPEARANCE_COUNT } from './render/art/paint/people.js';
 
 const params = new URLSearchParams(location.search);
 const SYNTHETIC = params.get('source') === 'synthetic';
 const DEBUG = params.has('debug') || SYNTHETIC;
 // ?people=N: N synthetic people (up to 200,000) shared among the capitals (S7).
 const PEOPLE = Math.max(0, Number(params.get('people') ?? 0) || 0);
+// ?run=NAME (or a path with a slash): a recorded run's export, from data/runs/NAME (O2).
+const RUN = params.get('run');
+const RUN_BASE = RUN && (RUN.includes('/') ? RUN : `data/runs/${RUN}`);
 // ?measure=auto: after loading, tour each band for TOUR_S seconds and show a copyable table (S7).
 const AUTO_MEASURE = params.get('measure') === 'auto';
 const TOUR_S = Math.max(1, Number(params.get('tourSeconds') ?? 10) || 10);
@@ -60,6 +66,14 @@ function setStatus(text) {
   LOAD_PHASES.push({ status: text, atMs: Math.round(performance.now()) });
   const el = $('loading-status');
   if (el) el.textContent = text;
+}
+
+/** A recorded day's people, laid out in wards around each settlement. */
+function populationOf(loaded, R) {
+  const { frame } = loaded;
+  const plans = plansFor(frame, { coreRadius: 32 });
+  const origins = frame.settlements.map((s) => hexCentre(s.q, s.r, R));
+  return { frame, plans, layout: new CrowdLayout(frame, plans), origins, day: loaded.day, record: loaded.record };
 }
 
 /** Smallest zoom at which the visible chunk count stays within budget. */
@@ -97,43 +111,31 @@ class ObserverApp {
     this.screenBudgets = source instanceof TerrainSource;
     this.applyBudgets();
     this.villageData = extras.village ?? null;
-    this.population = extras.population ?? null;
-    if (extras.village) {
+    this.population = null;
+    this.atlas = extras.atlas ?? null;
+    this.groundBytes = extras.ground?.bytes ?? 0;
+    if (extras.village || extras.population) {
       const v = extras.village;
-      // Field rings: the SAMPLE village's, or with a population one beyond each capital's wards.
-      const rings = this.population
-        ? this.population.plans.map((plan, k) => ({ ...this.population.origins[k], ...plan.fieldRing }))
-        : [v.fieldRing];
-      const wards = (this.population?.plans ?? []).map((plan, k) => ({
-        kind: 'ward',
-        ...this.population.origins[k],
-        r: plan.wardRadius + 8,
-        blocks: new Set(plan.blocks.map(([i, j]) => i * 4096 + j)),
-      }));
-      this.terrain.setFeatures([...rings.map((ring) => ({ kind: 'fields', ...ring })), ...wards]);
-      this.decor = new DecorLayer({
-        PIXI,
-        atlas: extras.atlas,
-        terrain: this.terrain,
-        // Villages, wards and their field rings stay clear of trees.
-        clear: rings.map((ring) => ({ x: ring.x, y: ring.y, r: ring.r1 ?? 64 })),
-      });
+      this.decor = new DecorLayer({ PIXI, atlas: extras.atlas, terrain: this.terrain, clear: [] });
       this.world.addChild(this.decor.container);
-      this.village = new VillageLayer({
-        PIXI,
-        atlas: extras.atlas,
-        assetInfo: extras.assetInfo,
-        village: v,
-        ground: extras.ground.container,
-      });
-      this.world.addChild(this.village.container);
-      if (this.population) {
-        this.crowd = new CrowdLayer({ PIXI, atlas: extras.atlas, population: this.population });
-        this.world.addChild(this.crowd.container);
+      if (v) {
+        this.village = new VillageLayer({
+          PIXI,
+          atlas: extras.atlas,
+          assetInfo: extras.assetInfo,
+          village: v,
+          ground: extras.ground.container,
+        });
+        this.world.addChild(this.village.container);
       }
-      this.atlas = extras.atlas;
-      this.groundBytes = extras.ground.bytes;
+      // The crowd (synthetic or recorded people) draws above the SAMPLE village.
+      this.crowdHost = new PIXI.Container();
+      this.world.addChild(this.crowdHost);
+      if (extras.population) this.setPopulation(extras.population);
+      else this._applyGround();
     }
+    this.runOverlays = extras.run ? new RunOverlays(PIXI, this.R) : null;
+    if (this.runOverlays) this.world.addChild(this.runOverlays.container);
     this.markers = extras.day0 ? new CapitalMarkers(PIXI, extras.day0, this.R) : null;
     if (this.markers) this.world.addChild(this.markers.container);
     // Sites: labels from where tiles are about 600 px across.
@@ -197,11 +199,11 @@ class ObserverApp {
         this.minimap.addMarker(project(c.x, c.y), CIV_COLORS[i % CIV_COLORS.length]);
       });
     }
-    if (this.village) {
-      const r = this.village.renderer;
+    if (this.village || this.crowdHost) {
+      const r = this.village?.renderer;
       this.inspector = new Inspector($('inspector'), {
-        lookup: (id) => r.byId.get(id) ?? this.crowd?.lookup(id) ?? null,
-        occupancy: () => r.occupancy,
+        lookup: (id) => r?.byId.get(id) ?? this.crowd?.lookup(id) ?? null,
+        occupancy: () => r?.occupancy ?? new Map(),
         isFollowing: () => this.follow,
         onClose: () => this.select(null),
         onFollow: () => {
@@ -211,6 +213,93 @@ class ObserverApp {
         onSelect: (id) => this.select(id),
       });
     }
+  }
+
+  /**
+   * Show a population (synthetic, or a recorded day): its crowd, and the wards and field
+   * rings its settlement plans lay out, painted into the ground. Replaces any before it;
+   * ground already baked is dropped so the new wards show.
+   */
+  setPopulation(population) {
+    if (this.crowd) {
+      this.crowdHost.removeChild(this.crowd.container);
+      this.crowd.container.destroy({ children: true });
+      this.crowd = null;
+    }
+    this.population = population;
+    if (population) {
+      this.crowd = new CrowdLayer({ PIXI, atlas: this.atlas, population });
+      this.crowdHost.addChild(this.crowd.container);
+    }
+    this._applyGround();
+  }
+
+  /** Field rings, wards and the trees kept off them, from the village and the population. */
+  _applyGround() {
+    const pop = this.population;
+    const v = this.villageData;
+    const rings = pop ? pop.plans.map((plan, k) => ({ ...pop.origins[k], ...plan.fieldRing })) : v ? [v.fieldRing] : [];
+    const wards = (pop?.plans ?? []).map((plan, k) => ({
+      kind: 'ward',
+      ...pop.origins[k],
+      r: plan.wardRadius + 8,
+      blocks: new Set(plan.blocks.map(([i, j]) => i * 4096 + j)),
+    }));
+    const before = this.groundKey;
+    this.groundKey = JSON.stringify(rings.map((r) => [r.x, r.y, r.r0, r.r1]).concat(wards.map((w) => w.blocks.size)));
+    this.terrain.setFeatures([...rings.map((ring) => ({ kind: 'fields', ...ring })), ...wards]);
+    if (this.decor) this.decor.clear = rings.map((ring) => ({ x: ring.x, y: ring.y, r: ring.r1 ?? 64 }));
+    if (before !== undefined && before !== this.groundKey) {
+      this.patches.cache.clear();
+      this.terrain.textures.clear();
+      this.decor?.reset?.();
+    }
+  }
+
+  /** Recorded-run mode: its chips, its day's overlays, and the day stepper. */
+  showRun(run, population) {
+    this.runSource = run;
+    $('source-chip').textContent = 'RECORDED RUN';
+    $('source-chip').title = `${run.label}: settlements, houses, people and borders as the engine recorded them.`;
+    $('sample-chip').textContent = 'LAYOUT AND MOVEMENT: VISUAL APPROXIMATION';
+    $('sample-chip').title =
+      'Who lives where, their houses and duties are recorded; where in a settlement they stand and walk is presentation.';
+    $('live-chip').textContent = 'Names: observer-assigned';
+    $('day-group').hidden = false;
+    this.showDay(population);
+    const step = async (dir) => {
+      const days = run.days;
+      const at = days.indexOf(this.population.day);
+      const next = days[Math.max(0, Math.min(days.length - 1, at + dir))];
+      if (next !== this.population.day) await this.loadDay(next);
+    };
+    $('btn-day-prev').addEventListener('click', () => step(-1));
+    $('btn-day-next').addEventListener('click', () => step(1));
+  }
+
+  /** Load another exported day; the camera stays where it is. */
+  async loadDay(day) {
+    const loaded = await this.runSource.day(this.runSource.nearestDay(day));
+    this.showDay(populationOf(loaded, this.R));
+    const url = new URL(location.href);
+    url.searchParams.set('day', String(loaded.day));
+    history.replaceState(null, '', url);
+    return loaded.day;
+  }
+
+  showDay(population) {
+    // Someone no longer at a settlement that day (on the road, or dead) cannot stay selected.
+    if (this.selected && population.frame.indexOf(this.selected) < 0) this.select(null);
+    this.setPopulation(population);
+    this.runOverlays.setDay({
+      ...population.record,
+      settlements: population.record.settlements.map((s, k) => ({
+        ...s,
+        label: population.frame.settlements[k].label,
+      })),
+    });
+    $('day-label').textContent = `Engine day ${population.day}`;
+    this.inspector?.render();
   }
 
   /** Cache caps for the current screen size; recomputed on resize. */
@@ -263,10 +352,11 @@ class ObserverApp {
     this.inspector?.show(id);
   }
 
+  /** The SAMPLE village, or in a recorded run the first capital. */
   goToVillage(zoom = 1) {
-    const v = this.villageData;
-    if (!v) return;
-    const p = project(v.origin.x, v.origin.y);
+    const origin = this.villageData?.origin ?? this.population?.origins[0];
+    if (!origin) return;
+    const p = project(origin.x, origin.y);
     this.camera.x = p.x;
     this.camera.y = p.y;
     this.camera.zoom = zoom;
@@ -287,9 +377,9 @@ class ObserverApp {
       lock.touched = true;
       Object.assign(this.camera, { x: lock.x, y: lock.y, zoom: lock.zoom });
     }
-    if (!lock && this.village && this.follow && this.selected) {
-      this.village.renderer.update(this.animT);
-      const target = this.village.worldPosition(this.selected) ?? this.crowd?.worldPosition(this.selected);
+    if (!lock && this.follow && this.selected) {
+      this.village?.renderer.update(this.animT);
+      const target = this.village?.worldPosition(this.selected) ?? this.crowd?.worldPosition(this.selected);
       if (target) this.camera.followTowards(target, deltaMS);
     }
     this.camera.clamp();
@@ -301,18 +391,17 @@ class ObserverApp {
     this.patches.bakesPerFrame = this.settings?.patchBakes ?? 2;
     this.patches.update(view, this.camera.zoom);
     this.decor?.update(view, this.camera.zoom);
-    if (this.village) {
-      const margin = this.camera.viewRect(this.world, width, height, 80);
-      this.village.update(this.animT, margin, this.camera.zoom, {
-        selected: this.selected,
-        showFootprints: this.showFootprints,
-        crowdBudget: this.settings?.crowdBudget ?? Infinity,
-      });
-      this.crowd?.update(this.animT, margin, this.camera.zoom, {
-        selected: this.selected,
-        crowdBudget: this.crowdBudgetOverride ?? this.settings?.crowdBudget ?? Infinity,
-      });
-    }
+    const margin = this.camera.viewRect(this.world, width, height, 80);
+    this.village?.update(this.animT, margin, this.camera.zoom, {
+      selected: this.selected,
+      showFootprints: this.showFootprints,
+      crowdBudget: this.settings?.crowdBudget ?? Infinity,
+    });
+    this.crowd?.update(this.animT, margin, this.camera.zoom, {
+      selected: this.selected,
+      crowdBudget: this.crowdBudgetOverride ?? this.settings?.crowdBudget ?? Infinity,
+    });
+    this.runOverlays?.update(this.camera.zoom);
     this.markers?.update(this.camera.zoom);
     this.sites?.update(this.camera.zoom);
     this.minimap.draw(view);
@@ -380,9 +469,9 @@ class ObserverApp {
 
   /** The person or building under a canvas point; the crowd is drawn on top, so it is asked first. */
   pickAt(cx, cy) {
-    if (!this.village) return null;
+    if (!this.village && !this.crowd) return null;
     const w = this.camera.screenToWorld(this.world, cx, cy);
-    return this.crowd?.pick(w.x, w.y, this.camera.zoom) ?? this.village.pick(w.x, w.y, this.camera.zoom);
+    return this.crowd?.pick(w.x, w.y, this.camera.zoom) ?? this.village?.pick(w.x, w.y, this.camera.zoom) ?? null;
   }
 
   /** Select what a pick found: one person or building, or a list of people (a local-band dot). */
@@ -628,7 +717,10 @@ class ObserverApp {
         const s = this.stats();
         if (clock) {
           const minutes = 8 * 60 + Math.floor(this.t / 60);
-          clock.textContent = `Engine day 0 · sample time ${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+          const hhmm = `${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+          clock.textContent = this.runSource
+            ? `Engine day ${this.population.day} · display time ${hhmm}`
+            : `Engine day 0 · sample time ${hhmm}`;
         }
         const people = this.village
           ? ` · people: ${s.worldPopulation} total, ${s.indoor} indoor, ${s.outdoor} outdoor, ${s.visible} visible (${s.visibleFull} full)`
@@ -802,6 +894,21 @@ function buildApi(app) {
       app.applyPick(hit);
       return hit?.list ?? null;
     },
+    // ---- a recorded run (?run=NAME)
+    /** The run's exported days, the day shown, and the engine's and the drawing's counts. */
+    runInfo: () => {
+      if (!app.runSource) return null;
+      const pop = app.population;
+      return {
+        days: app.runSource.days,
+        day: pop.day,
+        counts: pop.record.counts,
+        residents: pop.record.settlements.map((s) => s.residents),
+        drawnResidents: pop.frame.settlements.map((_, k) => pop.frame.residents(k)),
+        overlays: app.runOverlays.counts(),
+      };
+    },
+    loadDay: (day) => app.loadDay(day),
     // ---- the crowd (?people=N)
     crowdCounts: () => ({ ...app.crowd.counts(), ...app.crowd.stat }),
     crowdBudget: () => app.crowdBudgetOverride ?? app.settings?.crowdBudget ?? Infinity,
@@ -964,6 +1071,20 @@ async function main() {
       cpuBytes: Number(params.get('cpuMB') ?? 24) * 1e6,
     };
     $('source-chip').textContent = 'SYNTHETIC TEST WORLD';
+  } else if (RUN_BASE) {
+    setStatus('Loading the recorded run');
+    const run = await RunSource.open(RUN_BASE);
+    source = await run.terrain();
+    extras = { overview: await source.overview(), run, terrainOptions: { gpuBytes: 192e6, gpuEntries: 256 } };
+    const atlas = new Atlas(PIXI);
+    const { assetInfo } = await bakeStaticAssets(atlas, CIV_COLORS[0], setStatus);
+    const designs = Array.from({ length: APPEARANCE_COUNT }, (_, a) => ({ appearance: a }));
+    await bakeSceneActors(atlas, { people: designs, caravan: null }, setStatus);
+    atlas.finalize();
+    const day = run.nearestDay(Number(params.get('day') ?? run.days[0]));
+    setStatus(`Loading engine day ${day}`);
+    extras.population = populationOf(await run.day(day), hexRadiusOf(source.manifest));
+    Object.assign(extras, { atlas, assetInfo });
   } else {
     setStatus('Loading engine terrain manifest');
     source = await TerrainSource.open('data/terrain');
@@ -998,6 +1119,7 @@ async function main() {
     ? source.label
     : `Engine world · seed ${source.manifest.engine.seed} · ${source.width}×${source.height} tiles`;
   const app = new ObserverApp(pixi, source, extras);
+  if (extras.run) app.showRun(extras.run, extras.population);
   const note = $('provenance');
   if (note && extras.village) {
     const [q, r] = extras.village.tile;

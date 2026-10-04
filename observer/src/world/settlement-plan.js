@@ -130,16 +130,41 @@ function streetLine(v) {
   return (Math.round(v / BLOCK_M - 0.5) + 0.5) * BLOCK_M;
 }
 
+/** House grades as the engine names them, meanest first; a lot's grade is its index here. */
+export const GRADES = ['hut', 'house', 'stone_house'];
+/** The grade code of a lot where houses are being built. */
+export const SITE = 3;
+/** The grade code of a house in a plan sized from residents alone (synthetic people). */
+export const UNGRADED = -1;
+
 export class SettlementPlan {
   /**
-   * @param {{ residents: number, coreRadius?: number, seed?: number }} options
+   * @param {{ residents: number, houses?: Record<string, number> | null,
+   *   jobs?: Array<{ grade: string, count: number, built: number, workers: number }>,
+   *   coreRadius?: number, seed?: number }} options
+   *   `houses`: the engine's houses by grade (a recorded run). Without them (or with none),
+   *   there is a house for every five residents. `jobs`: houses being built, drawn as sites.
    */
-  constructor({ residents, coreRadius = 64, seed = 0 }) {
+  constructor({ residents, houses = null, jobs = [], coreRadius = 64, seed = 0 }) {
     this.residents = residents;
     this.coreRadius = coreRadius;
     this.seed = seed;
-    const houses = Math.ceil(residents / HOUSEHOLD);
-    const blocksNeeded = Math.ceil(houses / HOUSES_PER_BLOCK);
+    // Dwellings, best first so the finest stand nearest the core; then the building sites.
+    const grades = [];
+    const recorded = houses && Object.values(houses).reduce((a, b) => a + b, 0) > 0;
+    if (recorded) {
+      for (let g = GRADES.length - 1; g >= 0; g -= 1)
+        for (let n = 0; n < (houses[GRADES[g]] ?? 0); n += 1) grades.push(g);
+    } else {
+      for (let n = 0; n < Math.ceil(residents / HOUSEHOLD); n += 1) grades.push(UNGRADED);
+    }
+    this.recorded = !!recorded;
+    const dwellings = grades.length;
+    for (const job of jobs) for (let n = 0; n < job.count - job.built; n += 1) grades.push(SITE);
+    const lots = grades.length;
+    this.grade = Int8Array.from(grades);
+    this.sites = lots - dwellings;
+    const blocksNeeded = Math.ceil(lots / HOUSES_PER_BLOCK);
     // Candidate blocks clear of the core, nearest first (ties by angle, then cell).
     const cand = [];
     const clear = coreRadius + 8;
@@ -158,12 +183,14 @@ export class SettlementPlan {
     cand.sort((p, q) => p.d - q.d || p.a - q.a || p.j - q.j || p.i - q.i);
     if (cand.length < blocksNeeded) throw new Error('settlement plan: not enough room');
     this.blocks = cand.slice(0, blocksNeeded).map((c) => [c.i, c.j]);
-    this.houseCount = houses;
-    this.houseX = new Float32Array(houses);
-    this.houseY = new Float32Array(houses);
-    this.doorY = new Float32Array(houses); // the street centreline the door opens on
+    this.houseCount = dwellings; // lots people live in
+    this.lots = lots; // dwellings, then building sites
+    this.houseX = new Float32Array(lots);
+    this.houseY = new Float32Array(lots);
+    this.doorY = new Float32Array(lots); // the street centreline the door opens on
+    this.occupants = new Uint16Array(dwellings);
     let wardRadius = clear;
-    for (let h = 0; h < houses; h += 1) {
+    for (let h = 0; h < lots; h += 1) {
       const [i, j] = this.blocks[Math.floor(h / HOUSES_PER_BLOCK)];
       const k = h % HOUSES_PER_BLOCK;
       const north = k < 8;
@@ -184,7 +211,18 @@ export class SettlementPlan {
   }
 
   bytes() {
-    return this.houseX.byteLength + this.houseY.byteLength + this.doorY.byteLength;
+    return (
+      this.houseX.byteLength +
+      this.houseY.byteLength +
+      this.doorY.byteLength +
+      this.grade.byteLength +
+      this.occupants.byteLength
+    );
+  }
+
+  /** A house's people: more than five means crowded (residents beyond the houses' room). */
+  crowded(h) {
+    return this.occupants[h] > HOUSEHOLD;
   }
 
   /** Where a person works (local metres), from their duty, house and id; written into out. */
@@ -198,7 +236,8 @@ export class SettlementPlan {
       out[0] = Math.cos(u * Math.PI * 2) * r;
       out[1] = Math.sin(u * Math.PI * 2) * r;
     } else if (name === 'builder') {
-      const h = Math.floor(u * this.houseCount);
+      // At a building site when there is one, else at a house lot (repairs).
+      const h = this.sites ? this.houseCount + Math.floor(u * this.sites) : Math.floor(u * this.houseCount);
       out[0] = this.houseX[h] + (v - 0.5) * 4;
       out[1] = this.doorY[h] + (this.houseY[h] > this.doorY[h] ? 2.5 : -2.5);
     } else if (name === 'guard') {
@@ -372,10 +411,28 @@ export function walkAt(ax, ay, bx, by, d, forward, out) {
 }
 
 /** Plans for every settlement of a frame. */
+/**
+ * Plans for every settlement of a frame, and each resident's house: five to a house in row
+ * order, then the overflow shared round the houses (crowded). Writes `frame.house`.
+ */
 export function plansFor(frame, { coreRadius = 64 } = {}) {
-  return frame.settlements.map(
-    (s, k) => new SettlementPlan({ residents: frame.residents(k), coreRadius, seed: k + 1 }),
-  );
+  return frame.settlements.map((s, k) => {
+    const plan = new SettlementPlan({
+      residents: frame.residents(k),
+      houses: s.houses ?? null,
+      jobs: s.houseJobs ?? [],
+      coreRadius,
+      seed: k + 1,
+    });
+    const rows = frame.rowsOf(k);
+    const room = plan.houseCount * HOUSEHOLD;
+    for (let n = 0; n < rows.length; n += 1) {
+      const h = n < room ? Math.floor(n / HOUSEHOLD) : (n - room) % Math.max(1, plan.houseCount);
+      frame.house[rows[n]] = h;
+      plan.occupants[h] += 1;
+    }
+    return plan;
+  });
 }
 
 export { DUTY };

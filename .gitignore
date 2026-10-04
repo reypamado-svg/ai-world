@@ -16,3 +16,6 @@ work/
 observer/node_modules/
 observer/test-results/
 observer/captures/
+
+# Recorded runs exported for the observer (O2): large, made locally, not committed.
+observer/data/runs/

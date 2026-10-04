@@ -25,7 +25,17 @@ import { hash2 } from '../sim/rng.js';
 
 const DAY_S = 86400;
 const START_S = 8 * 3600; // display time 0 is 08:00 on engine day 0
+/** Sprites for synthetic houses (no grade recorded). */
 const HOUSE_ASSETS = ['building.house.log', 'building.house.timber_b'];
+/** Sprites by recorded grade (hut, house, stone house) and for a building site. */
+const GRADE_ASSETS = [
+  ['building.house.log'],
+  ['building.house.timber_a', 'building.house.timber_b'],
+  ['building.house.stone_a', 'building.house.stone_b'],
+  ['building.construction'],
+];
+const ICON_ASSETS = [...new Set([...HOUSE_ASSETS, ...GRADE_ASSETS.flat()])];
+const BADGE_PX = 14;
 const SHEET = 512;
 const PAD = 2;
 const DOT_PX = 16;
@@ -118,7 +128,27 @@ function bakeSheet(PIXI, atlas, designs) {
     { x: DOT_PX / 2, y: DOT_PX / 2 },
     1,
   );
-  for (const asset of HOUSE_ASSETS) {
+  // A crowded house's badge: an amber disc with a white bar (drawn at screen size).
+  place(
+    'badge',
+    BADGE_PX,
+    BADGE_PX,
+    (c, px, py) => {
+      c.fillStyle = '#e9a23b';
+      c.strokeStyle = '#2a2010';
+      c.lineWidth = 1.5;
+      c.beginPath();
+      c.arc(px + BADGE_PX / 2, py + BADGE_PX / 2, BADGE_PX / 2 - 1, 0, Math.PI * 2);
+      c.fill();
+      c.stroke();
+      c.fillStyle = '#ffffff';
+      c.fillRect(px + BADGE_PX / 2 - 1, py + 3, 2, 5);
+      c.fillRect(px + BADGE_PX / 2 - 1, py + 9.5, 2, 2);
+    },
+    { x: BADGE_PX / 2, y: BADGE_PX },
+    1,
+  );
+  for (const asset of ICON_ASSETS) {
     const e = atlas.get(asset);
     const k = ICON_ART / e.art;
     const w = Math.max(2, Math.ceil(e.w * k));
@@ -176,7 +206,7 @@ export class CrowdLayer {
       texture: this.sheet.entries.get('dot').texture,
       dynamicProperties: { position: false },
     });
-    const order = Array.from({ length: plan.houseCount }, (_, h) => h).sort(
+    const order = Array.from({ length: plan.lots }, (_, h) => h).sort(
       (a, b) => plan.houseX[a] + plan.houseY[a] - (plan.houseX[b] + plan.houseY[b]) || a - b,
     );
     for (const h of order) {
@@ -208,7 +238,7 @@ export class CrowdLayer {
     });
     const badge = new PIXI.Container();
     const label = new PIXI.Text({
-      text: `${this.frame.settlements[k].label} · ${this.frame.residents(k).toLocaleString('en')} people · synthetic`,
+      text: `${this.frame.settlements[k].label} · ${this.frame.residents(k).toLocaleString('en')} people · ${this.frame.provenance === 'recorded run' ? 'recorded' : 'synthetic'}`,
       style: { fontFamily: 'system-ui, sans-serif', fontSize: 12, fontWeight: '700', fill: 0xffffff },
     });
     label.position.set(2, -33);
@@ -234,14 +264,18 @@ export class CrowdLayer {
       badge,
       reach,
       houseSprites: [],
+      badges: [],
       actors: [],
       particles: [],
       dotParticles: [],
     };
   }
 
+  /** The sprite for a lot: by its recorded grade (or a building site), else one of the plain houses. */
   _houseAsset(k, h) {
-    return HOUSE_ASSETS[Math.floor(hash2(h, k, 7) * HOUSE_ASSETS.length)];
+    const grade = this.plans[k].grade[h];
+    const choices = grade >= 0 ? GRADE_ASSETS[grade] : HOUSE_ASSETS;
+    return choices[Math.floor(hash2(h, k, 7) * choices.length)];
   }
 
   /** Is any of a site's extent inside a world-screen rect? */
@@ -258,6 +292,7 @@ export class CrowdLayer {
    * @param {{ selected?: string|null, crowdBudget?: number }} options
    */
   update(t, view, zoom, { selected = null, crowdBudget = Infinity } = {}) {
+    this.zoom = zoom;
     const tod = timeOfDay(t);
     this.tod = tod;
     this.selectedRow = selected ? this.frame.indexOf(selected) : -1;
@@ -345,6 +380,7 @@ export class CrowdLayer {
   _hideActors(site) {
     for (const a of site.actors) this._hideActor(a);
     for (const s of site.houseSprites) s.visible = false;
+    for (const s of site.badges) s.visible = false;
     site.crowd.particleChildren.length = 0;
   }
 
@@ -394,13 +430,14 @@ export class CrowdLayer {
     }
     // Ward houses in view: sprites from the atlas, sorted with the people.
     let used = 0;
+    let badges = 0;
     for (let b = 0; b < plan.blocks.length; b += 1) {
       const [bi, bj] = plan.blocks[b];
       const cs = (bi + bj) * BLOCK_M;
       const cd = (bi - bj) * BLOCK_M;
       if (cs + BLOCK_M < minS - 8 || cs - BLOCK_M > maxS + 8 || cd + BLOCK_M < minD - 8 || cd - BLOCK_M > maxD + 8)
         continue;
-      for (let h = b * HOUSES_PER_BLOCK; h < Math.min(plan.houseCount, (b + 1) * HOUSES_PER_BLOCK); h += 1) {
+      for (let h = b * HOUSES_PER_BLOCK; h < Math.min(plan.lots, (b + 1) * HOUSES_PER_BLOCK); h += 1) {
         const sprite = this._houseSprite(site, used);
         used += 1;
         const e = this.atlas.get(this._houseAsset(site.k, h));
@@ -411,10 +448,33 @@ export class CrowdLayer {
         sprite.position.set(p.x, p.y);
         sprite.zIndex = plan.houseX[h] + plan.houseY[h];
         sprite.visible = true;
+        if (h < plan.houseCount && plan.crowded(h)) {
+          // Above the roof, at a constant screen size.
+          const badge = this._badgeSprite(site, badges);
+          badges += 1;
+          const b = this.sheet.entries.get('badge');
+          badge.texture = b.texture;
+          badge.anchor.set(0.5, 1);
+          badge.scale.set(1 / this.zoom);
+          badge.position.set(p.x, p.y - 8 * 14);
+          badge.zIndex = sprite.zIndex + 0.002;
+          badge.visible = true;
+        }
       }
     }
     for (let n = used; n < site.houseSprites.length; n += 1) site.houseSprites[n].visible = false;
+    for (let n = badges; n < site.badges.length; n += 1) site.badges[n].visible = false;
+    st.crowdedHouses = (st.crowdedHouses ?? 0) + badges;
     st.houses = (st.houses ?? 0) + used;
+  }
+
+  _badgeSprite(site, n) {
+    if (!site.badges[n]) {
+      const s = new this.PIXI.Sprite();
+      site.badges[n] = s;
+      site.near.addChild(s);
+    }
+    return site.badges[n];
   }
 
   _houseSprite(site, n) {
@@ -631,6 +691,16 @@ export class CrowdLayer {
     if (i < 0) return null;
     const s = this.stateOf(i);
     const record = this.frame.record(i);
+    const plan = this.plans[this.frame.settlement[i]];
+    const h = this.frame.house[i];
+    if (plan && h < plan.houseCount) {
+      const grade = plan.grade[h];
+      const kind = grade >= 0 ? ['Hut', 'House', 'Stone house'][grade] : 'House';
+      const n = plan.occupants[h];
+      record.household = `${kind} ${h + 1} · ${n} ${n === 1 ? 'person' : 'people'}, room for 5${
+        plan.crowded(h) ? ' (crowded)' : ''
+      }${plan.recorded ? '' : ' · layout presentation'}`;
+    }
     return {
       id,
       kind: 'person',

@@ -102,6 +102,11 @@ export class DecorLayer {
     this.sprites = 0;
   }
 
+  /** Drop every built cell (the clear areas changed: a recorded day's wards grew). */
+  reset() {
+    this.cache.clear();
+  }
+
   /** Cells (i, j) whose screen bounds, widened for tall sprites, meet the view. */
   visibleCells(view) {
     const corners = [

@@ -15,7 +15,10 @@
         title="Terrain and capitals come from the engine's own world generation; no day has been simulated."
         >ENGINE TERRAIN · DAY 0</span
       >
-      <span class="chip warn" title="The village, its buildings, citizens and routines are invented sample data."
+      <span
+        class="chip warn"
+        id="sample-chip"
+        title="The village, its buildings, citizens and routines are invented sample data."
         >SAMPLE VILLAGE</span
       >
       <span class="chip warn" title="Procedurally painted placeholder art.">PROTOTYPE ARTWORK</span>
@@ -28,7 +31,14 @@
         <button data-speed="50">50×</button>
         <button data-speed="100">100×</button>
       </div>
-      <span class="chip" title="This prototype is not connected to a live run.">Prototype · no live run</span>
+      <div class="group" id="day-group" hidden>
+        <button id="btn-day-prev" title="The previous exported day">‹</button>
+        <span id="day-label" class="clock"></span>
+        <button id="btn-day-next" title="The next exported day">›</button>
+      </div>
+      <span class="chip" id="live-chip" title="This prototype is not connected to a live run."
+        >Prototype · no live run</span
+      >
       <span class="chip persp" title="Only the observer perspective exists in this prototype."
         >Perspective: Observer</span
       >
