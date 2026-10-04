@@ -51,7 +51,10 @@ Then open:
   - `?people=100000&measure=auto` measures your machine: after loading it spends 10 s
     in each band (settlement, local, regional, atlas; `&tourSeconds=N` to change) and
     then shows a table of frame times, update time, visible people and memory, with
-    **Copy** for the full JSON. Please send the copied text back.
+    **Copy** for the full JSON. Please send the copied text back. Keep your hands off the
+    mouse until the table appears: the camera is held during each stop, and a stop that was
+    disturbed is marked `touched`. The JSON also has the loading times (`load`) and, per stop,
+    the band measured, cache evictions and the heap at its start and end.
   - `?quality=high|medium|low|auto` (default auto).
 - `http://127.0.0.1:8765/proof.html` — the O1a close-zoom art proof.
 - `http://127.0.0.1:8765/proof.html?scene=depth` — the pinned depth test scene.
@@ -149,6 +152,7 @@ node tests/capture-geography.mjs captures              # terrain stills: world, 
 | `settlement-plan.test.mjs` | Houses for everyone, wards growing with the square root of the population, clear of core and fields, routine tables, walks on the streets, 100K placed in ms      |
 | `crowd.test.mjs`           | At 5,000 and 50,000 people: counts in every band, the crowd budget, 200 people picked exactly, following, cell lists, heap and update time                        |
 | `budgets.test.mjs`         | Caps from the screen size; the observer at 3840 × 2160 and 1280 × 720 stays within them and recomputes them on resize                                             |
+| `tour.test.mjs`            | The measurement tour holds the camera against wheel, drag and buttons, labels each row with the band it measured, records evictions, heap and load times          |
 
 ## Layout
 

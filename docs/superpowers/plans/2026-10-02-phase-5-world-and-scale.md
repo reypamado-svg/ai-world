@@ -567,13 +567,15 @@ Planned with Fable 5.1 from measurements of the observer at 821aacf. Built in fi
 
 **Targets for "not straining a normal PC"** (1920 × 1080, a 2019-class laptop). Some can be measured only on your PC:
 
-| Target | Goal | Here | Your PC |
+| Target | Goal | Here | Your PC (first run)* |
 |---|---|---|---|
-| Frame interval p95, every band | ≤ 20 ms | (software GL: not meaningful) | |
-| JS update | ≤ 8 ms avg, ≤ 16 ms p95 | 6.6 ms avg; p95 15.2 ms (settlement), 16.9 ms (regional, while streaming) | |
-| Textures | atlas ≤ 60, patches ≤ 138, terrain ≤ 128 MB | 41.9; 37.5; 52.5 MB peak | |
-| JS heap | ≤ 150 MB | 35 MB | |
-| First frame | ≤ 10 s | 27–30 s (painting the art; unchanged by S7) | |
+| Frame interval p95, every band | ≤ 20 ms | (software GL: not meaningful) | 4.3–8.3 ms (238 fps) |
+| JS update | ≤ 8 ms avg, ≤ 16 ms p95 | 6.6 ms avg; p95 15.2 ms (settlement), 16.9 ms (regional, while streaming) | 0.4–1.7 ms avg; 0.6–6.5 ms p95 |
+| Textures | atlas ≤ 60, patches ≤ 138 (1080p cap), terrain ≤ 128 MB | 41.9; 37.5; 52.5 MB peak | 41.9; 150.5 (this screen's cap is 224); 68.2 MB |
+| JS heap | ≤ 150 MB | 35 MB | 54–134 MB |
+| First frame | ≤ 10 s | 27–30 s (painting the art; unchanged by S7) | not recorded (S7b adds it) |
+
+\* Edge 154 on Windows, 2552 × 1283 at 1.5 device pixel ratio (7.4 M device pixels, caps × 2.33). The camera was moved during this first tour: its stops ended at zooms 2.6, 0.061 and 0.787 instead of 1.0, 0.1 and 0.0053. So the "regional" row measured the settlement band, and the regional band was not measured. That hand-zooming across eight patch levels also filled the patch cache to its entry cap (746 of 746, 1,001 evictions); a held view needs 80 to 270 patches. S7b holds the camera during the tour.
 
 **What changed**
 - **C0, harness:** `__observer.atlasStats()` and `tests/measure.mjs --citizens` with JS update times. The "before" numbers above.
@@ -595,7 +597,7 @@ Planned with Fable 5.1 from measurements of the observer at 821aacf. Built in fi
   - wards are painted into the ground: streets between the blocks and yards inside them;
   - picking is exact for sprites and particles, and the selected person is always drawn or pinned, so anyone can be followed.
 - **C4, budgets:** the patch and terrain caches scale with the screen's device pixels, up to 2.33 times:
-  - patches 96 MB × f, with 192 px patches from 3.5 M device pixels;
+  - patches 96 MB × f, with 192 px patches from 3.5 M device pixels; 320 × f entries at 256 px, times (256/px)² for smaller patches (S7b), so the byte cap is the one that binds;
   - terrain 128 MB × f, at most 192 MB;
   - recomputed on resize;
   - the Measurements panel shows each cache's use against its cap.
@@ -630,3 +632,18 @@ The settlement plan should then be sized from the engine's `housing` (houses per
 **Checks**
 - The observer suite passes: 70 tests, one file at a time.
 - New tests: `atlas`, `population`, `settlement-plan`, `crowd` (at 5,000 and 50,000 people) and `budgets`.
+
+### S7b: after the first measurement on your PC
+
+Planned with Fable 5.1 from the first `?people=100000&measure=auto` result on the user's PC. Every measured target was met with room to spare (table above). Two things were fixed.
+
+- **Patch entries follow the patch area.** With 192 px patches a view needs (256/192)², about 1.78 times, as many entries as with 256 px. So the entry cap bound first: 746 entries at 150 of 224 MB. Entries are now 320 × f × (256/px)²: 1,326 on that screen, where the 224 MB byte cap binds at about 1,109 entries. Patch memory can now read up to 224 MB there; that cap is by design. `patchTextureBytes(px)` is the one byte rule, and a test checks on five screens that bytes govern.
+- **The tour holds the camera.**
+  - During each stop the camera is put back if anything moves it (wheel, drag, buttons, minimap, follow); clicks select nothing; a banner asks for hands off;
+  - each row records the band it really measured (`viewBand`), its zoom, whether it was `touched`, and per-stop deltas of patch and terrain evictions and patch bakes;
+  - the heap is recorded at the start and end of each stop;
+  - `measurement().load` records each loading phase's time, when the page was ready and the first frame.
+
+  `tour.test.mjs` wheels, drags and clicks during the tour and checks the camera did not move.
+
+**To measure again:** open `index.html?people=100000&measure=auto`, keep hands off until the table appears (about 50 s after loading), press **Copy** and send the text.
