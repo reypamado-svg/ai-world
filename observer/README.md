@@ -56,6 +56,28 @@ Then open:
     disturbed is marked `touched`. The JSON also has the loading times (`load`) and, per stop,
     the band measured, cache evictions and the heap at its start and end.
   - `?quality=high|medium|low|auto` (default auto).
+- `http://127.0.0.1:8765/?run=NAME&day=N` — a recorded run (O2), exported first with
+
+  ```sh
+  .venv/bin/sovereign-world init runs/baseline-21 --seed 21 --width 48 --height 48
+  .venv/bin/sovereign-world run runs/baseline-21 --days 365
+  PYTHONPATH=src .venv/bin/python -m sovereign_world.observer.run_export runs/baseline-21 \
+      --out observer/data/runs/baseline-21          # [--stride N] [--days 0,30,60] [--replace]
+  ```
+
+  The export reads the run without writing to it (the journal is followed by byte offset,
+  SQLite is opened read-only and immutable) and holds the run's own terrain, every person
+  id, and for each day the settlements, houses by grade, house work, travellers, borders
+  and every living person (about 310 KB a day at 100,000 people). Exports live in
+  `observer/data/runs/`, which git ignores. In the page, **‹ ›** step through the exported
+  days; the camera stays put. What is recorded and what is presentation is labelled:
+  who lives where, their houses, duties, age and health are the engine's; where in a
+  settlement they stand and walk is a visual approximation; names are observer-assigned.
+  Houses are drawn by recorded grade (hut, house, stone house) with building sites for
+  houses under construction; a house holding more than five people carries an amber
+  badge, and the inspector says "12 people, room for 5 (crowded)". People counted at no
+  settlement (on the road) are drawn as counted dots at their tiles.
+
 - `http://127.0.0.1:8765/proof.html` — the O1a close-zoom art proof.
 - `http://127.0.0.1:8765/proof.html?scene=depth` — the pinned depth test scene.
 

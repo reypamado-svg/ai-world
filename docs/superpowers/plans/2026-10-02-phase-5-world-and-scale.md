@@ -563,7 +563,7 @@ Planned with Fable 5.1 from measurements of the observer at 821aacf. Built in fi
 | Art atlas and village ground | 224.8 MB | 41.9 MB | 41.9 MB | 41.9 MB |
 | People's own data | about 19 KB a person | 36 bytes a person | 36 bytes a person | 36 bytes a person (3.6 MB) |
 
-`crowd.test.mjs` measures the crowd alone at 50,000 people: 330 bytes of heap a person, all pools included.
+`crowd.test.mjs` measures the crowd alone at 50,000 people: 140 bytes of heap a person, all pools included, measured after collecting garbage. (The 330 first recorded here included garbage not yet collected; O2 made the test collect before reading, after it swung between 43 and 412 from run to run.)
 
 **Targets for "not straining a normal PC"** (1920 × 1080, a 2019-class laptop). Some can be measured only on your PC:
 

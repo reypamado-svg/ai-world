@@ -465,3 +465,62 @@ Planned with Fable 5.1 and built in six commits (C1–C6).
 - Web Worker bakes, until bakes are measured over 8 ms a frame on real hardware.
 - Ocean wave animation.
 - Couriers for other capitals.
+
+## O2 as built: a recorded run in the observer
+
+Planned with Fable 5.1 after Phase 5. The user's decisions:
+- **Housing:** draw the engine's houses by grade in S7's wards, mark crowded houses, and show houses under construction as building sites.
+- **First run:** a fresh baseline year.
+
+Built in seven commits. The engine is unchanged: golden hashes and parity hold.
+
+**Reading without writing** (the journal safety rules above):
+- `observer/journal_tail.py` follows a journal by byte offset:
+  - it takes complete lines only;
+  - it checks each record's sequence, hash-chain link and own hash;
+  - it stops at the last good record and never repairs;
+  - it starts again with a new `history_epoch` when the journal is cut back or replaced (its first line changes).
+- `RunReader` is built on it:
+  - it opens SQLite with `mode=ro&immutable=1`, so no WAL or shared-memory file can appear;
+  - it never constructs `WorldStore`;
+  - it reads payloads from the journal only when needed.
+- Tests cover a partial line, a flipped byte, truncation, replacement and a concurrent append, and read every day, event and council of a format-2 run and of the format-1 fixture. Each checks that no file's bytes or modification time changed.
+
+**Projection** (`observer/projection.py`). A day becomes:
+- settlements: their houses by grade, slots, house work, institutions, rank and residents;
+- every living person as columns: civilization, settlement or away, sex, age, health, duty and tile;
+- travellers, counted by tile;
+- tile owners.
+
+Residents follow the engine's own rule (`residents_by_settlement`). Duties sort the council's orders and buildings into the observer's nine kinds of day. A 100,000-person day takes 0.11 s.
+
+**Export** (`observer/run_export.py`; the README has the commands):
+- the run's own terrain (`export_terrain_for`, checked against the run's map);
+- a run-wide id table;
+- per day, a JSON record and the people as gzipped little-endian columns: 15 bytes a person, 312 KB a day at 100,000 people.
+
+The same run always exports the same bytes. `observer/tests/fixtures/run-small` is the export of the format-1 fixture, and a test keeps it current.
+
+**Browser run mode** (`?run=NAME&day=N`):
+- `RunSource` fills the same `PeopleFrame` S7 built, with the engine's ids, so `CrowdLayer` draws recorded people as it drew synthetic ones.
+- `RunOverlays` adds a marker for every settlement (rank, people, houses, engine day), each civilization's border, and travellers as counted dots.
+- The day stepper keeps the camera.
+- Chips say RECORDED RUN, LAYOUT AND MOVEMENT: VISUAL APPROXIMATION, and observer-assigned names.
+- The crowd, inspector and ground features no longer depend on the SAMPLE village.
+
+**Housing by grade:**
+- `SettlementPlan` lays out exactly the recorded houses, the finest nearest the core, then one building site for each house under construction; builders work at the sites.
+- Residents fill five to a house; the overflow is shared round the houses. A crowded house carries an amber badge, and the inspector says "N people, room for 5 (crowded)".
+- Runs without recorded houses (rules 1) and synthetic people keep a house for every five, labelled as presentation.
+
+**The baseline year.** Seed 21, 48×48, rules 2, the scripted baseline councils, 365 days:
+- it records in 13 s and verifies;
+- it exports in 3.8 s (3.3 MB);
+- verification still passes after the export.
+
+It grows from 128 founders to 141 people. The baseline councils grow slowly; that is the engine's behaviour, not the observer's.
+
+**Known**
+- People on the road are counted dots at their tiles. They cannot be picked or followed until O3/O4 give them routes.
+- People standing behind a row of houses are hidden by the roofs, which is correct depth.
+- Exports are static files, refreshed by exporting again; the O3 server will serve the same data live.
