@@ -31,10 +31,15 @@ import { Inspector } from './ui/inspector.js';
 import { FrameStats, jsHeapBytes } from './ui/perf.js';
 import { Quality } from './ui/quality.js';
 import { scaleCitizens } from './data/sample/citizens.js';
+import { syntheticPopulation } from './data/synthetic/people.js';
+import { CrowdLayout, plansFor } from './world/settlement-plan.js';
+import { VILLAGE_RADIUS_M } from './data/sample/village.js';
 
 const params = new URLSearchParams(location.search);
 const SYNTHETIC = params.get('source') === 'synthetic';
 const DEBUG = params.has('debug') || SYNTHETIC;
+// ?people=N: N synthetic people (up to 200,000) shared among the capitals (S7).
+const PEOPLE = Math.max(0, Number(params.get('people') ?? 0) || 0);
 const $ = (id) => document.getElementById(id);
 
 function setStatus(text) {
@@ -74,15 +79,20 @@ class ObserverApp {
     });
     this.world.addChild(this.patches.container);
     this.villageData = extras.village ?? null;
+    this.population = extras.population ?? null;
     if (extras.village) {
       const v = extras.village;
-      this.terrain.setFeatures([{ kind: 'fields', ...v.fieldRing }]);
+      // Field rings: the SAMPLE village's, or with a population one beyond each capital's wards.
+      const rings = this.population
+        ? this.population.plans.map((plan, k) => ({ ...this.population.origins[k], ...plan.fieldRing }))
+        : [v.fieldRing];
+      this.terrain.setFeatures(rings.map((ring) => ({ kind: 'fields', ...ring })));
       this.decor = new DecorLayer({
         PIXI,
         atlas: extras.atlas,
         terrain: this.terrain,
-        // The village and its field ring stay clear of trees.
-        clear: [{ x: v.origin.x, y: v.origin.y, r: v.fieldRing?.r1 ?? 64 }],
+        // Villages, wards and their field rings stay clear of trees.
+        clear: rings.map((ring) => ({ x: ring.x, y: ring.y, r: ring.r1 ?? 64 })),
       });
       this.world.addChild(this.decor.container);
       this.village = new VillageLayer({
@@ -491,6 +501,25 @@ function buildApi(app) {
     /** The art atlas: pages, fill, and pixels by kind, plus the village ground's bytes. */
     atlasStats: () => ({ ...app.atlas.stats(), groundBytes: Math.round(app.groundBytes) }),
     atlasKeys: () => [...app.atlas.entries.keys()],
+    /** The population feed (?people=N): totals, bytes and each settlement's plan. */
+    populationStats: () => {
+      const pop = app.population;
+      if (!pop) return null;
+      const { frame, plans, layout } = pop;
+      return {
+        people: frame.length,
+        bytes: frame.bytes() + layout.bytes() + plans.reduce((sum, p) => sum + p.bytes(), 0),
+        settlements: frame.settlements.map((s, k) => ({
+          id: s.id,
+          civ: s.civ,
+          tile: [s.q, s.r],
+          residents: frame.residents(k),
+          houses: plans[k].houseCount,
+          wardRadius: plans[k].wardRadius,
+          fieldRing: plans[k].fieldRing,
+        })),
+      };
+    },
     terrainStats: () => app.terrain.stats(),
     patchStats: () => app.patches.stats(),
     stats: () => app.stats(),
@@ -652,11 +681,21 @@ async function main() {
     const { route, travel } = await courierRoute(source, tile);
     const village = observerVillage(footprintOf, hexRadiusOf(source.manifest), tile, route, travel);
     scaleCitizens(village.scene, Number(params.get('citizens') ?? 400));
+    if (PEOPLE) {
+      setStatus(`Placing ${PEOPLE.toLocaleString()} people`);
+      const capitals = day0.civilizations.map((c) => c.capital);
+      const frame = syntheticPopulation(PEOPLE, capitals);
+      const plans = plansFor(frame, { coreRadius: VILLAGE_RADIUS_M });
+      const origins = capitals.map((c) => hexCentre(c.tile[0], c.tile[1], hexRadiusOf(source.manifest)));
+      extras.population = { frame, plans, layout: new CrowdLayout(frame, plans), origins };
+    }
     await bakeSceneActors(atlas, village.scene, setStatus);
     atlas.finalize();
     const ground = await bakeSceneGround(PIXI, village.scene, setStatus, {
       alpha: village.alpha,
       bounds: village.groundBounds,
+      texelScale: 0.5,
+      mipmaps: false,
     });
     Object.assign(extras, { atlas, assetInfo, village, ground });
   }
