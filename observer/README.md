@@ -45,6 +45,13 @@ Then open:
 - `http://127.0.0.1:8765/` (or `/index.html`) — the observer prototype (world atlas →
   regional → local → settlement in one camera).
   - `?citizens=2000` (up to 5000) adds SAMPLE residents to load the renderer.
+  - `?people=100000` (up to 200,000) loads a SYNTHETIC population shared equally among
+    the capitals, each living in wards of houses around its capital (Phase 5 S7). Add
+    `&citizens=0` to leave out the SAMPLE village's clones.
+  - `?people=100000&measure=auto` measures your machine: after loading it spends 10 s
+    in each band (settlement, local, regional, atlas; `&tourSeconds=N` to change) and
+    then shows a table of frame times, update time, visible people and memory, with
+    **Copy** for the full JSON. Please send the copied text back.
   - `?quality=high|medium|low|auto` (default auto).
 - `http://127.0.0.1:8765/proof.html` — the O1a close-zoom art proof.
 - `http://127.0.0.1:8765/proof.html?scene=depth` — the pinned depth test scene.
@@ -54,7 +61,8 @@ person or building to inspect, click again on the same spot to cycle through
 people standing together. **Follow person** keeps the camera on them, also
 across tiles and while they are indoors. ⌖ goes to the village, ⌂ returns to
 the whole world, the minimap moves the camera. **Measurements** shows and
-copies frame times, counts, texture memory and loaded chunks for your machine.
+copies frame times, counts, texture memory and loaded chunks for your machine,
+with each GPU cache's use against its cap (caps grow with the screen, see below).
 The speed buttons (1×, 10×, 25×, 50×, 100×) set how many seconds of sample time
 pass per real second; at 100× a day passes in about 14 minutes.
 
@@ -68,6 +76,33 @@ A tile is 25 km across, so one camera spans about five decades of zoom.
 | regional   | 4.5e-4 – 0.02 | 256 px – 11,000 px     | One texture per tile (512 / 1,024 px), then ground patches from about 1,700 px per tile            |
 | local      | 0.02 – 0.5    | 11,000 px – 280,000 px | Ground patches down to 12.5 m, trees and rocks from 0.2, village buildings, people as dots, fields |
 | settlement | from 0.5      |                        | Full sprites and animated citizens; patches of 12.5 / 6.25 m around the village ground             |
+
+### A large population (`?people=N`)
+
+The people are typed columns (`src/data/population.js`), about 36 bytes a
+person with their plan; nothing per person is a JavaScript object. Where
+someone stands is presentation: `src/world/settlement-plan.js` lays out
+wards of 64 m blocks (16 houses each, five people to a house) around each
+capital and moves its fields beyond them, and everyone follows one of nine
+daily routines by duty, read from a table of phases per minute. The crowd
+layer (`src/render/crowd-layer.js`) draws by band:
+
+| Band               | People                                                                                               | Ward houses             |
+| ------------------ | ---------------------------------------------------------------------------------------------------- | ----------------------- |
+| settlement         | The quality's crowd budget nearest the centre as animated sprites, the rest as still particles       | Sprites, in depth order |
+| local              | One dot per 8, 16 or 32 m cell, sized by headcount; a click lists the cell's people in the inspector | Static particles        |
+| regional and atlas | A population badge per capital                                                                       | —                       |
+
+Picking is exact for sprites and particles, repeated clicks cycle, and the
+selected person is always drawn in full (or pinned), so anyone can be followed.
+
+### Memory budgets
+
+GPU caches scale with the screen's device pixels against 1600 × 900
+(`src/ui/budgets.js`), up to 2.33 times: ground patches 96 MB × f (192 px
+patches from 3.5 M device pixels), terrain 128 MB × f up to 192 MB. The art
+atlas and village ground are a fixed 42 MB: art is kept at screen size except
+buildings, and civilization colours are a tint on an accent mask.
 
 Rules that keep this working:
 
@@ -90,24 +125,30 @@ cd observer
 npm install                                            # playwright 1.56.1, pixi.js (for vendoring)
 node --test --test-concurrency=1 tests/*.test.mjs      # browser tests, one file at a time
 node tests/measure.mjs captures                        # rendering measurements (400 / 2,000 / 5,000)
+node tests/measure.mjs captures --people=1000,100000   # the same with a synthetic population
 node tests/capture-observer.mjs captures --clip        # review stills and zoom-through clip
 node tests/capture.mjs captures --depth --clip         # art-proof stills, depth sheet, clip
 node tests/capture-geography.mjs captures              # terrain stills: world, range, river, desert, lake
 ```
 
-| Test file                 | What it proves                                                                                                                                                    |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `depth.test.mjs`          | Ten pinned overlap cases by draw order and by pixel; indoor citizens never drawn; negative control                                                                |
-| `order-snapshot.test.mjs` | Refactors do not change the art proof's draw order                                                                                                                |
-| `hex.test.mjs`            | Hex layout: round trips, 25 km spacing, horizontal rows, chunk partition, tile sizes on screen                                                                    |
-| `travel-plan.test.mjs`    | Courier days: five hours walking then camp, terrain costs, ford wading time, deep rivers and water refused, continuity                                            |
-| `rivers.test.mjs`         | Channel widths by depth class, the same wandering curve from either tile                                                                                          |
-| `interior.test.mjs`       | Ground field: determinism, border blending, one wandering shoreline with beach and shallows, snow line, fields, no aliasing, cover patches and ponds by share     |
-| `patches.test.mjs`        | Ground patch sizes and the size chosen at each zoom                                                                                                               |
-| `precision.test.mjs`      | Local-origin rule: a far tile paints identically from any nearby anchor; village graphics stay local with the courier 50 km out                                   |
-| `streaming.test.mjs`      | R4: 60 rapid jumps over a synthetic 4096 × 4096 world with latency stay within request and cache budgets, stale requests are dropped, textures return to baseline |
-| `bands.test.mjs`          | Zoom continuity across four bands, selection, follow days into the courier's journey, patches within budget, speeds 1×–100×, sites, camera independence, pause    |
-| `counts.test.mjs`         | R9 count identities at 400 and 2,000 citizens in every band                                                                                                       |
+| Test file                  | What it proves                                                                                                                                                    |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `depth.test.mjs`           | Ten pinned overlap cases by draw order and by pixel; indoor citizens never drawn; negative control                                                                |
+| `order-snapshot.test.mjs`  | Refactors do not change the art proof's draw order                                                                                                                |
+| `hex.test.mjs`             | Hex layout: round trips, 25 km spacing, horizontal rows, chunk partition, tile sizes on screen                                                                    |
+| `travel-plan.test.mjs`     | Courier days: five hours walking then camp, terrain costs, ford wading time, deep rivers and water refused, continuity                                            |
+| `rivers.test.mjs`          | Channel widths by depth class, the same wandering curve from either tile                                                                                          |
+| `interior.test.mjs`        | Ground field: determinism, border blending, one wandering shoreline with beach and shallows, snow line, fields, no aliasing, cover patches and ponds by share     |
+| `patches.test.mjs`         | Ground patch sizes and the size chosen at each zoom                                                                                                               |
+| `precision.test.mjs`       | Local-origin rule: a far tile paints identically from any nearby anchor; village graphics stay local with the courier 50 km out                                   |
+| `streaming.test.mjs`       | R4: 60 rapid jumps over a synthetic 4096 × 4096 world with latency stay within request and cache budgets, stale requests are dropped, textures return to baseline |
+| `bands.test.mjs`           | Zoom continuity across four bands, selection, follow days into the courier's journey, patches within budget, speeds 1×–100×, sites, camera independence, pause    |
+| `counts.test.mjs`          | R9 count identities at 400 and 2,000 citizens in every band                                                                                                       |
+| `atlas.test.mjs`           | At 5,000 citizens the atlas is at most three 2048 px pages and 60 MB with the ground, well filled, with every key the renderer asks for and a mask for each frame |
+| `population.test.mjs`      | Synthetic people: shares, determinism, unique ids found again, plausible ages and households, at most 64 bytes a person                                           |
+| `settlement-plan.test.mjs` | Houses for everyone, wards growing with the square root of the population, clear of core and fields, routine tables, walks on the streets, 100K placed in ms      |
+| `crowd.test.mjs`           | At 5,000 and 50,000 people: counts in every band, the crowd budget, 200 people picked exactly, following, cell lists, heap and update time                        |
+| `budgets.test.mjs`         | Caps from the screen size; the observer at 3840 × 2160 and 1280 × 720 stays within them and recomputes them on resize                                             |
 
 ## Layout
 
@@ -124,5 +165,7 @@ node tests/capture-geography.mjs captures              # terrain stills: world, 
 | `src/sim/travel-plan.js`                                       | The courier's multi-day walk from the engine's travel costs                              |
 | `src/render/village-layer.js`, `scene-renderer.js`, `depth.js` | Village drawing, bands, picking, depth order                                             |
 | `src/render/art/`                                              | Asset contract, painters, atlas                                                          |
-| `src/ui/`                                                      | Inspector, minimap, quality, frame statistics                                            |
+| `src/ui/`                                                      | Inspector, minimap, quality, frame statistics, screen-scaled budgets                     |
+| `src/data/population.js`, `src/data/synthetic/people.js`       | People as typed columns; the synthetic population (the O2 reader will fill the same)     |
+| `src/world/settlement-plan.js`, `src/render/crowd-layer.js`    | Wards, routines and positions; the crowd drawn by band                                   |
 | `src/proof/`                                                   | The O1a art proof page                                                                   |
