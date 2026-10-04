@@ -113,3 +113,57 @@ def test_a_format_one_run_reads_the_same_way(tmp_path: Path) -> None:
         assert state_hash(reader.state_at(day)) == state_hash(replay_run(store, target_day=day))
     assert reader.councils() and {council.day for council in reader.councils()} == {0}
     assert reader.events_at(1)
+
+
+def _files(root: Path) -> dict[str, tuple[bytes, int]]:
+    return {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in sorted(root.iterdir())
+        if path.is_file()
+    }
+
+
+def test_reading_a_run_writes_nothing(tmp_path: Path) -> None:
+    """Every day, event and council of a format-2 run and of the format-1 fixture is read;
+    no file changes (bytes or modification time) and SQLite leaves no side file."""
+    new = tmp_path / "new"
+    _record(new, 35)
+    old = tmp_path / "old"
+    shutil.copytree(FIXTURE, old)
+    for root in (new, old):
+        before = _files(root)
+        reader = RunReader(root)
+        for day in reader.days():
+            reader.state_at(day)
+            reader.events_at(day)
+        reader.councils()
+        reader.refresh()
+        assert reader.history_epoch == 0 and reader.stopped_at is None
+        assert _files(root) == before, root.name
+        assert not [p for p in root.iterdir() if p.name.endswith(("-wal", "-shm", "-journal"))]
+
+
+def test_the_reader_never_builds_a_store() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "sovereign_world" / "observer" / "reader.py"
+    ).read_text()
+    assert "WorldStore(" not in source
+    assert "sqlite3.connect(" in source and "mode=ro&immutable=1" in source
+
+
+def test_a_journal_cut_back_starts_a_new_history(tmp_path: Path) -> None:
+    states = _record(tmp_path, 6)
+    reader = RunReader(tmp_path)
+    assert reader.days() == tuple(range(7))
+    journal = tmp_path / "journal.jsonl"
+    lines = journal.read_bytes().splitlines(keepends=True)
+    keep = next(
+        index
+        for index, line in enumerate(lines)
+        if b'"type":"transition"' in line and b'"day":3,' in line
+    )
+    journal.write_bytes(b"".join(lines[: keep + 1]))
+    assert reader.refresh() == (1, 2, 3)
+    assert reader.history_epoch == 1
+    assert reader.days() == (0, 1, 2, 3)
+    assert state_hash(reader.state_at(3)) == state_hash(states[3])
