@@ -53,7 +53,11 @@ const TOUR = [
 ];
 const $ = (id) => document.getElementById(id);
 
+/** Loading phases with their times since navigation began, for the measurement (S7b). */
+const LOAD_PHASES = [];
+
 function setStatus(text) {
+  LOAD_PHASES.push({ status: text, atMs: Math.round(performance.now()) });
   const el = $('loading-status');
   if (el) el.textContent = text;
 }
@@ -154,6 +158,8 @@ class ObserverApp {
     });
     this.home = { x: this.camera.x, y: this.camera.y, zoom: this.camera.zoom };
     this.frameStats = new FrameStats();
+    this.load = { phases: LOAD_PHASES, readyMs: null, firstFrameMs: null };
+    this.tourLock = null;
     this.intervalStats = new FrameStats();
     this.quality = new Quality(
       (settings) => {
@@ -275,7 +281,13 @@ class ObserverApp {
   frame(deltaMS, advance = !this.paused) {
     const t0 = performance.now();
     if (advance) this.t += (deltaMS / 1000) * this.speed;
-    if (this.village && this.follow && this.selected) {
+    // During the measurement tour the camera is held: anything that moved it is undone, and noted.
+    const lock = this.tourLock;
+    if (lock && (this.camera.x !== lock.x || this.camera.y !== lock.y || this.camera.zoom !== lock.zoom)) {
+      lock.touched = true;
+      Object.assign(this.camera, { x: lock.x, y: lock.y, zoom: lock.zoom });
+    }
+    if (!lock && this.village && this.follow && this.selected) {
       this.village.renderer.update(this.animT);
       const target = this.village.worldPosition(this.selected) ?? this.crowd?.worldPosition(this.selected);
       if (target) this.camera.followTowards(target, deltaMS);
@@ -356,6 +368,7 @@ class ObserverApp {
         height: this.pixi.screen.height,
         devicePixelRatio: window.devicePixelRatio,
       },
+      load: this.load,
       caches: this.caches(),
       tour: this.tourRows ?? null,
       sampleCitizens: this.village ? this.village.renderer.people.length : 0,
@@ -402,6 +415,10 @@ class ObserverApp {
       }
     });
     canvas.addEventListener('pointerup', (e) => {
+      if (this.tourLock) {
+        drag = null;
+        return;
+      }
       if (drag && drag.moved <= 4) {
         const rect = canvas.getBoundingClientRect();
         const hit = this.pickAt(e.clientX - rect.left, e.clientY - rect.top);
@@ -495,31 +512,60 @@ class ObserverApp {
    */
   async tour(seconds = TOUR_S) {
     const rows = [];
+    const banner = $('tour-banner');
+    const mb = (bytes) => (bytes ? Number((bytes / 1e6).toFixed(1)) : null);
+    const snapshot = () => ({
+      patchEvictions: this.patches.cache.evictions,
+      terrainEvictions: this.terrain.stats().gpu.evictions,
+      patchBakes: this.patches.baked,
+      heap: jsHeapBytes(),
+    });
     this.setPaused(false);
-    for (const [band, zoom] of TOUR) {
-      this.tourView(zoom);
-      $('perf-tour').textContent = `Measuring the ${band} band (${seconds} s)…`;
-      await new Promise((r) => setTimeout(r, 1500)); // let streaming settle first
-      this.frameStats = new FrameStats(4000);
-      this.intervalStats = new FrameStats(4000);
-      await new Promise((r) => setTimeout(r, seconds * 1000));
-      const s = this.stats();
-      rows.push({
-        band,
-        zoom: s.zoom,
-        frameMsAvg: s.frameMsAvg,
-        frameMsP95: s.frameMsP95,
-        updateMsAvg: s.updateMsAvg,
-        updateMsP95: s.updateMsP95,
-        visible: s.visible,
-        visibleFull: s.visibleFull,
-        terrainMB: Number((s.gpuBytes / 1e6).toFixed(1)),
-        patchMB: Number((s.patchBytes / 1e6).toFixed(1)),
-        atlasMB: Number((s.atlasBytes / 1e6).toFixed(1)),
-        heapMB: s.jsHeapBytes ? Number((s.jsHeapBytes / 1e6).toFixed(1)) : null,
-      });
+    try {
+      for (const [i, [band, zoom]] of TOUR.entries()) {
+        this.tourView(zoom);
+        this.camera.clamp();
+        // Hold this pose for the whole stop (frame() puts the camera back if anything moves it).
+        const lock = { x: this.camera.x, y: this.camera.y, zoom: this.camera.zoom, touched: false };
+        this.tourLock = lock;
+        if (banner) {
+          banner.textContent = `Measuring the ${band} band (stop ${i + 1} of ${TOUR.length}, ${seconds} s) — please don't touch the mouse, keyboard or window until the table appears.`;
+          banner.hidden = false;
+        }
+        await new Promise((r) => setTimeout(r, 1500)); // let streaming settle first
+        this.frameStats = new FrameStats(4000);
+        this.intervalStats = new FrameStats(4000);
+        const before = snapshot();
+        await new Promise((r) => setTimeout(r, seconds * 1000));
+        const after = snapshot();
+        const s = this.stats();
+        rows.push({
+          band,
+          // The band actually measured, from the held pose (not the camera, which a late wheel may have moved).
+          viewBand: bandOf(lock.zoom, this.terrain.hexModeZoom),
+          zoom: Number(lock.zoom.toPrecision(4)),
+          touched: lock.touched,
+          frameMsAvg: s.frameMsAvg,
+          frameMsP95: s.frameMsP95,
+          updateMsAvg: s.updateMsAvg,
+          updateMsP95: s.updateMsP95,
+          visible: s.visible,
+          visibleFull: s.visibleFull,
+          terrainMB: mb(s.gpuBytes),
+          patchMB: mb(s.patchBytes),
+          patchEntries: this.patches.cache.map.size,
+          patchEvictions: after.patchEvictions - before.patchEvictions,
+          terrainEvictions: after.terrainEvictions - before.terrainEvictions,
+          patchBakes: after.patchBakes - before.patchBakes,
+          atlasMB: mb(s.atlasBytes),
+          heapStartMB: mb(before.heap),
+          heapMB: mb(s.jsHeapBytes),
+        });
+      }
+    } finally {
+      this.tourLock = null;
+      if (banner) banner.hidden = true;
     }
-    $('perf-tour').textContent = '';
     this.tourRows = rows;
     $('measure').hidden = false;
     this.renderMeasurements();
@@ -530,6 +576,7 @@ class ObserverApp {
   renderMeasurements() {
     const m = this.measurement();
     const mb = (v) => (v / 1e6).toFixed(1);
+    const secs = (ms) => (ms == null ? '—' : (ms / 1000).toFixed(1));
     const c = m.caches;
     const row = (name, x) =>
       `<tr><td>${name}</td><td>${mb(x.bytes)} / ${mb(x.maxBytes)}</td><td>${x.entries} / ${x.maxEntries}</td><td>${mb(x.peakBytes)}</td><td>${x.evictions}</td></tr>`;
@@ -538,12 +585,15 @@ class ObserverApp {
       table.innerHTML = `<tr><th>GPU cache</th><th>MB used / cap</th><th>entries / cap</th><th>peak MB</th><th>evictions</th></tr>
         ${row('Terrain', c.terrain)}${row(`Ground patches (${c.patchPx} px, bake ${c.patches.bakeMsAvg} ms)`, c.patches)}
         <tr><td>Art atlas and village ground</td><td>${mb(c.atlas.bytes)}</td><td colspan="3">fixed</td></tr>
-        <tr><td colspan="5">Screen ${c.screen.devicePixels.toLocaleString('en')} device pixels: caps × ${c.screen.factor}</td></tr>`;
+        <tr><td colspan="5">Screen ${c.screen.devicePixels.toLocaleString('en')} device pixels: caps × ${c.screen.factor}</td></tr>
+        <tr><td colspan="5">Ready in ${secs(m.load.readyMs)} s, first frame at ${secs(m.load.firstFrameMs)} s</td></tr>`;
     }
     const tour = $('measure-tour');
     if (tour && this.tourRows) {
       const cols = [
         'band',
+        'zoom',
+        'touched',
         'frameMsAvg',
         'frameMsP95',
         'updateMsAvg',
@@ -551,7 +601,9 @@ class ObserverApp {
         'visible',
         'terrainMB',
         'patchMB',
+        'patchEvictions',
         'atlasMB',
+        'heapStartMB',
         'heapMB',
       ];
       tour.innerHTML = `<tr>${cols.map((k) => `<th>${k}</th>`).join('')}</tr>${this.tourRows
@@ -566,6 +618,7 @@ class ObserverApp {
     const clock = $('clock');
     let hud = 0;
     this.pixi.ticker.add((ticker) => {
+      this.load.firstFrameMs ??= Math.round(performance.now());
       this.intervalStats.push(ticker.deltaMS);
       this.quality.observe(ticker.deltaMS);
       this.frame(ticker.deltaMS);
@@ -958,6 +1011,7 @@ async function main() {
   app.run();
   window.__observer = buildApi(app);
   $('loading').hidden = true;
+  app.load.readyMs = Math.round(performance.now());
   if (AUTO_MEASURE) app.tour();
 }
 

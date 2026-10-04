@@ -384,3 +384,22 @@ button.on {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+#tour-banner {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9;
+  max-width: min(720px, calc(100vw - 32px));
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: #1b1408;
+  border: 1.5px solid var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  pointer-events: none;
+}
+#tour-banner[hidden] {
+  display: none;
+}
