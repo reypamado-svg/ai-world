@@ -125,6 +125,29 @@ export class Atlas {
     return page.silhouette.textures.get(entry.key);
   }
 
+  /** What the atlas holds: pages, how full they are, and pixels by kind of art. */
+  stats() {
+    const byKind = {};
+    let used = 0;
+    for (const e of this.entries.values()) {
+      const kind = e.key.split('.')[0].split('#')[0];
+      const k = (byKind[kind] ??= { entries: 0, pixels: 0 });
+      k.entries += 1;
+      k.pixels += e.w * e.h;
+      used += e.w * e.h;
+    }
+    const pagePixels = this.pages.length * this.pageSize * this.pageSize;
+    return {
+      pages: this.pages.length,
+      pageSize: this.pageSize,
+      entries: this.entries.size,
+      usedPixels: used,
+      fill: pagePixels ? Number((used / pagePixels).toFixed(3)) : 0,
+      bytes: Math.round(this.textureBytes()),
+      byKind,
+    };
+  }
+
   /** Estimated GPU bytes for uploaded pages (RGBA + mip chain). */
   textureBytes() {
     return this.pages.filter((p) => p.source).length * this.pageSize * this.pageSize * 4 * 1.34;
