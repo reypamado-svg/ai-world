@@ -158,15 +158,25 @@ def export_terrain(
     seed: int, width: int, height: int, out_dir: Path, chunk_tiles: int = 8
 ) -> ExportSummary:
     """Write manifest, day-0 settlements, overview and terrain chunks to ``out_dir``."""
-    if chunk_tiles < 1:
-        raise ValueError("chunk_tiles must be positive")
     config = WorldConfig(seed=seed, width=width, height=height)
-    generated = generate_world(config, StableRng(seed))
     manifest = RunManifest(
         run_id=uuid5(NAMESPACE_URL, f"ai-world/observer-export/{seed}/{width}x{height}"),
         engine_version="0.2.0",
         config=config,
         generator_version=CURRENT_GENERATOR,
+    )
+    return export_terrain_for(manifest, out_dir, chunk_tiles)
+
+
+def export_terrain_for(manifest: RunManifest, out_dir: Path, chunk_tiles: int = 8) -> ExportSummary:
+    """The terrain export for a run's own world: its seed, size, civilizations and generator
+    (O2 run exports use it; `export_terrain` is the same for a fresh seed)."""
+    if chunk_tiles < 1:
+        raise ValueError("chunk_tiles must be positive")
+    config = manifest.config
+    seed, width, height = config.seed, config.width, config.height
+    generated = generate_world(
+        config, StableRng(seed), generator_version=manifest.generator_version
     )
     state = build_initial_state(manifest)
     tiles = generated.world_map.tiles
