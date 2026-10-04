@@ -16,7 +16,6 @@ import { planeToHex } from '../world/hex.js';
 import { LruCache } from '../world/chunks.js';
 import { riverLine } from '../world/rivers.js';
 import { hashString, mulberry32 } from '../sim/rng.js';
-import { ART } from './art/paint/iso.js';
 import { OPEN, ROCK, SCRUB, WOOD } from '../world/interior.js';
 
 /** Side of a decoration cell, in ground metres. */
@@ -176,7 +175,7 @@ export class DecorLayer {
       if (!e) continue;
       const s = new this.PIXI.Sprite(e.texture);
       s.anchor.set(e.anchor.x / e.w, e.anchor.y / e.h);
-      s.scale.set(1 / ART);
+      s.scale.set(1 / e.art);
       const p = project(d.x - x0, d.y - y0);
       s.position.set(p.x, p.y);
       s.zIndex = d.x - x0 + (d.y - y0);

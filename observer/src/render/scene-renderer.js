@@ -9,12 +9,17 @@
 import { K, project } from '../world/coords.js';
 import { ART } from './art/paint/iso.js';
 import { ANIMATIONS } from './art/paint/people.js';
+import { CIV_COLORS } from './art/registry.js';
+import { personFrameKey } from './art/bake.js';
 import { depthSort } from './depth.js';
 import { sampleSchedule } from '../sim/paths.js';
 
 function translateFp(fp, x, y) {
   return { minX: fp.minX + x, minY: fp.minY + y, maxX: fp.maxX + x, maxY: fp.maxY + y };
 }
+
+/** A civilization's colour as a tint. */
+const civTint = (civ) => Number.parseInt(CIV_COLORS[civ % CIV_COLORS.length].slice(1), 16);
 
 function fpDepth(fp) {
   return (fp.minX + fp.maxX) / 2 + (fp.minY + fp.maxY) / 2;
@@ -55,7 +60,7 @@ export class SceneRenderer {
   _spriteFor(entry) {
     const s = new this.PIXI.Sprite(entry.texture);
     s.anchor.set(entry.anchor.x / entry.w, entry.anchor.y / entry.h);
-    s.scale.set(1 / ART);
+    s.scale.set(1 / entry.art);
     return s;
   }
 
@@ -63,9 +68,9 @@ export class SceneRenderer {
     const e = o.entry;
     const p = o.sprite.position;
     const ax = o.flip ? e.w - e.anchor.x : e.anchor.x;
-    const x0 = p.x - ax / ART;
-    const y0 = p.y - e.anchor.y / ART;
-    o.rect = { x0, y0, x1: x0 + e.w / ART, y1: y0 + e.h / ART };
+    const x0 = p.x - ax / e.art;
+    const y0 = p.y - e.anchor.y / e.art;
+    o.rect = { x0, y0, x1: x0 + e.w / e.art, y1: y0 + e.h / e.art };
   }
 
   _add(o) {
@@ -74,6 +79,13 @@ export class SceneRenderer {
     this.byId.set(o.id, o);
     this.objectLayer.addChild(o.sprite);
     if (o.shadow) this.shadowLayer.addChild(o.shadow);
+    if (o.kind === 'person' && !o.person.envoy) {
+      // The civilization's colour on sash, cap and scarf, drawn just above the person.
+      o.accent = new this.PIXI.Sprite();
+      o.accent.visible = false;
+      o.accent.tint = civTint(o.person.caravan ? this.scene.caravan.civ : o.person.civ);
+      this.objectLayer.addChild(o.accent);
+    }
     return o;
   }
 
@@ -191,7 +203,7 @@ export class SceneRenderer {
     const spec = ANIMATIONS[s.anim] ?? ANIMATIONS.idle;
     const facing = spec.facings.includes(s.facing) ? s.facing : spec.facings[0];
     const i = Math.floor(s.phase * spec.frames) % spec.frames;
-    return `person.${p.appearance}.${p.civ}.${s.anim}.${facing}.${i}`;
+    return personFrameKey(p.appearance, s.anim, facing, i);
   }
 
   _place(o, x, y, key, flip, fpHalf) {
@@ -203,9 +215,20 @@ export class SceneRenderer {
     const p = project(x, y);
     o.sprite.texture = this.flat ? this.atlas.silhouette(entry) : entry.texture;
     o.sprite.anchor.set(entry.anchor.x / entry.w, entry.anchor.y / entry.h);
-    o.sprite.scale.set((flip ? -1 : 1) / ART, 1 / ART);
+    o.sprite.scale.set((flip ? -1 : 1) / entry.art, 1 / entry.art);
     o.sprite.position.set(p.x, p.y);
     o.sprite.visible = true;
+    if (o.accent) {
+      const mask = this.flat ? null : this.atlas.get(`${key}#mask`);
+      o.accentOn = !!mask;
+      if (mask) {
+        o.accent.texture = mask.texture;
+        o.accent.anchor.set(mask.anchor.x / mask.w, mask.anchor.y / mask.h);
+        o.accent.scale.copyFrom(o.sprite.scale);
+        o.accent.position.copyFrom(o.sprite.position);
+      }
+      o.accent.visible = o.accentOn;
+    }
     o.fp = { minX: x - fpHalf[0], minY: y - fpHalf[1], maxX: x + fpHalf[0], maxY: y + fpHalf[1] };
     o.depth = x + y;
     this._setRect(o);
@@ -213,6 +236,7 @@ export class SceneRenderer {
 
   _hide(o, s) {
     o.sprite.visible = false;
+    if (o.accent) o.accent.visible = false;
     if (o.shadow) o.shadow.visible = false;
     o.hidden = true;
     o.state = s;
@@ -223,7 +247,7 @@ export class SceneRenderer {
     o.shadow.texture = e.texture;
     o.shadow.anchor.set(e.anchor.x / e.w, e.anchor.y / e.h);
     o.shadow.position.copyFrom(o.sprite.position);
-    o.shadow.scale.set((flip ? -1 : 1) / ART, 1 / ART);
+    o.shadow.scale.set((flip ? -1 : 1) / e.art, 1 / e.art);
     o.shadow.visible = true;
   }
 
@@ -284,6 +308,7 @@ export class SceneRenderer {
         o.drawn = false;
         o.sprite.visible = false;
         o.shadow.visible = false;
+        if (o.accent) o.accent.visible = false;
         continue;
       }
       o.drawn = true;
@@ -316,6 +341,7 @@ export class SceneRenderer {
       d.drawn = false;
       d.sprite.visible = false;
       d.shadow.visible = false;
+      if (d.accent) d.accent.visible = false;
       d.x = s.x - dir * 0.6;
       d.y = s.y - 1.45;
       d.state = { ...s, anim: s.moving ? 'walk' : 'idle' };
@@ -375,12 +401,17 @@ export class SceneRenderer {
       const inView = r.x1 > view.x0 && r.x0 < view.x1 && r.y1 > view.y0 && r.y0 < view.y1;
       o.sprite.visible = inView;
       if (o.shadow) o.shadow.visible = inView && !this.flat;
+      if (o.accent) o.accent.visible = inView && !this.flat && !!o.accentOn;
       if (inView) visible.push(o);
     }
     const sorted = depthSort(visible, 128, { centreOnly: this.centreOnly });
     this.drawOrder = sorted.order;
     this.lastCycles = sorted.cycles;
-    for (let i = 0; i < this.drawOrder.length; i += 1) this.drawOrder[i].sprite.zIndex = i;
+    for (let i = 0; i < this.drawOrder.length; i += 1) {
+      const o = this.drawOrder[i];
+      o.sprite.zIndex = i;
+      if (o.accent) o.accent.zIndex = i + 0.5;
+    }
     return visible;
   }
 
@@ -480,9 +511,9 @@ export class SceneRenderer {
     const r = o.rect;
     if (wx < r.x0 || wx > r.x1 || wy < r.y0 || wy > r.y1) return false;
     const e = o.entry;
-    const dx = (wx - o.sprite.position.x) * ART;
+    const dx = (wx - o.sprite.position.x) * e.art;
     const lx = (o.flip ? -dx : dx) + e.anchor.x;
-    const ly = (wy - o.sprite.position.y) * ART + e.anchor.y;
+    const ly = (wy - o.sprite.position.y) * e.art + e.anchor.y;
     return this.atlas.alphaAt(e, lx, ly) > 48;
   }
 

@@ -235,7 +235,8 @@ async function main() {
   });
   stageEl.appendChild(pixi.canvas);
 
-  const atlas = new Atlas(PIXI);
+  // The proof keeps every sprite at full 2x art, with mipmaps, as its depth probes expect.
+  const atlas = new Atlas(PIXI, 4096, { fullArt: true, mipmaps: true });
   const { assetInfo, contract } = await bakeStaticAssets(atlas, CIV_COLORS[0], setStatus);
   const footprintOf = (asset) => assetInfo.get(asset).footprint;
   const scene = SCENE === 'depth' ? depthScene(footprintOf) : villageScene(footprintOf);

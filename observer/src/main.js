@@ -490,6 +490,7 @@ function buildApi(app) {
     },
     /** The art atlas: pages, fill, and pixels by kind, plus the village ground's bytes. */
     atlasStats: () => ({ ...app.atlas.stats(), groundBytes: Math.round(app.groundBytes) }),
+    atlasKeys: () => [...app.atlas.entries.keys()],
     terrainStats: () => app.terrain.stats(),
     patchStats: () => app.patches.stats(),
     stats: () => app.stats(),

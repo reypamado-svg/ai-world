@@ -1,16 +1,31 @@
 // Texture atlas: packs painted (or, later, licensed) sprite canvases into a
-// few large pages so the GPU can batch them. Keeps the CPU copy of each page
-// for pixel-accurate picking and builds silhouette pages for depth tests.
+// few pages so the GPU can batch them. Keeps the CPU copy of each page for
+// pixel-accurate picking and builds silhouette pages for depth tests.
+//
+// Art is painted at twice its screen size (ART = 2). Entries added with
+// `{ art: 1 }` are kept at half that, screen size, which quarters their
+// texture memory; buildings and the proof page keep the full 2x art.
+// Pages are packed when `finalize()` is called, tallest entries first, so
+// rows waste little space; pages have no mipmaps (Phase 5 S7).
 
-const PAD = 4;
+const PAD = 2;
 
 export class Atlas {
-  constructor(PIXI, pageSize = 4096) {
+  /**
+   * @param {object} PIXI
+   * @param {number} pageSize square page edge in pixels
+   * @param {{ fullArt?: boolean, mipmaps?: boolean }} options `fullArt` keeps every
+   *   entry at 2x (the proof page); `mipmaps` builds mip chains for every page.
+   */
+  constructor(PIXI, pageSize = 2048, { fullArt = false, mipmaps = false } = {}) {
     this.PIXI = PIXI;
     this.pageSize = pageSize;
+    this.fullArt = fullArt;
+    this.mipmaps = mipmaps;
     this.pages = [];
     this.entries = new Map();
-    this._newPage();
+    this.pending = [];
+    this.missing = new Set();
   }
 
   _newPage() {
@@ -27,55 +42,92 @@ export class Atlas {
       silhouette: null,
       pixels: null,
     });
+    return this.pages[this.pages.length - 1];
   }
 
-  /** Add a canvas under an asset key; anchor is in that canvas's pixels. */
-  add(key, canvas, anchor, meta = {}) {
+  /**
+   * Add a canvas under an asset key; anchor is in that canvas's pixels. With
+   * `art: 1` the canvas (painted at 2x) is kept at half size.
+   */
+  add(key, canvas, anchor, meta = {}, { art = 2 } = {}) {
     if (this.entries.has(key)) return this.entries.get(key);
-    let page = this.pages[this.pages.length - 1];
-    if (page.source) {
-      this._newPage();
-      page = this.pages[this.pages.length - 1];
+    let source = canvas;
+    let stored = { ...anchor };
+    let scale = 2;
+    if (art === 1 && !this.fullArt) {
+      const w = Math.max(1, Math.ceil(canvas.width / 2));
+      const h = Math.max(1, Math.ceil(canvas.height / 2));
+      source = document.createElement('canvas');
+      source.width = w;
+      source.height = h;
+      const ctx = source.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, canvas.width / 2, canvas.height / 2);
+      stored = { x: anchor.x / 2, y: anchor.y / 2 };
+      scale = 1;
     }
-    const w = canvas.width;
-    const h = canvas.height;
-    if (page.x + w + PAD > this.pageSize) {
-      page.x = PAD;
-      page.y += page.rowH + PAD;
-      page.rowH = 0;
-    }
-    if (page.y + h + PAD > this.pageSize) {
-      this._newPage();
-      page = this.pages[this.pages.length - 1];
-    }
-    page.ctx.drawImage(canvas, page.x, page.y);
     const entry = {
       key,
-      pageIndex: this.pages.length - 1,
-      x: page.x,
-      y: page.y,
-      w,
-      h,
-      anchor: { ...anchor },
+      pageIndex: -1,
+      x: 0,
+      y: 0,
+      w: source.width,
+      h: source.height,
+      anchor: stored,
+      art: scale,
       meta,
       texture: null,
+      _canvas: source,
+      _order: this.entries.size,
     };
-    page.x += w + PAD;
-    page.rowH = Math.max(page.rowH, h);
     this.entries.set(key, entry);
+    this.pending.push(entry);
     return entry;
   }
 
+  /** The entry under a key. Missing keys are remembered, except optional `#` extras (masks, shadows). */
   get(key) {
-    return this.entries.get(key);
+    const entry = this.entries.get(key);
+    if (!entry && !key.includes('#')) this.missing.add(key);
+    return entry;
   }
 
-  /** Upload pages and create one sub-texture per entry. */
+  /** Shelf-pack the entries added since the last call, tallest first, onto open pages. */
+  _pack() {
+    const todo = this.pending.sort((a, b) => b.h - a.h || b.w - a.w || a._order - b._order);
+    this.pending = [];
+    let page = this.pages.at(-1);
+    if (!page || page.source) page = this._newPage();
+    for (const e of todo) {
+      if (page.x + e.w + PAD > this.pageSize) {
+        page.x = PAD;
+        page.y += page.rowH + PAD;
+        page.rowH = 0;
+      }
+      if (page.y + e.h + PAD > this.pageSize) {
+        page = this._newPage();
+      }
+      page.ctx.drawImage(e._canvas, page.x, page.y);
+      e.pageIndex = this.pages.length - 1;
+      e.x = page.x;
+      e.y = page.y;
+      e._canvas = null;
+      page.x += e.w + PAD;
+      page.rowH = Math.max(page.rowH, e.h);
+    }
+  }
+
+  /** Pack, upload pages and create one sub-texture per entry. */
   finalize() {
     const { CanvasSource, Texture, Rectangle } = this.PIXI;
+    if (this.pending.length) this._pack();
     this.pages.forEach((page) => {
       if (!page.source) {
-        page.source = new CanvasSource({ resource: page.canvas, autoGenerateMipmaps: true, scaleMode: 'linear' });
+        page.source = new CanvasSource({
+          resource: page.canvas,
+          autoGenerateMipmaps: this.mipmaps,
+          scaleMode: 'linear',
+        });
       }
     });
     for (const e of this.entries.values()) {
@@ -140,16 +192,19 @@ export class Atlas {
     return {
       pages: this.pages.length,
       pageSize: this.pageSize,
+      mipmaps: this.mipmaps,
       entries: this.entries.size,
       usedPixels: used,
       fill: pagePixels ? Number((used / pagePixels).toFixed(3)) : 0,
       bytes: Math.round(this.textureBytes()),
       byKind,
+      missing: [...this.missing].sort(),
     };
   }
 
-  /** Estimated GPU bytes for uploaded pages (RGBA + mip chain). */
+  /** GPU bytes of the uploaded pages: RGBA, plus a third for mip chains when built. */
   textureBytes() {
-    return this.pages.filter((p) => p.source).length * this.pageSize * this.pageSize * 4 * 1.34;
+    const uploaded = this.pages.filter((p) => p.source).length;
+    return uploaded * this.pageSize * this.pageSize * 4 * (this.mipmaps ? 4 / 3 : 1);
   }
 }

@@ -103,6 +103,7 @@ export class VillageLayer {
     for (const o of r.objects) {
       if (o.kind === 'person' || o.kind === 'ox' || o.kind === 'wagon') {
         o.sprite.alpha = actors;
+        if (o.accent) o.accent.alpha = actors;
         if (o.shadow) o.shadow.alpha = actors;
       }
     }
