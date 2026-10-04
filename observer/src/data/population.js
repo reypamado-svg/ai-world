@@ -40,11 +40,17 @@ export class PeopleFrame {
   /**
    * @param {number} n rows
    * @param {Array<{ id: string, civ: number, q: number, r: number, label?: string }>} settlements
+   * @param {{ names?: string[] | null, provenance?: string, note?: string }} options `names`: the
+   *   engine's ids, indexed by the `id` column (a recorded run, whose ids are not all
+   *   `person:NNNNNNNNNN`); without it `id` is that number, ascending.
    */
-  constructor(n, settlements) {
+  constructor(n, settlements, { names = null, provenance = 'synthetic', note = null } = {}) {
     this.length = n;
     this.settlements = settlements;
-    this.id = new Uint32Array(n); // the number in `person:NNNNNNNNNN`, ascending
+    this.names = names;
+    this.provenance = provenance;
+    this.note = note ?? 'Synthetic population (S7): a stand-in for the recorded run';
+    this.id = new Uint32Array(n); // the number in `person:NNNNNNNNNN`, or the place in `names`
     this.civ = new Uint8Array(n);
     this.q = new Int16Array(n);
     this.r = new Int16Array(n);
@@ -70,8 +76,10 @@ export class PeopleFrame {
     for (let i = 0; i < this.length; i += 1) rows[next[this.settlement[i]]++] = i;
     this.bySettlement = rows;
     this.settlementStart = counts;
-    for (let i = 1; i < this.length; i += 1) {
-      if (this.id[i] <= this.id[i - 1]) throw new Error('person ids must be unique and ascending');
+    if (!this.names) {
+      for (let i = 1; i < this.length; i += 1) {
+        if (this.id[i] <= this.id[i - 1]) throw new Error('person ids must be unique and ascending');
+      }
     }
     return this;
   }
@@ -86,11 +94,18 @@ export class PeopleFrame {
   }
 
   idOf(i) {
-    return personId(this.id[i]);
+    return this.names ? this.names[this.id[i]] : personId(this.id[i]);
   }
 
-  /** Row of a person id, or -1 (binary search on the ascending id column). */
+  /** Row of a person id, or -1 (binary search on the ascending id column, or a map of names). */
   indexOf(id) {
+    if (this.names) {
+      if (!this.rowOf) {
+        this.rowOf = new Map();
+        for (let i = 0; i < this.length; i += 1) this.rowOf.set(this.names[this.id[i]], i);
+      }
+      return this.rowOf.get(id) ?? -1;
+    }
     const n = personNumber(id);
     let lo = 0;
     let hi = this.length - 1;
@@ -124,8 +139,8 @@ export class PeopleFrame {
       tile: [this.q[i], this.r[i]],
       household: `House ${this.house[i] + 1}`,
       skills: {},
-      events: ['Synthetic population (S7): a stand-in for the recorded run'],
-      provenance: 'synthetic',
+      events: [this.note],
+      provenance: this.provenance,
     };
   }
 
