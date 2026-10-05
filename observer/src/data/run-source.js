@@ -107,6 +107,9 @@ export class RunSource {
       residents: s.residents,
       houseJobs: s.house_jobs,
       institutions: s.institutions,
+      // Export version 2 (rules version 3): the council's town plan and its walls.
+      plan: s.plan ?? null,
+      walls: s.walls ?? null,
     }));
     let home = 0;
     for (let i = 0; i < n; i += 1) if (columns.settlement[i] !== away) home += 1;

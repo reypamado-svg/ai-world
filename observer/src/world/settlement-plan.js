@@ -6,6 +6,13 @@
 // is a house for every five residents; the fields lie in a ring beyond the
 // wards. Streets run between the blocks.
 //
+// Under rules version 3 the engine also records the council's design (town
+// plan) and its walls, section by section along the planned ring. A plan then
+// lays the wards inside the ring first, puts the keep, market, shrine and craft
+// quarter where the design says, and draws the wall line: a square of side
+// 2r+1 blocks, two block-sides a section, a gatehouse in each gate section and
+// towers where they stand.
+//
 // Everyone follows one of a few shared daily routines (by duty), sampled once
 // into tables of a phase per minute of the day. A person's position is then a
 // table lookup plus a short walk along the streets: a pure function of the
@@ -13,6 +20,7 @@
 
 import { DUTIES, DUTY } from '../data/population.js';
 import { hash2 } from '../sim/rng.js';
+import { WALL_GRADES, WALL_MODULE_M, WALL_STRENGTH } from '../render/art/paint/walls.js';
 import { facingFor, STRIDE_M } from '../sim/paths.js';
 
 export const BLOCK_M = 64;
@@ -137,18 +145,71 @@ export const SITE = 3;
 /** The grade code of a house in a plan sized from residents alone (synthetic people). */
 export const UNGRADED = -1;
 
+/** The engine's plain plan: a settlement nobody has designed yet. */
+export function isPlainPlan(design) {
+  return (
+    !design ||
+    (design.style === 'open' &&
+      design.keep === 'edge' &&
+      design.wall_ring === 2 &&
+      design.gates.length === 1 &&
+      design.gates[0] === 0 &&
+      !design.market &&
+      !design.shrine &&
+      !design.craft_quarter)
+  );
+}
+
+/** Buildings drawn for a design's places. */
+const PLACE_ASSETS = {
+  keep: 'building.hall',
+  market: 'building.well',
+  shrine: 'building.shrine',
+  craft_quarter: 'building.workshop.main',
+};
+
+/**
+ * A point on a ring's line, `s` metres along it: from the middle of its east side, then
+ * round by the north, west and south sides. Returns [x, y, axis of the side].
+ */
+export function ringPoint(halfSide, s) {
+  const h = halfSide;
+  const p = ((s % (8 * h)) + 8 * h) % (8 * h);
+  if (p < h) return [h, -p, 'y'];
+  if (p < 3 * h) return [h - (p - h), -h, 'x'];
+  if (p < 5 * h) return [-h, -h + (p - 3 * h), 'y'];
+  if (p < 7 * h) return [-h + (p - 5 * h), h, 'x'];
+  return [h, h - (p - 7 * h), 'y'];
+}
+
 export class SettlementPlan {
   /**
    * @param {{ residents: number, houses?: Record<string, number> | null,
    *   jobs?: Array<{ grade: string, count: number, built: number, workers: number }>,
+   *   design?: object | null, walls?: object | null, waterAngle?: number,
    *   coreRadius?: number, seed?: number }} options
    *   `houses`: the engine's houses by grade (a recorded run). Without them (or with none),
    *   there is a house for every five residents. `jobs`: houses being built, drawn as sites.
+   *   `design`: the council's town plan (rules version 3); `walls`: its ring as built, each
+   *   section `[grade or null, strength]`, with `gates` (section indices) and `towers`.
    */
-  constructor({ residents, houses = null, jobs = [], coreRadius = 64, seed = 0 }) {
+  constructor({
+    residents,
+    houses = null,
+    jobs = [],
+    design = null,
+    walls = null,
+    waterAngle = Math.PI / 2,
+    coreRadius = 64,
+    seed = 0,
+  }) {
     this.residents = residents;
     this.coreRadius = coreRadius;
     this.seed = seed;
+    this.design = design;
+    this.designed = !!design && !isPlainPlan(design);
+    this.ring = design ? design.wall_ring : 0;
+    this.ringHalf = design ? (this.ring + 0.5) * BLOCK_M : 0;
     // Dwellings, best first so the finest stand nearest the core; then the building sites.
     const grades = [];
     const recorded = houses && Object.values(houses).reduce((a, b) => a + b, 0) > 0;
@@ -165,10 +226,15 @@ export class SettlementPlan {
     this.grade = Int8Array.from(grades);
     this.sites = lots - dwellings;
     const blocksNeeded = Math.ceil(lots / HOUSES_PER_BLOCK);
-    // Candidate blocks clear of the core, nearest first (ties by angle, then cell).
+    // The design's places take whole blocks; the store stands south of the centre.
+    this.places = design ? this._places(design, waterAngle) : [];
+    const taken = new Set(this.places.map((p) => `${p.i},${p.j}`));
+    if (design) taken.add('0,0').add('0,1');
+    // Candidate blocks clear of the core, nearest first (ties by angle, then cell); with a
+    // design, those inside the ring first.
     const cand = [];
-    const clear = coreRadius + 8;
-    const reach = Math.ceil(Math.sqrt(blocksNeeded) + clear / BLOCK_M) + 2;
+    const clear = design ? 0 : coreRadius + 8;
+    const reach = Math.ceil(Math.sqrt(blocksNeeded + taken.size) + clear / BLOCK_M) + this.ring + 2;
     for (let j = -reach; j <= reach; j += 1) {
       for (let i = -reach; i <= reach; i += 1) {
         const cx = i * BLOCK_M;
@@ -176,11 +242,12 @@ export class SettlementPlan {
         // Nearest point of the block square to the centre.
         const nx = Math.max(Math.abs(cx) - BLOCK_M / 2, 0);
         const ny = Math.max(Math.abs(cy) - BLOCK_M / 2, 0);
-        if (Math.hypot(nx, ny) < clear) continue;
-        cand.push({ i, j, d: Math.hypot(cx, cy), a: Math.atan2(cy, cx) });
+        if (design ? taken.has(`${i},${j}`) : Math.hypot(nx, ny) < clear) continue;
+        const outside = design && Math.max(Math.abs(i), Math.abs(j)) > this.ring ? 1 : 0;
+        cand.push({ i, j, o: outside, d: Math.hypot(cx, cy), a: Math.atan2(cy, cx) });
       }
     }
-    cand.sort((p, q) => p.d - q.d || p.a - q.a || p.j - q.j || p.i - q.i);
+    cand.sort((p, q) => (p.o ?? 0) - (q.o ?? 0) || p.d - q.d || p.a - q.a || p.j - q.j || p.i - q.i);
     if (cand.length < blocksNeeded) throw new Error('settlement plan: not enough room');
     this.blocks = cand.slice(0, blocksNeeded).map((c) => [c.i, c.j]);
     this.houseCount = dwellings; // lots people live in
@@ -205,9 +272,110 @@ export class SettlementPlan {
         Math.hypot(Math.abs(i * BLOCK_M) + BLOCK_M / 2, Math.abs(j * BLOCK_M) + BLOCK_M / 2),
       );
     }
+    for (const p of this.places) wardRadius = Math.max(wardRadius, Math.hypot(p.x, p.y) + BLOCK_M / 2);
+    // The fields lie beyond the walls' line.
+    if (design) wardRadius = Math.max(wardRadius, this.ringHalf * Math.SQRT2 + 8);
     this.wardRadius = wardRadius;
     this.fieldRing = { r0: wardRadius + FIELD_GAP_M, r1: wardRadius + FIELD_GAP_M + FIELD_DEPTH_M };
-    this.store = [0, coreRadius];
+    this.store = design ? [0, BLOCK_M] : [0, coreRadius];
+    this._wallPieces(walls);
+  }
+
+  /** Blocks for the keep, market, shrine and craft quarter, where the design puts them. */
+  _places(design, waterAngle) {
+    const r = design.wall_ring;
+    const n = 2 * (2 * r + 1);
+    const gateAngle = design.gates.length ? 2 * Math.PI * ((Math.floor((design.gates[0] * n) / 6) + 0.5) / n) : 0;
+    const used = new Set(['0,1']);
+    const out = [];
+    const near = (i, j) => {
+      // The nearest free block to (i, j), spiralling out.
+      for (let d = 0; d < 6; d += 1) {
+        for (let dj = -d; dj <= d; dj += 1) {
+          for (let di = -d; di <= d; di += 1) {
+            if (Math.max(Math.abs(di), Math.abs(dj)) !== d) continue;
+            const key = `${i + di},${j + dj}`;
+            if (!used.has(key)) return [i + di, j + dj];
+          }
+        }
+      }
+      return [i, j];
+    };
+    const toward = (angle, dist) => [Math.round(Math.cos(angle) * dist), Math.round(-Math.sin(angle) * dist)];
+    ['keep', 'market', 'shrine', 'craft_quarter'].forEach((name, idx) => {
+      const place = design[name];
+      if (!place) return;
+      let want;
+      if (place === 'centre') want = [0, 0];
+      else if (place === 'by_store') want = [1, 1];
+      else if (place === 'by_gate') want = toward(gateAngle, Math.max(1, r - 1));
+      else if (place === 'by_water') want = toward(waterAngle, Math.max(1, r));
+      else want = toward(Math.PI / 2 + (idx * Math.PI) / 3, r + 1);
+      const [i, j] = near(want[0], want[1]);
+      used.add(`${i},${j}`);
+      out.push({ name, place, i, j, x: i * BLOCK_M, y: j * BLOCK_M, asset: PLACE_ASSETS[name] });
+    });
+    return out;
+  }
+
+  /**
+   * The ring's drawable pieces: wall modules of each built section's grade, a gatehouse
+   * in the middle of each gate section, towers (corners first, then the section ends),
+   * the lines of sections not yet built, and the places' buildings.
+   */
+  _wallPieces(walls) {
+    this.pieces = this.places.map((p) => ({ x: p.x, y: p.y, asset: p.asset, damaged: false }));
+    this.planned = [];
+    this.sections = [];
+    if (!this.design) return;
+    const h = this.ringHalf;
+    const n = 2 * (2 * this.ring + 1);
+    const length = (8 * h) / n;
+    const gates = new Set(walls?.gates ?? this.design.gates.map((g) => Math.floor((g * n) / 6)));
+    for (let k = 0; k < n; k += 1) {
+      const [grade, strength] = walls?.sections?.[k] ?? [null, 0];
+      const section = { index: k, grade, strength, gate: gates.has(k) };
+      this.sections.push(section);
+      const s0 = k * length;
+      if (!grade) {
+        // Not built yet: the planned line, drawn dashed.
+        const pts = [];
+        for (let s = s0; s <= s0 + length + 0.01; s += BLOCK_M / 2) pts.push(ringPoint(h, s).slice(0, 2));
+        this.planned.push(pts);
+        continue;
+      }
+      const damaged = strength * 2 < (WALL_STRENGTH[grade] ?? 1);
+      const stone = WALL_GRADES.indexOf(grade) >= WALL_GRADES.indexOf('drystone_wall');
+      const modules = Math.round(length / WALL_MODULE_M);
+      for (let m = 0; m < modules; m += 1) {
+        const [x, y, axis] = ringPoint(h, s0 + (m + 0.5) * WALL_MODULE_M);
+        const gateHere = section.gate && m === Math.floor(modules / 2);
+        const asset = gateHere ? `wall.gate.${stone ? 'stone' : 'timber'}.${axis}` : `wall.${grade}.${axis}`;
+        this.pieces.push({ x, y, asset, damaged });
+      }
+    }
+    // Towers: the four corners first, then the ends of sections, in ring order.
+    const towers = walls?.towers ?? 0;
+    const spots = [h, 3 * h, 5 * h, 7 * h];
+    for (let k = 0; k < n; k += 1) {
+      const s = k * length;
+      if (!spots.some((c) => Math.abs(c - s) < 1)) spots.push(s);
+    }
+    const built = this.sections.filter((x) => x.grade);
+    const weakest = built.reduce(
+      (w, x) => (WALL_GRADES.indexOf(x.grade) < WALL_GRADES.indexOf(w) ? x.grade : w),
+      built[0]?.grade ?? 'palisade',
+    );
+    const stoneTowers = WALL_GRADES.indexOf(weakest) >= WALL_GRADES.indexOf('drystone_wall');
+    for (let t = 0; t < Math.min(towers, spots.length); t += 1) {
+      const [x, y] = ringPoint(h, spots[t]);
+      this.pieces.push({ x, y, asset: `wall.tower.${stoneTowers ? 'stone' : 'timber'}`, damaged: false });
+    }
+  }
+
+  /** Sections standing, of all the ring's. */
+  wallsBuilt() {
+    return { built: this.sections.filter((x) => x.grade).length, of: this.sections.length };
   }
 
   bytes() {
@@ -240,6 +408,11 @@ export class SettlementPlan {
       const h = this.sites ? this.houseCount + Math.floor(u * this.sites) : Math.floor(u * this.houseCount);
       out[0] = this.houseX[h] + (v - 0.5) * 4;
       out[1] = this.doorY[h] + (this.houseY[h] > this.doorY[h] ? 2.5 : -2.5);
+    } else if (name === 'guard' && this.ringHalf) {
+      // Guards walk the walls' line.
+      const [x, y] = ringPoint(this.ringHalf, u * 8 * this.ringHalf);
+      out[0] = x;
+      out[1] = y;
     } else if (name === 'guard') {
       out[0] = Math.cos(u * Math.PI * 2) * this.wardRadius;
       out[1] = Math.sin(u * Math.PI * 2) * this.wardRadius;
@@ -421,6 +594,8 @@ export function plansFor(frame, { coreRadius = 64 } = {}) {
       residents: frame.residents(k),
       houses: s.houses ?? null,
       jobs: s.houseJobs ?? [],
+      design: s.plan ?? null,
+      walls: s.walls ?? null,
       coreRadius,
       seed: k + 1,
     });

@@ -178,3 +178,77 @@ test('more residents than room crowd into the houses there are', async () => {
   assert.equal(plain.recorded, false);
   assert.ok([...plain.occupants].every((k) => k <= 5));
 });
+
+test('a designed town fills its walls first and draws its ring, gates, towers and places', async () => {
+  const { isPlainPlan, ringPoint } = await import('../src/world/settlement-plan.js');
+  const design = {
+    style: 'ringed',
+    keep: 'centre',
+    market: 'by_store',
+    shrine: 'edge',
+    craft_quarter: 'by_gate',
+    wall_ring: 2,
+    gates: [0, 3],
+  };
+  const sections = Array.from({ length: 10 }, (_, k) => (k < 7 ? ['palisade', k === 3 ? 10 : 25] : [null, 0]));
+  const plan = new SettlementPlan({
+    residents: 900,
+    houses: { hut: 150, house: 30 },
+    design,
+    walls: { ring: 2, gates: [0, 5], sections, towers: 2 },
+  });
+  assert.equal(plan.designed, true);
+  assert.equal(isPlainPlan(design), false);
+  // 180 houses need 12 blocks: the 21 inside ring 2 (25, less the keep, the store, the market
+  // and the craft quarter) come first.
+  const inside = plan.blocks.filter(([i, j]) => Math.max(Math.abs(i), Math.abs(j)) <= 2);
+  assert.equal(inside.length, plan.blocks.length);
+  // The keep at the centre, the market by the store, the shrine beyond the walls.
+  const at = Object.fromEntries(plan.places.map((p) => [p.name, p]));
+  assert.deepEqual([at.keep.i, at.keep.j], [0, 0]);
+  assert.ok(Math.max(Math.abs(at.market.i), Math.abs(at.market.j)) <= 1);
+  assert.ok(Math.max(Math.abs(at.shrine.i), Math.abs(at.shrine.j)) > 2, 'the shrine stands outside');
+  assert.ok(!plan.blocks.some(([i, j]) => plan.places.some((p) => p.i === i && p.j === j)));
+  // Seven sections stand (16 modules each, one a gatehouse), three are a planned line.
+  assert.deepEqual(plan.wallsBuilt(), { built: 7, of: 10 });
+  assert.equal(plan.planned.length, 3);
+  const walls = plan.pieces.filter((p) => p.asset.startsWith('wall.palisade.'));
+  const gates = plan.pieces.filter((p) => p.asset.startsWith('wall.gate.'));
+  const towers = plan.pieces.filter((p) => p.asset.startsWith('wall.tower.'));
+  assert.equal(walls.length + gates.length, 7 * 16);
+  assert.equal(gates.length, 2);
+  assert.equal(towers.length, 2);
+  assert.ok(
+    gates.every((p) => p.asset.startsWith('wall.gate.timber')),
+    'palisade gates are timber',
+  );
+  assert.equal(plan.pieces.filter((p) => p.damaged).length, 16, 'the battered section');
+  // Every wall piece lies on the ring's line, half a block beyond the outer wards.
+  const h = 2.5 * BLOCK_M;
+  for (const p of [...walls, ...gates, ...towers]) {
+    assert.ok(Math.abs(Math.max(Math.abs(p.x), Math.abs(p.y)) - h) < 1e-6, `${p.asset} at ${p.x},${p.y}`);
+  }
+  // The fields lie beyond the walls; guards walk them.
+  assert.ok(plan.fieldRing.r0 > h * Math.SQRT2);
+  const out = [0, 0];
+  plan.workPoint(DUTY.guard, 0, 4242, out);
+  assert.ok(Math.abs(Math.max(Math.abs(out[0]), Math.abs(out[1])) - h) < 1e-6);
+  // The ring's line runs round once in eight half-sides.
+  assert.deepEqual(ringPoint(h, 0), [h, 0, 'y']);
+  assert.deepEqual(ringPoint(h, 8 * h).slice(0, 2), [h, 0]);
+  assert.deepEqual(ringPoint(h, 2 * h).slice(0, 2), [0, -h]);
+});
+
+test('the plain plan and plans without a design keep their old layout', async () => {
+  const { isPlainPlan } = await import('../src/world/settlement-plan.js');
+  const plain = { style: 'open', keep: 'edge', wall_ring: 2, gates: [0] };
+  assert.equal(isPlainPlan(plain), true);
+  assert.equal(isPlainPlan(null), true);
+  const before = new SettlementPlan({ residents: 400, houses: { hut: 80 } });
+  assert.deepEqual(before.pieces, []);
+  assert.equal(before.ringHalf, 0);
+  const planned = new SettlementPlan({ residents: 400, houses: { hut: 80 }, design: plain });
+  assert.equal(planned.designed, false);
+  assert.deepEqual(planned.wallsBuilt(), { built: 0, of: 10 });
+  assert.equal(planned.planned.length, 10);
+});

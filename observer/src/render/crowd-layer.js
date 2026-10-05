@@ -40,6 +40,8 @@ const SHEET = 512;
 const PAD = 2;
 const DOT_PX = 16;
 const ICON_ART = 0.25; // ward house particles: an eighth of the 2x painting
+/** Tint of a wall section battered below half its strength. */
+const DAMAGED_TINT = 0xd09a88;
 
 function smooth(a, b, x) {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
@@ -60,7 +62,7 @@ export function timeOfDay(t) {
  * design and facing (accent already tinted), a dot, and ward house icons.
  * Particle containers need a single texture source.
  */
-function bakeSheet(PIXI, atlas, designs) {
+function bakeSheet(PIXI, atlas, designs, pieceAssets = []) {
   const canvas = document.createElement('canvas');
   canvas.width = SHEET;
   canvas.height = SHEET;
@@ -148,7 +150,7 @@ function bakeSheet(PIXI, atlas, designs) {
     { x: BADGE_PX / 2, y: BADGE_PX },
     1,
   );
-  for (const asset of ICON_ASSETS) {
+  for (const asset of new Set([...ICON_ASSETS, ...pieceAssets])) {
     const e = atlas.get(asset);
     const k = ICON_ART / e.art;
     const w = Math.max(2, Math.ceil(e.w * k));
@@ -184,7 +186,8 @@ export class CrowdLayer {
     this.plans = plans;
     this.layout = layout;
     const designs = [...new Set(frame.appearance)].sort((a, b) => a - b);
-    this.sheet = bakeSheet(PIXI, atlas, designs);
+    const pieceAssets = [...new Set(plans.flatMap((plan) => (plan.pieces ?? []).map((x) => x.asset)))].sort();
+    this.sheet = bakeSheet(PIXI, atlas, designs, pieceAssets);
     this.container = new PIXI.Container();
     this.sites = plans.map((plan, k) => this._site(k, plan, origins[k]));
     this.pin = new PIXI.Graphics();
@@ -206,12 +209,16 @@ export class CrowdLayer {
       texture: this.sheet.entries.get('dot').texture,
       dynamicProperties: { position: false },
     });
-    const order = Array.from({ length: plan.lots }, (_, h) => h).sort(
-      (a, b) => plan.houseX[a] + plan.houseY[a] - (plan.houseX[b] + plan.houseY[b]) || a - b,
-    );
-    for (const h of order) {
-      const icon = this.sheet.entries.get(`icon.${this._houseAsset(k, h)}`);
-      const p = project(plan.houseX[h], plan.houseY[h]);
+    // Houses, then the town's walls and places, one depth order.
+    const items = [];
+    for (let h = 0; h < plan.lots; h += 1) {
+      items.push({ x: plan.houseX[h], y: plan.houseY[h], asset: this._houseAsset(k, h), n: h, damaged: false });
+    }
+    for (const [n, piece] of (plan.pieces ?? []).entries()) items.push({ ...piece, n: plan.lots + n });
+    items.sort((a, b) => a.x + a.y - (b.x + b.y) || a.n - b.n);
+    for (const item of items) {
+      const icon = this.sheet.entries.get(`icon.${item.asset}`);
+      const p = project(item.x, item.y);
       far.addParticle(
         new PIXI.Particle({
           texture: icon.texture,
@@ -221,9 +228,24 @@ export class CrowdLayer {
           anchorY: icon.anchor.y / icon.h,
           scaleX: 1 / icon.art,
           scaleY: 1 / icon.art,
+          tint: item.damaged ? DAMAGED_TINT : 0xffffff,
         }),
       );
     }
+    // Sections not yet built: the planned line, dashed on the ground.
+    const planned = new PIXI.Graphics();
+    for (const line of plan.planned ?? []) {
+      for (let i = 0; i + 1 < line.length; i += 1) {
+        const [ax, ay] = line[i];
+        const [bx, by] = line[i + 1];
+        for (let d = 0; d < 1; d += 0.5) {
+          const a = project(ax + (bx - ax) * d, ay + (by - ay) * d);
+          const b = project(ax + (bx - ax) * (d + 0.3), ay + (by - ay) * (d + 0.3));
+          planned.moveTo(a.x, a.y).lineTo(b.x, b.y);
+        }
+      }
+    }
+    planned.stroke({ width: 3, color: 0xf2e6c8, alpha: 0.7 });
     const dots = new PIXI.ParticleContainer({
       texture: this.sheet.entries.get('dot').texture,
       dynamicProperties: { position: true, vertex: true, color: true },
@@ -237,8 +259,11 @@ export class CrowdLayer {
       dynamicProperties: { position: true, vertex: true, uvs: true, color: true },
     });
     const badge = new PIXI.Container();
+    const town = plan.design
+      ? ` · ${plan.designed ? `${plan.design.style.replace('_', ' ')} town, designed by the council` : 'plain plan'} · walls ${plan.wallsBuilt().built} of ${plan.wallsBuilt().of} sections`
+      : '';
     const label = new PIXI.Text({
-      text: `${this.frame.settlements[k].label} · ${this.frame.residents(k).toLocaleString('en')} people · ${this.frame.provenance === 'recorded run' ? 'recorded' : 'synthetic'}`,
+      text: `${this.frame.settlements[k].label} · ${this.frame.residents(k).toLocaleString('en')} people · ${this.frame.provenance === 'recorded run' ? 'recorded' : 'synthetic'}${town}`,
       style: { fontFamily: 'system-ui, sans-serif', fontSize: 12, fontWeight: '700', fill: 0xffffff },
     });
     label.position.set(2, -33);
@@ -247,7 +272,7 @@ export class CrowdLayer {
       .fill({ color: 0x10151a, alpha: 0.85 })
       .stroke({ width: 1.5, color: hexNum(CIV_COLORS[this.frame.settlements[k].civ]) });
     badge.addChild(g, label);
-    root.addChild(far, dots, shadows, near, crowd);
+    root.addChild(planned, far, dots, shadows, near, crowd);
     this.container.addChild(root, badge);
     const reach = plan.fieldRing.r1 + 150;
     return {
@@ -257,6 +282,7 @@ export class CrowdLayer {
       offset,
       root,
       far,
+      planned,
       dots,
       near,
       shadows,
@@ -447,6 +473,7 @@ export class CrowdLayer {
         sprite.scale.set(1 / e.art);
         sprite.position.set(p.x, p.y);
         sprite.zIndex = plan.houseX[h] + plan.houseY[h];
+        sprite.tint = 0xffffff;
         sprite.visible = true;
         if (h < plan.houseCount && plan.crowded(h)) {
           // Above the roof, at a constant screen size.
@@ -461,6 +488,23 @@ export class CrowdLayer {
           badge.visible = true;
         }
       }
+    }
+    // The town's walls and places in view.
+    for (const piece of plan.pieces ?? []) {
+      const ps = piece.x + piece.y;
+      const pd = piece.x - piece.y;
+      if (ps < minS - 16 || ps > maxS + 16 || pd < minD - 16 || pd > maxD + 16) continue;
+      const sprite = this._houseSprite(site, used);
+      used += 1;
+      const e = this.atlas.get(piece.asset);
+      const p = project(piece.x, piece.y);
+      sprite.texture = e.texture;
+      sprite.anchor.set(e.anchor.x / e.w, e.anchor.y / e.h);
+      sprite.scale.set(1 / e.art);
+      sprite.position.set(p.x, p.y);
+      sprite.zIndex = ps;
+      sprite.tint = piece.damaged ? DAMAGED_TINT : 0xffffff;
+      sprite.visible = true;
     }
     for (let n = used; n < site.houseSprites.length; n += 1) site.houseSprites[n].visible = false;
     for (let n = badges; n < site.badges.length; n += 1) site.badges[n].visible = false;

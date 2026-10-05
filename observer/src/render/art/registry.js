@@ -19,6 +19,7 @@ import { ART } from './paint/iso.js';
 import { paintBuilding, paintConstruction, paintWell } from './paint/buildings.js';
 import { paintBush, paintCropRow, paintFence, paintProp, paintRock, paintTree } from './paint/nature.js';
 import { ANIMATIONS, APPEARANCE_COUNT, ENVOY_FRAME_H, FRAME_H, FRAME_W } from './paint/people.js';
+import { WALL_GRADES, paintGate, paintTower, paintWall } from './paint/walls.js';
 
 export const CIV_COLORS = ['#2f5d9a', '#a83a32', '#3f8a3a', '#c9a227'];
 
@@ -163,6 +164,17 @@ export function buildingSpecs(civColor) {
         { type: 'window', face: '+x', u: 2.2, v: 1.2, w: 0.7, h: 0.6, shutters: null },
       ],
     },
+    // A small shrine: drawn where a council's plan puts it; it does nothing yet.
+    'building.shrine': {
+      w: 4,
+      d: 3.4,
+      wallH: 2.6,
+      plinth: { h: 0.5, mat: STONE },
+      walls: STONE_WARM,
+      gable: STONE_WARM,
+      roof: { axis: 'x', rise: 2.2, overhang: 0.4, mat: TILES },
+      details: [{ type: 'door', face: '+y', u: 1.5, w: 1.0, h: 1.9, arch: true }],
+    },
     'building.workshop.wing': {
       w: 3.5,
       d: 4,
@@ -187,6 +199,23 @@ export function staticAssetPainters(civColor) {
     paint: () => paintConstruction({ id: 'building.construction', w: 6, d: 5, wallH: 2.6 }),
   };
   painters['building.well'] = { category: 'building', paint: () => paintWell({ id: 'building.well' }) };
+  // Town walls (rules version 3): a module per grade and axis, gatehouses and towers.
+  for (const axis of ['x', 'y']) {
+    for (const grade of WALL_GRADES) {
+      painters[`wall.${grade}.${axis}`] = {
+        category: 'building',
+        paint: () => paintWall({ id: `wall.${grade}.${axis}`, grade, axis }),
+      };
+    }
+    for (const stone of [false, true]) {
+      const id = `wall.gate.${stone ? 'stone' : 'timber'}.${axis}`;
+      painters[id] = { category: 'building', paint: () => paintGate({ id, axis, stone }) };
+    }
+  }
+  for (const stone of [false, true]) {
+    const id = `wall.tower.${stone ? 'stone' : 'timber'}`;
+    painters[id] = { category: 'building', paint: () => paintTower({ id, stone }) };
+  }
   for (let i = 0; i < 6; i += 1) {
     painters[`nature.oak.${i}`] = {
       category: 'nature',
