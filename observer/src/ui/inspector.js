@@ -1,7 +1,7 @@
 // Compact context inspector for a selected citizen or building.
 
 import { CIV_COLORS } from '../render/art/registry.js';
-import { civilizationLabel } from '../data/naming.js';
+import { civilizationLabel, personLabel } from '../data/naming.js';
 
 const CIV_NAMES = [
   'civilization:0000000001',
@@ -55,6 +55,40 @@ export class Inspector {
         .join(
           '',
         )}</ul>${ids.length > shown.length ? `<p class="muted">and ${ids.length - shown.length} more</p>` : ''}`;
+  }
+
+  /** Travellers on a tile (a recorded run's dot): the parties there, their routes and people. */
+  showParties({ q, r, count, civ, parties, civilizations = [] }) {
+    this.selected = null;
+    this.list = { parties };
+    this.el.hidden = false;
+    const kinds = {
+      campaign: 'war party',
+      expedition: 'expedition',
+      migration: 'migrants',
+      settlement: 'settlers',
+      shipment: 'shipment',
+      haul: 'carriers',
+      roadwork: 'road crew',
+    };
+    const civName = (k) => (civilizations[k] ? civilizationLabel(civilizations[k]) : `civilization ${k + 1}`);
+    const rows = parties.length
+      ? parties
+          .map(
+            (p) => `<li><strong>${kinds[p.kind] ?? p.kind.replaceAll('_', ' ')}</strong> of ${civName(p.civilization)}
+              <span class="muted">· ${p.people.length} people · route of ${p.route.length} tiles, at step ${Math.min(p.at + 1, p.route.length)}</span>
+              <div class="muted">${p.people
+                .slice(0, 12)
+                .map((id) => `${personLabel(id)} <code>${id}</code>`)
+                .join(', ')}${p.people.length > 12 ? ` and ${p.people.length - 12} more` : ''}</div>
+              <div class="muted"><code>${p.id}</code></div></li>`,
+          )
+          .join('')
+      : `<li class="muted">The engine counts them here; which parties they belong to is not loaded for this day.</li>`;
+    this.el.innerHTML = `
+      <header><div><h2>${count} travelling on tile ${q},${r}</h2><span class="tag">${civName(civ)} · recorded</span></div>
+      <button class="x" data-act="close" aria-label="Close">×</button></header>
+      <ul class="parties">${rows}</ul>`;
   }
 
   render() {

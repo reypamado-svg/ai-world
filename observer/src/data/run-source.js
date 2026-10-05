@@ -84,13 +84,17 @@ export class RunSource {
     return best;
   }
 
+  /** A day's record: settlements, travellers, owners and counts. */
+  async record(day) {
+    return JSON.parse(new TextDecoder().decode(await this.load(`${this.base}/${this._path('day', day)}`)));
+  }
+
   /**
    * One day: the engine's record and a PeopleFrame of everyone at a settlement.
    * @returns {Promise<{ day: number, record: object, frame: PeopleFrame }>}
    */
   async day(day) {
-    const text = new TextDecoder().decode(await this.load(`${this.base}/${this._path('day', day)}`));
-    const record = JSON.parse(text);
+    const record = await this.record(day);
     const raw = await gunzip(await this.load(`${this.base}/${this._path('people', day)}`));
     const { n, columns } = decodePeople(raw, this.manifest.people_layout);
     const away = this.manifest.away;

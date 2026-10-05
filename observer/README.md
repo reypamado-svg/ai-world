@@ -93,6 +93,39 @@ Then open:
   badge, and the inspector says "12 people, room for 5 (crowded)". People counted at no
   settlement (on the road) are drawn as counted dots at their tiles.
 
+### A run served live (`sovereign-world observe`, O3)
+
+The observer can also follow a run while it is being recorded, with no export step. Install
+the server's extra once, then point it at a run:
+
+```sh
+uv pip install --python .venv/bin/python -e ".[observer]"     # FastAPI and uvicorn
+.venv/bin/sovereign-world observe runs/baseline-21              # [--host 127.0.0.1] [--port 8766]
+```
+
+It prints an address such as `http://127.0.0.1:8766/?run=live#token=…`; open it. The
+token is made fresh each time the server starts (or taken from
+`SOVEREIGN_WORLD_OBSERVER_TOKEN` in the server's own environment, in which case add
+`#token=…` to the address yourself). The part after `#` never leaves the browser; the page
+sends the token only in an `Authorization` header, and no file or log holds it. Every
+`/api` address needs it; the page's own code does not. Recorded exports under
+`data/runs/` and the browser tests are not served.
+
+- The server only reads the run, exactly as the export does, and its answers are byte for
+  byte the export's files. Another terminal can keep the run going (`sovereign-world run
+runs/baseline-21 --days 30`): new days appear within about two seconds.
+- **LIVE RUN · following** shows the newest day as it is saved; stepping back with **‹**
+  pauses following, and **Follow latest** resumes it. If the run is cut back or replaced,
+  the page starts again.
+- **Chronicle** lists the shown day's events in plain sentences, each with where the
+  record puts it (the event's own tile, or the tile of the person, settlement, party or
+  battle it names, that day or the day before; a civilization's events at its capital).
+  **Go** moves the camera there, **Follow** follows the person named. Routine bookkeeping
+  (food eaten, orders accepted, single tiles changing hands) is hidden unless **Routine**
+  is ticked.
+- Click a traveller dot on the map to see the parties on that tile (war parties,
+  expeditions, settlers…), their people, and their route drawn on the map.
+
 - `http://127.0.0.1:8765/proof.html` — the O1a close-zoom art proof.
 - `http://127.0.0.1:8765/proof.html?scene=depth` — the pinned depth test scene.
 
@@ -190,6 +223,8 @@ node tests/capture-geography.mjs captures              # terrain stills: world, 
 | `crowd.test.mjs`           | At 5,000 and 50,000 people: counts in every band, the crowd budget, 200 people picked exactly, following, cell lists, heap and update time                        |
 | `budgets.test.mjs`         | Caps from the screen size; the observer at 3840 × 2160 and 1280 × 720 stays within them and recomputes them on resize                                             |
 | `tour.test.mjs`            | The measurement tour holds the camera against wheel, drag and buttons, labels each row with the band it measured, records evictions, heap and load times          |
+| `server.test.mjs`          | Live server: wrong token refused, newest day, Follow latest, a later day within 5 s, run unchanged, chronicle Go/Follow, travellers                               |
+| `chronicle.test.mjs`       | Chronicle sentences with observer-assigned names, how each place was found, routine events hidden, the person an event names                                      |
 
 ## Layout
 

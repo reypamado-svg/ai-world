@@ -38,6 +38,9 @@ import { syntheticPopulation } from './data/synthetic/people.js';
 import { CrowdLayout, plansFor } from './world/settlement-plan.js';
 import { VILLAGE_RADIUS_M } from './data/sample/village.js';
 import { RunSource } from './data/run-source.js';
+import { ServerSource } from './data/server-source.js';
+import { tokenFromLocation } from './data/auth.js';
+import { ChroniclePanel } from './ui/chronicle.js';
 import { APPEARANCE_COUNT } from './render/art/paint/people.js';
 
 const params = new URLSearchParams(location.search);
@@ -47,7 +50,10 @@ const DEBUG = params.has('debug') || SYNTHETIC;
 const PEOPLE = Math.max(0, Number(params.get('people') ?? 0) || 0);
 // ?run=NAME (or a path with a slash): a recorded run's export, from data/runs/NAME (O2).
 const RUN = params.get('run');
-const RUN_BASE = RUN && (RUN.includes('/') ? RUN : `data/runs/${RUN}`);
+// ?run=live: the run `sovereign-world observe` serves, followed as it is saved (O3).
+const LIVE = RUN === 'live';
+const RUN_BASE = RUN && !LIVE && (RUN.includes('/') ? RUN : `data/runs/${RUN}`);
+const LIVE_POLL_MS = 1000;
 // ?measure=auto: after loading, tour each band for TOUR_S seconds and show a copyable table (S7).
 const AUTO_MEASURE = params.get('measure') === 'auto';
 const TOUR_S = Math.max(1, Number(params.get('tourSeconds') ?? 10) || 10);
@@ -259,22 +265,119 @@ class ObserverApp {
   /** Recorded-run mode: its chips, its day's overlays, and the day stepper. */
   showRun(run, population) {
     this.runSource = run;
-    $('source-chip').textContent = 'RECORDED RUN';
+    $('source-chip').textContent = run.live ? 'LIVE RUN' : 'RECORDED RUN';
     $('source-chip').title = `${run.label}: settlements, houses, people and borders as the engine recorded them.`;
     $('sample-chip').textContent = 'LAYOUT AND MOVEMENT: VISUAL APPROXIMATION';
     $('sample-chip').title =
       'Who lives where, their houses and duties are recorded; where in a settlement they stand and walk is presentation.';
     $('live-chip').textContent = 'Names: observer-assigned';
     $('day-group').hidden = false;
+    if (run.live) this.setUpChronicle(run);
     this.showDay(population);
     const step = async (dir) => {
       const days = run.days;
       const at = days.indexOf(this.population.day);
       const next = days[Math.max(0, Math.min(days.length - 1, at + dir))];
+      // Stepping back stops following the newest day; stepping onto it follows again.
+      if (run.live) this.setFollowLatest(next === run.latest);
       if (next !== this.population.day) await this.loadDay(next);
     };
     $('btn-day-prev').addEventListener('click', () => step(-1));
     $('btn-day-next').addEventListener('click', () => step(1));
+    if (run.live) this.followLive(run);
+  }
+
+  /** A live run: look for new days every second; follow the newest, or start again when the
+   * run's history was cut back or replaced. */
+  followLive(run) {
+    const button = $('btn-day-follow');
+    button.hidden = false;
+    button.addEventListener('click', async () => {
+      this.setFollowLatest(!this.followLatest);
+      if (this.followLatest && run.latest !== this.population.day) await this.loadDay(run.latest);
+    });
+    this.liveState = { polls: 0, reset: false, error: null };
+    // Opened on an older day (?day=N): look at it until asked to follow.
+    this.setFollowLatest(this.population.day === run.latest);
+    let busy = false;
+    const poll = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const news = await run.refresh();
+        this.liveState.polls += 1;
+        this.liveState.error = null;
+        if (news.reset) {
+          this.liveState.reset = true;
+          setStatus('The run was cut back or replaced: starting again');
+          $('loading').hidden = false;
+          clearInterval(this.livePoll);
+          location.reload();
+          return;
+        }
+        if (news.added.length && this.followLatest && run.latest !== this.population.day) {
+          await this.loadDay(run.latest);
+        }
+        this.showLiveChip();
+      } catch (err) {
+        this.liveState.error = String(err.message ?? err);
+        this.showLiveChip();
+      } finally {
+        busy = false;
+      }
+    };
+    this.livePoll = setInterval(poll, LIVE_POLL_MS);
+  }
+
+  /** The chronicle panel (live runs: the server places each event on the map). */
+  setUpChronicle(run) {
+    const panel = $('chronicle');
+    this.chronicle = new ChroniclePanel(panel, {
+      onGo: (q, r) => {
+        this.follow = false;
+        const c = hexCentre(q, r, this.R);
+        const p = project(c.x, c.y);
+        this.camera.x = p.x;
+        this.camera.y = p.y;
+        this.camera.setZoom(Math.max(this.camera.zoom, 0.6));
+      },
+      onFollow: (id) => {
+        this.select(id);
+        this.follow = true;
+        this.inspector?.render();
+      },
+      canFollow: (id) => (this.population?.frame.indexOf(id) ?? -1) >= 0,
+    });
+    const button = $('btn-chronicle');
+    button.hidden = false;
+    button.addEventListener('click', () => {
+      panel.hidden = !panel.hidden;
+    });
+    this.chronicleDay = null;
+    this.loadChronicle = async (day) => {
+      this.chronicleDay = day;
+      const record = await run.chronicle(day);
+      // A later day may have been asked for meanwhile: show only the newest ask.
+      if (this.chronicleDay === day) this.chronicle.setRecord(record);
+    };
+  }
+
+  setFollowLatest(on) {
+    this.followLatest = on;
+    const button = $('btn-day-follow');
+    if (button) button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    this.showLiveChip();
+  }
+
+  showLiveChip() {
+    const run = this.runSource;
+    if (!run?.live) return;
+    const chip = $('live-chip');
+    const error = this.liveState?.error;
+    chip.textContent = error
+      ? 'LIVE RUN · server not answering'
+      : `LIVE RUN · ${this.followLatest ? 'following' : 'paused'} · ${run.days.length} days`;
+    chip.title = error ?? 'Days appear here as the run saves them. Names are observer-assigned.';
   }
 
   /** Load another exported day; the camera stays where it is. */
@@ -300,6 +403,20 @@ class ObserverApp {
     });
     $('day-label').textContent = `Engine day ${population.day}`;
     this.inspector?.render();
+    this.loadChronicle?.(population.day).catch((err) => {
+      if (this.liveState) this.liveState.error = String(err.message ?? err);
+    });
+    if (this.runSource?.routes) {
+      const day = population.day;
+      this.runSource
+        .routes(day)
+        .then((routes) => {
+          if (this.population.day === day) this.runOverlays.setRoutes(routes);
+        })
+        .catch((err) => {
+          if (this.liveState) this.liveState.error = String(err.message ?? err);
+        });
+    }
   }
 
   /** Cache caps for the current screen size; recomputed on resize. */
@@ -471,11 +588,22 @@ class ObserverApp {
   pickAt(cx, cy) {
     if (!this.village && !this.crowd) return null;
     const w = this.camera.screenToWorld(this.world, cx, cy);
-    return this.crowd?.pick(w.x, w.y, this.camera.zoom) ?? this.village?.pick(w.x, w.y, this.camera.zoom) ?? null;
+    const hit = this.crowd?.pick(w.x, w.y, this.camera.zoom) ?? this.village?.pick(w.x, w.y, this.camera.zoom) ?? null;
+    if (hit) return hit;
+    // A recorded run's travellers: the dot on their tile, and the parties there.
+    const travellers = this.runOverlays?.pickTraveller(w.x, w.y, this.camera.zoom);
+    return travellers ? { travellers } : null;
   }
 
   /** Select what a pick found: one person or building, or a list of people (a local-band dot). */
   applyPick(hit) {
+    this.runOverlays?.showRoutes(hit?.travellers?.parties ?? []);
+    if (hit?.travellers) {
+      this.selected = null;
+      this.follow = false;
+      this.inspector?.showParties({ ...hit.travellers, civilizations: this.runSource?.manifest.civilizations });
+      return;
+    }
     if (hit?.list) {
       this.selected = null;
       this.follow = false;
@@ -909,6 +1037,56 @@ function buildApi(app) {
       };
     },
     loadDay: (day) => app.loadDay(day),
+    /** The day shown's travellers: [q, r, civilization, count] per tile. */
+    runTravellers: () => app.population?.record.travellers ?? [],
+    /** Canvas point of the k-th traveller dot of the day shown, or null. */
+    travellerPoint: (k = 0) => {
+      const t = app.population?.record.travellers?.[k];
+      if (!t) return null;
+      const c = hexCentre(t[0], t[1], app.R);
+      const p = project(c.x, c.y);
+      return toCanvas(p.x, p.y);
+    },
+    /** What the inspector shows (its heading), and the routes drawn. */
+    inspectorTitle: () => document.querySelector('#inspector h2')?.textContent ?? null,
+    /** Live runs: how many day records were rebuilt from the changes since another day. */
+    recordsByChanges: () => app.runSource?.byChanges ?? 0,
+    /** The chronicle as shown: its day, and each listed event's kind and buttons. */
+    chronicleInfo: () => {
+      const panel = document.getElementById('chronicle');
+      if (!app.chronicle?.record) return null;
+      return {
+        day: app.chronicle.record.day,
+        total: app.chronicle.record.events.length,
+        open: !panel.hidden,
+        items: [...panel.querySelectorAll('#chronicle-list li')].map((li) => ({
+          kind: li.dataset.kind,
+          what: li.querySelector('.what').textContent,
+          where: li.querySelector('.where').textContent,
+          go: !li.querySelector('button.go').disabled,
+          follow: li.querySelector('button.follow')?.dataset.person ?? null,
+          canFollow: li.querySelector('button.follow') ? !li.querySelector('button.follow').disabled : false,
+        })),
+      };
+    },
+    /** Where the camera looks: its centre in hex-world coordinates, and whom it follows. */
+    cameraInfo: () => ({
+      x: app.camera.x,
+      y: app.camera.y,
+      zoom: app.camera.zoom,
+      follow: app.follow,
+      selected: app.selected,
+    }),
+    /** The camera position a tile's centre has. */
+    hexCamera: (q, r) => {
+      const c = hexCentre(q, r, app.R);
+      return project(c.x, c.y);
+    },
+    /** A live run: following or not, polls made, and the last error. */
+    liveInfo: () =>
+      app.runSource?.live
+        ? { following: app.followLatest, days: app.runSource.days, latest: app.runSource.latest, ...app.liveState }
+        : null,
     /** Each settlement's town as drawn: designed or plain, its walls, and pieces. */
     townInfo: () =>
       (app.population?.plans ?? []).map((plan, k) => ({
@@ -1106,9 +1284,20 @@ async function main() {
       cpuBytes: Number(params.get('cpuMB') ?? 24) * 1e6,
     };
     $('source-chip').textContent = 'SYNTHETIC TEST WORLD';
-  } else if (RUN_BASE) {
-    setStatus('Loading the recorded run');
-    const run = await RunSource.open(RUN_BASE);
+  } else if (RUN_BASE || LIVE) {
+    let run;
+    if (LIVE) {
+      setStatus('Connecting to the observer server');
+      run = await ServerSource.open('api', { token: tokenFromLocation() });
+      while (run.latest === null) {
+        setStatus('Waiting for the run’s first day');
+        await new Promise((resolve) => setTimeout(resolve, LIVE_POLL_MS));
+        if ((await run.refresh()).reset) location.reload();
+      }
+    } else {
+      setStatus('Loading the recorded run');
+      run = await RunSource.open(RUN_BASE);
+    }
     source = await run.terrain();
     extras = { overview: await source.overview(), run, terrainOptions: { gpuBytes: 192e6, gpuEntries: 256 } };
     const atlas = new Atlas(PIXI);
@@ -1116,7 +1305,7 @@ async function main() {
     const designs = Array.from({ length: APPEARANCE_COUNT }, (_, a) => ({ appearance: a }));
     await bakeSceneActors(atlas, { people: designs, caravan: null }, setStatus);
     atlas.finalize();
-    const day = run.nearestDay(Number(params.get('day') ?? run.days[0]));
+    const day = run.nearestDay(Number(params.get('day') ?? (LIVE ? run.latest : run.days[0])));
     setStatus(`Loading engine day ${day}`);
     extras.population = populationOf(await run.day(day), hexRadiusOf(source.manifest));
     Object.assign(extras, { atlas, assetInfo });

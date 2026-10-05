@@ -403,3 +403,46 @@ button.on {
 #tour-banner[hidden] {
   display: none;
 }
+
+#chronicle {
+  position: fixed;
+  right: 12px;
+  top: 56px;
+  width: min(380px, calc(100vw - 24px));
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+  z-index: 7;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+#chronicle header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+#chronicle-day {
+  color: var(--muted);
+  flex: 1;
+}
+#chronicle-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+#chronicle-list li {
+  border-top: 1px solid var(--line);
+  padding: 6px 0;
+}
+#chronicle-list .where {
+  color: var(--muted);
+  font-size: 11px;
+}
+#chronicle-list .actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}

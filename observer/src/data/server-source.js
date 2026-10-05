@@ -1,0 +1,134 @@
+// A run served live by `sovereign-world observe` (O3).
+//
+// The server answers with the same bytes the static run export holds, so ServerSource is a
+// RunSource that asks the server instead of reading files: the manifest, the id table, each
+// day's record and people, and the run's terrain, all with the token. `refresh` asks what
+// is new: more days (and the ids they brought), or a new history when the run was cut back
+// or replaced, after which the page starts again.
+
+import { RunSource } from './run-source.js';
+import { TerrainSource } from './terrain-source.js';
+import { authorisedFetch } from './auth.js';
+
+const EPOCH = 'X-History-Epoch';
+
+/** Rebuild a day's record from another day's and the changes between them (the server's
+ * `changes.apply_changes`, in JS). */
+export function applyChanges(before, changes) {
+  if (before.day !== changes.from) throw new Error('these changes start from another day');
+  const rows = new Map(before.settlements.map((row) => [row.id, row]));
+  for (const row of changes.settlements) rows.set(row.id, row);
+  const owners = new Map(before.owners.map(([q, r, owner]) => [`${q},${r}`, [q, r, owner]]));
+  for (const [q, r] of changes.owners.unset) owners.delete(`${q},${r}`);
+  for (const [q, r, owner] of changes.owners.set) owners.set(`${q},${r}`, [q, r, owner]);
+  const sorted = [...owners.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  return {
+    counts: changes.counts,
+    day: changes.day,
+    owners: sorted,
+    settlements: changes.order.map((id) => rows.get(id)),
+    travellers: changes.travellers,
+  };
+}
+
+export class ServerSource extends RunSource {
+  /**
+   * @param {string} api the server's API root, e.g. 'api'
+   * @param {{ token: string, fetch?: typeof fetch }} options
+   */
+  static async open(api, { token, fetch: get } = {}) {
+    const authed = authorisedFetch(token, get);
+    const base = `${api}/run`;
+    const load = async (url) => {
+      const res = await authed(url);
+      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+      return new Uint8Array(await res.arrayBuffer());
+    };
+    const res = await authed(`${base}/manifest`);
+    if (!res.ok) throw new Error(`${base}/manifest: HTTP ${res.status}`);
+    const manifest = await res.json();
+    if (manifest.kind !== 'recorded run') throw new Error('the server is not serving a recorded run');
+    const source = new ServerSource(base, manifest, [], load);
+    source.api = api;
+    source.authed = authed;
+    source.epoch = Number(res.headers.get(EPOCH) ?? manifest.history_epoch);
+    source.label = `live run ${manifest.run_id.slice(0, 8)}`;
+    source.live = true;
+    await source.refresh();
+    return source;
+  }
+
+  _path(kind, day) {
+    return kind === 'people' ? `days/${day}/people` : `days/${day}`;
+  }
+
+  /** A day's record: from the last one read and the changes since, when there is one. */
+  async record(day) {
+    const held = this.held;
+    let record;
+    if (held && held.day !== day) {
+      const { body, epoch } = await this._json(`${this.base}/days/${day}/changes?from=${held.day}`);
+      if (epoch !== this.epoch) throw new Error('the run was cut back or replaced');
+      record = applyChanges(held, body);
+      this.byChanges = (this.byChanges ?? 0) + 1;
+    } else {
+      record = await super.record(day);
+    }
+    this.held = record;
+    return record;
+  }
+
+  /** The day's parties on the road, with their routes. */
+  async routes(day) {
+    return (await this._json(`${this.base}/days/${day}/routes`)).body;
+  }
+
+  /** The run's own terrain, asked of the server with the token. */
+  terrain() {
+    return TerrainSource.open(`${this.base}/terrain`, { fetch: this.authed });
+  }
+
+  async _json(path) {
+    const res = await this.authed(path);
+    if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+    return { body: await res.json(), epoch: Number(res.headers.get(EPOCH)) };
+  }
+
+  /** The server's status: days saved and ready, the history epoch, the people seen. */
+  async status() {
+    return (await this._json(`${this.api}/status`)).body;
+  }
+
+  /**
+   * What is new since the last look.
+   * @returns {Promise<{ reset: boolean, added: number[], status: object }>} `reset` when the
+   *   run's history changed: the page must start again.
+   */
+  async refresh() {
+    const status = await this.status();
+    if (status.history_epoch !== this.epoch) return { reset: true, added: [], status };
+    if (status.ready === this.days.length && status.people === this.ids.length) {
+      return { reset: false, added: [], status };
+    }
+    const days = await this._json(`${this.base}/days`);
+    // Ids only grow while the history stays the same: ask for the ones not yet held.
+    const ids = await this._json(`${this.base}/ids?from=${this.ids.length}`);
+    if (days.epoch !== this.epoch || ids.epoch !== this.epoch) return { reset: true, added: [], status };
+    this.ids.push(...ids.body);
+    const known = new Set(this.days);
+    const added = days.body.filter((day) => !known.has(day));
+    this.days = days.body;
+    this.manifest.days = days.body;
+    return { reset: false, added, status };
+  }
+
+  /** The newest ready day, or null before the first is ready. */
+  get latest() {
+    return this.days.length ? this.days[this.days.length - 1] : null;
+  }
+
+  /** A saved day's events, each with its place on the map (or none). */
+  async chronicle(day) {
+    return (await this._json(`${this.base}/chronicle?day=${day}`)).body;
+  }
+}

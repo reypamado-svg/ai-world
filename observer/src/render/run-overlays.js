@@ -40,10 +40,61 @@ export class RunOverlays {
     this.container = new PIXI.Container();
     this.borders = new PIXI.Container();
     this.travellers = new PIXI.Container();
+    this.routes = new PIXI.Container();
     this.markers = new PIXI.Container();
-    this.container.addChild(this.borders, this.travellers, this.markers);
+    this.container.addChild(this.borders, this.routes, this.travellers, this.markers);
     this.items = [];
     this.drawnZoom = null;
+    this.parties = [];
+    this.shownRoutes = [];
+  }
+
+  /** The day's parties on the road (O3 server: /routes), for picking and route lines. */
+  setRoutes(record) {
+    this.parties = record && record.day === this.record?.day ? record.parties : [];
+    this.showRoutes([]);
+  }
+
+  /** Draw these parties' routes, in their civilization's colour, with where they stand. */
+  showRoutes(parties) {
+    const { PIXI, R } = this;
+    for (const child of this.routes.removeChildren()) child.destroy();
+    this.shownRoutes = parties;
+    for (const party of parties) {
+      if (!party.route.length) continue;
+      const g = new PIXI.Graphics();
+      const points = party.route.map(([q, r]) => {
+        const c = hexCentre(q, r, R);
+        return project(c.x, c.y);
+      });
+      const anchor = points[0];
+      g.position.set(anchor.x, anchor.y);
+      g.moveTo(0, 0);
+      for (const p of points.slice(1)) g.lineTo(p.x - anchor.x, p.y - anchor.y);
+      g.stroke({ width: 3 / (this.drawnZoom ?? 0.01), color: civColor(party.civilization ?? 0), alpha: 0.9 });
+      for (const p of [points[0], points[points.length - 1]]) {
+        g.circle(p.x - anchor.x, p.y - anchor.y, 4 / (this.drawnZoom ?? 0.01)).fill({ color: 0xffffff, alpha: 0.9 });
+      }
+      this.routes.addChild(g);
+    }
+  }
+
+  /** The traveller dot under a world point, at this zoom: its tile, count and parties. */
+  pickTraveller(wx, wy, zoom) {
+    if (!this.record || !this.travellers.visible) return null;
+    let best = null;
+    for (const [q, r, civ, count] of this.record.travellers ?? []) {
+      const c = hexCentre(q, r, this.R);
+      const p = project(c.x, c.y);
+      const reach = (3 + Math.sqrt(count) * 1.5 + 3) / zoom;
+      const d = Math.hypot(wx - p.x, wy - p.y);
+      if (d <= reach && (!best || d < best.d)) best = { d, q, r, civ, count };
+    }
+    if (!best) return null;
+    const parties = this.parties.filter(
+      (party) => party.tile && party.tile[0] === best.q && party.tile[1] === best.r && party.civilization === best.civ,
+    );
+    return { q: best.q, r: best.r, civ: best.civ, count: best.count, parties };
   }
 
   /** Show one day's record (from the run export). */
@@ -54,6 +105,9 @@ export class RunOverlays {
       for (const child of c.removeChildren()) child.destroy({ children: true });
     }
     this.items = [];
+    this.parties = [];
+    for (const child of this.routes.removeChildren()) child.destroy();
+    this.shownRoutes = [];
     const { PIXI, R } = this;
     for (const s of record.settlements) {
       const c = project(hexCentre(s.q, s.r, R).x, hexCentre(s.q, s.r, R).y);
@@ -154,6 +208,7 @@ export class RunOverlays {
       this._drawBorders(zoom);
       this._drawTravellers(zoom);
       this.drawnZoom = zoom;
+      this.showRoutes(this.shownRoutes);
     }
     this.borders.visible = zoom < 0.05;
     this.travellers.alpha = alpha;
@@ -166,6 +221,8 @@ export class RunOverlays {
       settlements: r?.settlements.length ?? 0,
       travellers: (r?.travellers ?? []).reduce((sum, t) => sum + t[3], 0),
       ownedTiles: r?.owners?.length ?? 0,
+      parties: this.parties.length,
+      routesShown: this.shownRoutes.length,
     };
   }
 }
