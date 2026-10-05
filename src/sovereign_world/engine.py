@@ -59,6 +59,8 @@ from sovereign_world.defence import (
     FIGHTER_ARMS,
     MIN_LINE,
     RESERVE_JOINS_ROUND,
+    SALLY_PURSUIT_BP,
+    SALLY_TOWER_HITS_BP,
     VETERAN_TOWER_HITS_BP,
     Arms,
     Crews,
@@ -193,6 +195,7 @@ from sovereign_world.rings import (
     WallSection,
     battered_citadel,
     battered_ring,
+    facing_sections,
     ring_defence_bp,
     ring_for,
     ring_from_ruin,
@@ -289,6 +292,7 @@ from sovereign_world.war import (
     DRILL_DAYS_PER_POINT,
     ESCAPE_BP,
     MIN_BESIEGERS,
+    PURSUIT_BP,
     RISING_RATIO,
     SETTLEMENT_DEFENCE_BP,
     VETERAN,
@@ -2247,6 +2251,11 @@ def _fight(
         else (DefenceOrderSpec(), list(home_side), [], [])
     )
     arms_of = {item: enemy_people[item].skills.get(ARMS, 0) for item in (*line, *reserve)}
+    # Rules version 3 defence: catapults in the store are crewed by the last of the line in
+    # id order, who fight at half strength, as the attackers' crews do.
+    stored = supplies.get(Resource.CATAPULT, 0) if ordered else 0
+    home_engines = crewed_engines(len(line), {Resource.CATAPULT: stored}) if stored else {}
+    home_crew = set(line[len(line) - crew_needed(home_engines) :]) if home_engines else set()
     # Home defenders arm from their store; defending war parties use what they carry.
     formations = knows(state.civilizations[enemy].capabilities, CapabilityId.SPEAR_FORMATIONS)
     by_practice = stance.arms_priority is Arms.VETERANS
@@ -2269,7 +2278,12 @@ def _fight(
     walls = _walls_at(state, enemy, tile) if at_home else None
     towers = manned_towers(walls.towers, len(home_side)) if walls is not None else 0
     defenders = [
-        fighter(enemy_people[person_id], defender_kits.get(person_id), attacking=False)
+        fighter(
+            enemy_people[person_id],
+            defender_kits.get(person_id),
+            attacking=False,
+            crewing=person_id in home_crew,
+        )
         for person_id in [*line, *marching]
     ]
     waiting = tuple(
@@ -2298,6 +2312,18 @@ def _fight(
             else TOWER_HITS_BP
             for index in range(towers)
         )
+    # Rules version 3 defence: a besieged town's sally fights under its towers' cover.
+    sally = _sally(state, party, enemy, tile, marching)
+    cover_bp, covering = 0, 0
+    chase = {"attackers": PURSUIT_BP, "defenders": PURSUIT_BP}
+    if sally is not None:
+        siege, side = sally
+        covering, complete = _sally_cover(state, siege)
+        chase[side] = SALLY_PURSUIT_BP if complete else PURSUIT_BP
+        if side == "attackers":
+            cover_bp = covering * SALLY_TOWER_HITS_BP
+        else:
+            towers, tower_hits = covering, (SALLY_TOWER_HITS_BP,) * covering
     # Rules version 3: a home side whose store cannot feed it a day is short of supplies.
     supplied = supplies.get(Resource.FOOD, 0) >= len(line) + len(reserve) if ordered else True
     # Rules version 3 defence: a citadel takes the defenders in if the town is lost.
@@ -2322,6 +2348,10 @@ def _fight(
         defender_reserve=waiting,
         reserve_joins_round=RESERVE_JOINS_ROUND,
         defender_refuge=refuge,
+        defender_catapults=home_engines.get(Resource.CATAPULT, 0),
+        attacker_cover_bp=cover_bp,
+        attacker_pursuit_bp=chase["attackers"],
+        defender_pursuit_bp=chase["defenders"],
     )
     battle = Battle(
         battle_id=battle_id,
@@ -2361,6 +2391,30 @@ def _fight(
                 str(battle_id),
                 count=len(held_back),
                 posture=stance.posture.value,
+            )
+        )
+    if home_engines:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "engines_manned",
+                str(enemy),
+                str(battle_id),
+                catapults=home_engines[Resource.CATAPULT],
+                crew=crew_needed(home_engines),
+            )
+        )
+    if sally is not None and (covering or chase[sally[1]] != PURSUIT_BP):
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "sally_covered",
+                str(sally[0].defender_id),
+                str(battle_id),
+                towers=covering,
+                pursuit_bp=chase[sally[1]],
             )
         )
     if outcome.reserve_round:
@@ -2456,6 +2510,48 @@ def _fight(
     events.extend(_take_captives(state, battle, at_home))
     party = next(item for item in state.journeys if item.journey_id == party.journey_id)
     return party, events
+
+
+def _sally(
+    state: WorldState, party: Journey, enemy: EntityId, tile: HexCoord, marching: list[EntityId]
+) -> tuple[Siege, str] | None:
+    """Rules version 3 defence: a besieged town's war party fighting its own camp's
+    besiegers on the camp tile, and the side it stands on: "attackers" when it falls on the
+    camp, "defenders" when the camp falls on it first."""
+    if not rules_for(state.rules_version).town_defence:
+        return None
+    sender = party.sender_civilization_id
+    for siege in state.sieges:
+        if not siege.active or siege.camp != tile:
+            continue
+        if (
+            siege.defender_id == sender
+            and siege.besieger_id == enemy
+            and party.route[0] == siege.settlement_tile
+        ):
+            return siege, "attackers"
+        if (
+            siege.besieger_id == sender
+            and siege.defender_id == enemy
+            and siege.journey_id == party.journey_id
+            and marching
+        ):
+            return siege, "defenders"
+    return None
+
+
+def _sally_cover(state: WorldState, siege: Siege) -> tuple[int, bool]:
+    """The manned towers on the sections facing a camp, and whether the ring is complete.
+    Those who stayed at home man them, two to a tower."""
+    ring = state.civilizations[siege.defender_id].wall_rings.get(siege.settlement_id)
+    if ring is None:
+        return 0, False
+    if not ring.towers:
+        return 0, ring.complete
+    facing = facing_sections(ring, siege.settlement_tile.direction_to(siege.camp))
+    standing = facing & set(tower_positions(ring))
+    stayed, _ = _defenders(state, siege.defender_id, siege.settlement_tile)
+    return manned_towers(len(standing), len(stayed)), ring.complete
 
 
 def _after_home_battle(
@@ -4253,11 +4349,97 @@ def _hold_camp(state: WorldState, party: Journey, rng: StableRng) -> list[Domain
     if party.provisions < len(living) * home:
         return _break_camp(state, party, SiegeEnd.STARVED)
     catapults = crewed_engines(len(living), engines_in(party.cargo)).get(Resource.CATAPULT, 0)
-    if not catapults:
+    town = _town_catapults(state, siege) if rules_for(state.rules_version).town_defence else 0
+    if not catapults and not town:
         return []
     roll = rng.stream(f"day:{state.day}:siege:{siege.siege_id}")
-    hits = sum(int(roll.integers(0, BASIS)) < CATAPULT_HITS_BP for _ in range(catapults))
-    return _bombard(state, siege, hits, roll) if hits else []
+    events: list[DomainEvent] = []
+    if catapults:
+        hits = sum(int(roll.integers(0, BASIS)) < CATAPULT_HITS_BP for _ in range(catapults))
+        if hits:
+            events.extend(_bombard(state, siege, hits, roll))
+    if town:
+        # Rules version 3 defence: the town's catapults answer, after the camp's own.
+        events.extend(_counter_battery(state, siege, living, town, roll))
+    return events
+
+
+def _town_catapults(state: WorldState, siege: Siege) -> int:
+    """Catapults in a besieged town's store that its able people at home can crew, once the
+    town has seen the camp."""
+    if siege.defender_learned_day is None:
+        return 0
+    civilization = state.civilizations[siege.defender_id]
+    stored = store_at(civilization, siege.settlement_tile).quantities.get(Resource.CATAPULT, 0)
+    if not stored:
+        return 0
+    hands, _ = _defenders(state, siege.defender_id, siege.settlement_tile)
+    return crewed_engines(len(hands), {Resource.CATAPULT: stored}).get(Resource.CATAPULT, 0)
+
+
+def _counter_battery(
+    state: WorldState,
+    siege: Siege,
+    living: list[EntityId],
+    catapults: int,
+    roll: np.random.Generator,
+) -> list[DomainEvent]:
+    """Each of the town's catapults fires at the camp: whether it hits, whom and how hard
+    are always drawn, so the draws are the same whatever is hit."""
+    events: list[DomainEvent] = []
+    people = state.civilizations[siege.besieger_id].population.people
+    targets = sorted(living)
+    hits = dead = 0
+    for _ in range(catapults):  # COUNTER_BATTERY_DRAWS draws each
+        hit = int(roll.integers(0, BASIS)) < CATAPULT_HITS_BP
+        pick = int(roll.integers(0, max(len(targets), 1)))
+        wound = int(roll.integers(WOUND_MIN, WOUND_MAX + 1))
+        if not hit or not targets:
+            continue
+        victim = people[targets.pop(pick)]
+        hits += 1
+        if wound >= victim.health_bp:
+            victim.health_bp = 0
+            victim.alive = False
+            victim.death_day = state.day
+            dead += 1
+            events.append(
+                _event(
+                    state,
+                    EventPhase.DEATH,
+                    "person_died",
+                    str(siege.besieger_id),
+                    str(victim.person_id),
+                    cause="bombardment",
+                )
+            )
+        else:
+            victim.health_bp -= wound
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "person_wounded",
+                    str(siege.besieger_id),
+                    str(victim.person_id),
+                    damage=wound,
+                )
+            )
+    if not hits:
+        return events
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "camp_bombarded",
+            str(siege.defender_id),
+            str(siege.siege_id),
+            catapults=catapults,
+            hits=hits,
+            dead=dead,
+        ),
+        *events,
+    ]
 
 
 def _bombard(

@@ -24,6 +24,10 @@ class HexCoord:
         offsets = ((1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1))
         return tuple(HexCoord(self.q + dq, self.r + dr) for dq, dr in offsets)
 
+    def direction_to(self, other: HexCoord) -> int:
+        """The direction 0-5, as `neighbors` are numbered, to an adjacent tile."""
+        return self.neighbors().index(other)
+
     def distance(self, other: HexCoord) -> int:
         dq = self.q - other.q
         dr = self.r - other.r

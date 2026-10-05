@@ -629,6 +629,7 @@ _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("wall_rings", {}),
     ("defence_orders", {}),
     ("citadels", {}),
+    ("siege_days_of_food", {}),
 )
 """Report fields added since council-3, and the value at which each is left out, so reports
 from older worlds read, and so prompt, exactly as before."""
@@ -742,6 +743,9 @@ class CouncilReport(BaseModel):
     """Each settlement's standing defence order (rules version 3)."""
     citadels: dict[EntityId, Citadel] = Field(default_factory=dict)
     """Each settlement's citadel (rules version 3)."""
+    siege_days_of_food: dict[EntityId, int] = Field(default_factory=dict)
+    """For each settlement this civilization knows to be besieged, the days its store feeds
+    the people inside, one food each a day (rules version 3)."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -1077,6 +1081,25 @@ def _people_part(
     }
 
 
+def _siege_days_of_food(
+    state: WorldState, civilization_id: EntityId, residents: dict[EntityId, list[EntityId]]
+) -> dict[EntityId, int]:
+    """Rules version 3 defence: how long each besieged settlement's store lasts."""
+    if not rules_for(state.rules_version).town_defence:
+        return {}
+    civilization = state.civilizations[civilization_id]
+    days: dict[EntityId, int] = {}
+    for siege in state.sieges:
+        if (
+            siege.active
+            and siege.defender_id == civilization_id
+            and siege.defender_learned_day is not None
+        ):
+            food = store_at(civilization, siege.settlement_tile).quantities.get(Resource.FOOD, 0)
+            days[siege.settlement_id] = food // max(len(residents.get(siege.settlement_id, [])), 1)
+    return dict(sorted(days.items()))
+
+
 def build_council_report(
     state: WorldState,
     civilization_id: EntityId,
@@ -1170,6 +1193,7 @@ def build_council_report(
         wall_rings=dict(civilization.wall_rings),
         defence_orders=dict(civilization.defence_orders),
         citadels=dict(civilization.citadels),
+        siege_days_of_food=_siege_days_of_food(state, civilization_id, residents),
         wall_jobs=civilization.wall_jobs,
         store_capacity={
             settlement_id: inventory.capacity

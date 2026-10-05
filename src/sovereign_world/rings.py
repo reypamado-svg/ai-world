@@ -70,6 +70,17 @@ def gate_sections(ring: int, gates: tuple[int, ...]) -> frozenset[int]:
     return frozenset(gate * count // GATE_SECTORS for gate in gates)
 
 
+def facing_sections(ring: WallRing, direction: int) -> frozenset[int]:
+    """The sections facing a hex direction (0-5): each section faces the direction nearest
+    to it round the ring, so a gate section faces its own gate's direction."""
+    n = len(ring.sections)
+    return frozenset(
+        index
+        for index in range(n)
+        if (2 * index * GATE_SECTORS + n) // (2 * n) % GATE_SECTORS == direction
+    )
+
+
 class WallSection(BaseModel):
     """One stretch of a ring: unbuilt (no grade), or standing at a grade and strength."""
 

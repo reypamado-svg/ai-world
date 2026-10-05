@@ -367,6 +367,10 @@ def resolve_battle(
     defender_reserve: tuple[Fighter, ...] = (),
     reserve_joins_round: int = 0,
     defender_refuge: bool = False,
+    defender_catapults: int = 0,
+    attacker_cover_bp: int = 0,
+    attacker_pursuit_bp: int = PURSUIT_BP,
+    defender_pursuit_bp: int = PURSUIT_BP,
 ) -> BattleOutcome:
     """Fight rounds until a side's losses pass its morale; the rout costs it more.
 
@@ -381,7 +385,11 @@ def resolve_battle(
     of round `reserve_joins_round`, or joins at once when the defenders' line would break;
     on joining it swells the line, so the share fallen falls. With `defender_refuge` (a
     citadel), beaten defenders fall back into it: no pursuit, so no rout blows and no
-    captives. Without them the draws are the same as before.
+    captives. `defender_catapults` (a town's own, crewed) hit the attackers before every
+    round. `attacker_cover_bp` is fire from walls behind the attackers (a sally's towers):
+    added to their opening volley and striking the defenders before every round. The
+    pursuit rates set how far each side is chased when it breaks. Without them the draws are
+    the same as before.
     """
     roll = rng.stream(stream)
     towers_bp = sum(tower_hits_bp) if tower_hits_bp else towers * TOWER_HITS_BP
@@ -451,7 +459,7 @@ def resolve_battle(
         volleys = {
             side: chance_hits(
                 sum(item.volley_bp for item in standing[side])
-                + (towers_bp if side == "defenders" else 0)
+                + (towers_bp if side == "defenders" else attacker_cover_bp)
             )
             for side in ("attackers", "defenders")
         }
@@ -467,6 +475,15 @@ def resolve_battle(
             join_reserve()
         if catapults:
             strike("defenders", chance_hits(catapults * CATAPULT_HITS_BP), WOUND_MIN, WOUND_MAX)
+        if attacker_cover_bp:
+            strike("defenders", chance_hits(attacker_cover_bp), WOUND_MIN, WOUND_MAX)
+        if defender_catapults:
+            strike(
+                "attackers",
+                chance_hits(defender_catapults * CATAPULT_HITS_BP),
+                WOUND_MIN,
+                WOUND_MAX,
+            )
         if towers_bp:
             strike("attackers", chance_hits(towers_bp), WOUND_MIN, WOUND_MAX)
         if not standing["defenders"] and waiting:
@@ -490,7 +507,8 @@ def resolve_battle(
     if broken is None:
         # A long stalemate: the attackers, far from home, give up the field.
         broken = "attackers"
-    pursuit = -(-starting[broken] * PURSUIT_BP // BASIS)
+    rate = attacker_pursuit_bp if broken == "attackers" else defender_pursuit_bp
+    pursuit = -(-starting[broken] * rate // BASIS)
     if broken == "defenders" and defender_refuge:
         pursuit = 0
     winners = "defenders" if broken == "attackers" else "attackers"

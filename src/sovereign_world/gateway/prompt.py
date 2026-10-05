@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from sovereign_world.armoury import CATAPULT_HITS_BP, RECIPES
+from sovereign_world.armoury import CATAPULT_HITS_BP, ENGINES, RECIPES
 from sovereign_world.bridges import BRIDGE_LABOUR, BRIDGE_MATERIALS, BRIDGING_GRADE, MASONRY
 from sovereign_world.commands import COUNTED_ORDERS, MAX_WORKER_COUNT, CouncilReport
 from sovereign_world.defence import (
@@ -18,6 +18,8 @@ from sovereign_world.defence import (
     MAX_RESERVE_BP,
     MIN_LINE,
     RESERVE_JOINS_ROUND,
+    SALLY_PURSUIT_BP,
+    SALLY_TOWER_HITS_BP,
     VETERAN_TOWER_HITS_BP,
 )
 from sovereign_world.gateway.envelope import COMMAND_ALLOWANCE, reply_schema
@@ -102,6 +104,7 @@ from sovereign_world.walls import (
 from sovereign_world.war import (
     HOME_DEFENCE_MORALE_BP,
     MAX_ROUNDS,
+    PURSUIT_BP,
     SETTLEMENT_DEFENCE_BP,
     VETERAN,
     VETERAN_MORALE_BP_PER_TENTH,
@@ -498,7 +501,20 @@ def defence_rule() -> str:
         "back into it: none are pursued or taken captive, and raiders carry off at most "
         f"{CITADEL_PLUNDER_BP // 100}% of the store. Once no section of the ring stands, "
         "catapults batter the citadel instead of the people. One wall or works job runs at a "
-        "settlement at a time."
+        "settlement at a time.\n"
+        "Catapults in a settlement's store fight for it: each is crewed by "
+        f"{ENGINES[Resource.CATAPULT].crew} of the line, who fight at half strength, and hits "
+        f"the attackers {CATAPULT_HITS_BP // 100}% of the time before every round. While a "
+        "camp besieges a town that has seen it, the town's crewed catapults fire at the camp "
+        f"every day, each hitting a besieger {CATAPULT_HITS_BP // 100}% of the time. A sally, "
+        "a war party sent from a besieged settlement against its camp, is covered by the "
+        "manned towers on the sections facing the camp, each hitting "
+        f"{SALLY_TOWER_HITS_BP / 100:g}% of the time in the opening volley and before every "
+        "round; if the ring is complete, "
+        f"a routed sally is chased half as far ({SALLY_PURSUIT_BP // 100}% of it instead of "
+        f"{PURSUIT_BP // 100}%). A besieged town's people eat from its store, one food each a "
+        "day, and your report's siege_days_of_food shows how long each besieged settlement's "
+        "store will last."
     )
 
 

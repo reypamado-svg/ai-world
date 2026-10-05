@@ -27,6 +27,13 @@ RESERVE_JOINS_ROUND = 3
 """The round a reserve joins the fight, unless the line would break sooner."""
 VETERAN_TOWER_HITS_BP = 2_000
 """A tower manned by two veterans hits more often than one manned by anyone (1,500)."""
+SALLY_TOWER_HITS_BP = 750
+"""Each manned tower facing a camp covers a sally against it at half a tower's usual chance."""
+SALLY_PURSUIT_BP = 500
+"""A sally routed under a complete ring is chased half as far as usual (1,000)."""
+COUNTER_BATTERY_DRAWS = 3
+"""Draws a town's catapult makes each siege day, all always made: whether it hits, whom,
+how hard."""
 CRAFT_SKILLS: frozenset[str] = frozenset(
     capability.value
     for capability in (
