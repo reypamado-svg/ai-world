@@ -36,6 +36,7 @@ from sovereign_world.townplan import (
 )
 from sovereign_world.walls import (
     BASIS,
+    HIGH_WALLS,
     SECTION_SHARE,
     WALL_GRADES,
     WALL_HIT,
@@ -58,6 +59,9 @@ if TYPE_CHECKING:
 SALVAGE_SHARE = 2
 """Pulling a ring down gives back half of what its sections and towers cost."""
 MAX_SECTIONS = sections_of(MAX_RING)
+DITCH = 1
+MOAT = 2
+"""A ring's `ditch`: dug, or flooded."""
 
 
 def gate_sections(ring: int, gates: tuple[int, ...]) -> frozenset[int]:
@@ -108,12 +112,21 @@ class WallRing(BaseModel):
     """The day a section last went up."""
     tower_sections: tuple[int, ...] = ()
     """Rules version 3: the sections the towers stand on, one each."""
+    ditch: int = Field(default=0, ge=0, le=MOAT)
+    """Rules version 3: 1 if a ditch is dug round the ring, 2 if it is flooded as a moat."""
+    stakes: bool = False
+    """Rules version 3: stakes stand round the ring until the next battle at home."""
 
     @model_serializer(mode="wrap")
     def _omit_placement(self, handler: SerializerFunctionWrapHandler) -> object:
         dumped = handler(self)
-        if isinstance(dumped, dict) and not self.tower_sections:
-            dumped.pop("tower_sections", None)
+        if isinstance(dumped, dict):
+            if not self.tower_sections:
+                dumped.pop("tower_sections", None)
+            if not self.ditch:
+                dumped.pop("ditch", None)
+            if not self.stakes:
+                dumped.pop("stakes", None)
         return dumped
 
     @model_validator(mode="after")
@@ -143,6 +156,78 @@ class WallRing(BaseModel):
 
     def gates(self) -> frozenset[int]:
         return frozenset(index for index, item in enumerate(self.sections) if item.gate)
+
+
+class Citadel(BaseModel):
+    """Rules version 3: a walled keep at a settlement's centre, which the defenders fall back
+    to when the town is lost."""
+
+    model_config = ConfigDict(frozen=True)
+
+    grade: WallGrade
+    strength: int = Field(gt=0)
+    built_day: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def within_grade(self) -> Citadel:
+        if self.strength > WALL_GRADES[self.grade].strength:
+            raise ValueError("a citadel's strength is within its grade's")
+        return self
+
+
+CITADEL_PIECES = 4
+"""A citadel's walls cost four sections of their grade, raised from nothing."""
+CITADEL_PLUNDER_BP = 5_000
+"""Rules version 3: the share of a settlement's store raiders can carry off while its people
+hold the citadel."""
+DITCH_PERSON_DAYS = 3
+MOAT_PERSON_DAYS = 6
+STAKES_PERSON_DAYS = 1
+STAKES_TIMBER = 2
+"""Per section of the ring."""
+
+
+def work_cost(work: DefenceWork, grade: WallGrade | None) -> tuple[dict[Resource, int], int]:
+    """One piece of a work: its materials and person-days. A gatehouse is a tower of its
+    section's grade; a ditch, a moat and stakes are dug or set per section of the ring; a
+    citadel is four pieces of its grade, each a section raised from nothing."""
+    if work is DefenceWork.DITCH:
+        return {}, DITCH_PERSON_DAYS
+    if work is DefenceWork.MOAT:
+        return {}, MOAT_PERSON_DAYS
+    if work is DefenceWork.STAKES:
+        return {Resource.TIMBER: STAKES_TIMBER}, STAKES_PERSON_DAYS
+    if grade is None:
+        return {}, 0
+    if work is DefenceWork.GATEHOUSE:
+        spec = tower_spec(grade)
+        return dict(spec.materials), spec.person_days
+    return section_materials(None, grade), section_person_days(None, grade)
+
+
+def battered_citadel(citadel: Citadel, hits: int) -> Citadel | None:
+    """A citadel after catapult hits: it falls a grade as its strength runs out, and an
+    earthwork citadel that falls is gone."""
+    current: Citadel | None = citadel
+    for _ in range(hits):
+        if current is None:
+            break
+        strength = current.strength - WALL_HIT
+        if strength > 0:
+            current = current.model_copy(update={"strength": strength})
+            continue
+        below = rank(current.grade) - 1
+        current = (
+            None
+            if below == 0
+            else current.model_copy(
+                update={
+                    "grade": tuple(WallGrade)[below - 1],
+                    "strength": WALL_GRADES[tuple(WallGrade)[below - 1]].strength,
+                }
+            )
+        )
+    return current
 
 
 def empty_ring(settlement_id: EntityId, ring: int, gates: tuple[int, ...], day: int) -> WallRing:
@@ -217,20 +302,47 @@ TOWER_COVER_BP = 500
 """Rules version 3: a section a tower stands on, or stands beside, is that much harder."""
 GATE_WEAKNESS_BP = 1_000
 """Rules version 3: what an unfortified gate takes off its section."""
+STAKES_BP = 500
+"""Rules version 3: what stakes add to every standing section in the next battle at home."""
+
+
+def bonus_behind_ditch(grade: WallGrade, engines: dict[Resource, int], ditch: int) -> int:
+    """A grade's bonus after the attackers' engines, behind a ditch or a moat.
+
+    Without one, as `wall_bonus_after_engines`. Across a ditch a ram cannot reach the wall
+    and serves only as ladders would: low walls lose half their worth, high ones nothing.
+    Across a moat no ladder can be set, and a ram brought over does nothing to low walls and
+    halves high ones.
+    """
+    if not ditch:
+        return wall_bonus_after_engines(grade, engines)
+    extra = WALL_GRADES[grade].defence_bp - BASIS
+    high = grade in HIGH_WALLS
+    ram = bool(engines.get(Resource.RAM))
+    ladders = bool(engines.get(Resource.LADDER))
+    if ditch >= MOAT:
+        if ram and high:
+            extra //= 2
+    elif (ram or ladders) and not high:
+        extra //= 2
+    return BASIS + extra
 
 
 def section_bonus(
     ring: WallRing, index: int, engines: dict[Resource, int], towers: frozenset[int]
 ) -> int:
-    """One section's worth to the defenders: its grade's bonus after the attackers' engines,
-    harder under a tower's cover, weaker at an unfortified gate; a gap is worth nothing."""
+    """One section's worth to the defenders: its grade's bonus after the attackers' engines
+    (behind any ditch or moat), harder under a tower's cover and behind stakes, weaker at an
+    unfortified gate; a gap is worth nothing."""
     section = ring.sections[index]
     if section.grade is None:
         return BASIS
     n = len(ring.sections)
-    bonus = wall_bonus_after_engines(section.grade, engines)
+    bonus = bonus_behind_ditch(section.grade, engines, ring.ditch)
     if {index, (index - 1) % n, (index + 1) % n} & towers:
         bonus += TOWER_COVER_BP
+    if ring.stakes:
+        bonus += STAKES_BP
     if section.gate and not section.gatehouse:
         bonus -= GATE_WEAKNESS_BP
     return max(bonus, BASIS)
@@ -359,13 +471,11 @@ def damaged_sections(ring: WallRing) -> tuple[int, ...]:
 
 def job_costs(job: WallJob) -> tuple[int, ...]:
     """Person-days for each section a ring job works on, in order."""
-    if job.towers or job.work is not None:
-        costs = []
-        for grade in job.section_grades:
-            spec_grade = job.start_grade if job.towers else grade
-            assert spec_grade is not None
-            costs.append(tower_spec(spec_grade).person_days)
-        return tuple(costs)
+    if job.work is not None:
+        return tuple(work_cost(job.work, grade)[1] for grade in job.section_grades)
+    if job.towers:
+        assert job.start_grade is not None
+        return tuple(tower_spec(job.start_grade).person_days for _ in job.section_grades)
     if job.target is not None:
         return tuple(section_person_days(grade, job.target) for grade in job.section_grades)
     return tuple(
@@ -395,8 +505,7 @@ def piece_cost(job: WallJob, grade: WallGrade | None) -> dict[Resource, int]:
         assert job.start_grade is not None
         return dict(tower_spec(job.start_grade).materials)
     if job.work is not None:
-        assert grade is not None
-        return dict(tower_spec(grade).materials)
+        return work_cost(job.work, grade)[0]
     if job.target is not None:
         return section_materials(grade, job.target)
     assert grade is not None
@@ -463,9 +572,18 @@ def ring_work(
     Raising takes the weakest sections first (`count` of them, or every one below the
     target); repair takes every damaged section; towers take no section. With `named`
     sections (rules version 3 defence), exactly those, in that order. With `placed`, towers
-    are put on sections: the named ones, or where they would go by themselves. A work
-    (a gatehouse) is raised on the named sections.
+    are put on sections: the named ones, or where they would go by themselves. A gatehouse
+    is raised on the named sections; a ditch, a moat or stakes round every section; a
+    citadel in four pieces of `target`'s grade.
     """
+    if work is DefenceWork.CITADEL:
+        pieces = tuple(range(CITADEL_PIECES))
+        costs = [work_cost(work, target)[0] for _ in pieces]
+        return pieces, tuple(target for _ in pieces), _summed(costs)
+    if work is not None and work is not DefenceWork.GATEHOUSE:
+        every = tuple(range(len(ring.sections)))
+        grades_now = tuple(item.grade for item in ring.sections)
+        return every, grades_now, _summed([work_cost(work, grade)[0] for grade in grades_now])
     if named and (repair or target is not None or towers or work is not None):
         chosen = named
     elif repair:
@@ -477,7 +595,6 @@ def ring_work(
     else:
         chosen = ()
     grades = tuple(ring.sections[index].grade for index in chosen)
-    total: dict[Resource, int] = {}
     grade = weakest(ring)
     if towers and grade is None:
         # Towers stand on walls; with none standing there is nothing to take.
@@ -491,17 +608,18 @@ def ring_work(
             }
         ]
     elif work is not None:
-        costs = [dict(tower_spec(grade).materials) for grade in grades if grade is not None]
+        costs = [work_cost(work, grade)[0] for grade in grades]
     elif repair:
         costs = [section_repair_materials(grade) for grade in grades if grade is not None]
     else:
         assert target is not None or not chosen
         costs = [section_materials(grade, target) for grade in grades if target is not None]
+    return chosen, grades, _summed(costs)
+
+
+def _summed(costs: list[dict[Resource, int]]) -> dict[Resource, int]:
+    total: dict[Resource, int] = {}
     for cost in costs:
         for resource, quantity in cost.items():
             total[resource] = total.get(resource, 0) + quantity
-    return (
-        chosen,
-        grades,
-        {resource: total[resource] for resource in sorted(total) if total[resource]},
-    )
+    return {resource: total[resource] for resource in sorted(total) if total[resource]}

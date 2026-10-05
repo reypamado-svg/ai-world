@@ -366,6 +366,7 @@ def resolve_battle(
     tower_hits_bp: tuple[int, ...] = (),
     defender_reserve: tuple[Fighter, ...] = (),
     reserve_joins_round: int = 0,
+    defender_refuge: bool = False,
 ) -> BattleOutcome:
     """Fight rounds until a side's losses pass its morale; the rout costs it more.
 
@@ -378,8 +379,9 @@ def resolve_battle(
     `tower_hits_bp`, when given, is each manned tower's chance of a hit instead of
     `towers` at the usual chance. `defender_reserve` waits out of the fight until the start
     of round `reserve_joins_round`, or joins at once when the defenders' line would break;
-    on joining it swells the line, so the share fallen falls. Without them the draws are
-    the same as before.
+    on joining it swells the line, so the share fallen falls. With `defender_refuge` (a
+    citadel), beaten defenders fall back into it: no pursuit, so no rout blows and no
+    captives. Without them the draws are the same as before.
     """
     roll = rng.stream(stream)
     towers_bp = sum(tower_hits_bp) if tower_hits_bp else towers * TOWER_HITS_BP
@@ -489,6 +491,8 @@ def resolve_battle(
         # A long stalemate: the attackers, far from home, give up the field.
         broken = "attackers"
     pursuit = -(-starting[broken] * PURSUIT_BP // BASIS)
+    if broken == "defenders" and defender_refuge:
+        pursuit = 0
     winners = "defenders" if broken == "attackers" else "attackers"
     limit = CAPTIVES_PER_WINNER * len(standing[winners])
     captured: list[EntityId] = []

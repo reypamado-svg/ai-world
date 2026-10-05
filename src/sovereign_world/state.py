@@ -52,7 +52,7 @@ from sovereign_world.people_store import people_hash
 from sovereign_world.ranks import RealmRank, SettlementRank
 from sovereign_world.research import ResearchAssignment
 from sovereign_world.resources import Inventory, Resource
-from sovereign_world.rings import WallRing, gate_sections, tower_cap
+from sovereign_world.rings import Citadel, WallRing, gate_sections, tower_cap
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView
 from sovereign_world.sites import Site
@@ -142,6 +142,8 @@ class CivilizationState(BaseModel):
     """Each settlement's walls along its planned ring, by settlement id (rules version 3)."""
     defence_orders: dict[EntityId, DefenceOrder] = Field(default_factory=dict)
     """Each settlement's standing defence order, by settlement id (rules version 3)."""
+    citadels: dict[EntityId, Citadel] = Field(default_factory=dict)
+    """Each settlement's citadel, by settlement id (rules version 3)."""
 
 
 _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
@@ -152,6 +154,7 @@ _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("town_plans", {}),
     ("wall_rings", {}),
     ("defence_orders", {}),
+    ("citadels", {}),
 )
 """Civilization fields added by rules versions 2 and 3, and the value at which each is left
 out."""
@@ -535,6 +538,9 @@ def validate_world(state: WorldState) -> None:
             or any(order.settlement_id != key for key, order in civilization.defence_orders.items())
         ):
             raise ValueError("defence orders belong to their own settlements, sorted")
+        held = list(civilization.citadels)
+        if held != sorted(held) or not set(held) <= settlement_ids:
+            raise ValueError("citadels belong to the civilization's own settlements, sorted")
         rings = list(civilization.wall_rings)
         if rings != sorted(rings) or not set(rings) <= settlement_ids:
             raise ValueError("wall rings belong to the civilization's own settlements, sorted")

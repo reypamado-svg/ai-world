@@ -125,6 +125,8 @@ from sovereign_world.research import (
 from sovereign_world.resources import Resource
 from sovereign_world.rings import (
     MAX_SECTIONS,
+    MOAT,
+    Citadel,
     WallRing,
     damaged_sections,
     ring_for,
@@ -169,7 +171,7 @@ from sovereign_world.tolls import (
     TollPost,
     TollView,
 )
-from sovereign_world.townplan import TownPlan, TownPlanSpec, site_error
+from sovereign_world.townplan import DEFAULT_PLAN, Place, TownPlan, TownPlanSpec, site_error
 from sovereign_world.travel import (
     NO_BRIDGES,
     Bridges,
@@ -626,6 +628,7 @@ _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("town_plans", {}),
     ("wall_rings", {}),
     ("defence_orders", {}),
+    ("citadels", {}),
 )
 """Report fields added since council-3, and the value at which each is left out, so reports
 from older worlds read, and so prompt, exactly as before."""
@@ -737,6 +740,8 @@ class CouncilReport(BaseModel):
     """Each settlement's walls, section by section along its planned ring (rules version 3)."""
     defence_orders: dict[EntityId, DefenceOrder] = Field(default_factory=dict)
     """Each settlement's standing defence order (rules version 3)."""
+    citadels: dict[EntityId, Citadel] = Field(default_factory=dict)
+    """Each settlement's citadel (rules version 3)."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -1164,6 +1169,7 @@ def build_council_report(
         walls=civilization.walls,
         wall_rings=dict(civilization.wall_rings),
         defence_orders=dict(civilization.defence_orders),
+        citadels=dict(civilization.citadels),
         wall_jobs=civilization.wall_jobs,
         store_capacity={
             settlement_id: inventory.capacity
@@ -2408,7 +2414,12 @@ def ring_order(
         towers = len(command.section_ids) if command.section_ids else command.tower_count
     chosen, grades, materials = ring_work(
         ring,
-        target=command.wall_grade if command.kind is DirectOrderKind.BUILD_WALLS else None,
+        target=(
+            command.wall_grade
+            if command.kind is DirectOrderKind.BUILD_WALLS
+            or (command.kind is DirectOrderKind.BUILD_WORKS and command.work is DefenceWork.CITADEL)
+            else None
+        ),
         repair=command.kind is DirectOrderKind.REPAIR_WALLS,
         towers=towers,
         count=command.wall_sections,
@@ -2543,9 +2554,20 @@ def _ring_walls_error(
         civilization, settlement_id, command, state.day, placed=placed
     )
     needed: list[CapabilityId]
-    if command.kind is DirectOrderKind.BUILD_WORKS:
+    if command.kind is DirectOrderKind.BUILD_WORKS and command.work not in (
+        None,
+        DefenceWork.GATEHOUSE,
+    ):
+        assert command.work is not None
+        refused = _ring_works_error(command.work, command, civilization, ring, state)
+        if refused is not None:
+            return error("invalid_works", refused)
+        needed = _works_skills(command.work, command.wall_grade)
+    elif command.kind is DirectOrderKind.BUILD_WORKS:
         if command.work is None or not named:
             return error("invalid_works", "a works order names its work and its sections")
+        if command.wall_grade is not None:
+            return error("invalid_works", "only a citadel names a grade")
         for index in named:
             section = ring.sections[index]
             if not section.gate or section.grade is None:
@@ -2608,6 +2630,67 @@ def _ring_walls_error(
         if _short(civilization, tile, reserved, resource, quantity):
             return error("insufficient_materials", f"not enough {resource} for the walls")
     return None
+
+
+def _ring_works_error(
+    work: DefenceWork,
+    command: DirectOrder,
+    civilization: CivilizationState,
+    ring: WallRing,
+    state: WorldState,
+) -> str | None:
+    """Rules version 3 defence: why a ditch, a moat, stakes or a citadel cannot be raised."""
+    if command.section_ids:
+        return f"a {work} is not raised on named sections"
+    if work is DefenceWork.CITADEL and command.wall_grade is None:
+        return "a citadel names the grade of its walls"
+    if work is not DefenceWork.CITADEL and command.wall_grade is not None:
+        return "only a citadel names a grade"
+    half = ring.built * 2 >= len(ring.sections)
+    if work is DefenceWork.DITCH:
+        if ring.ditch:
+            return "this ring already has a ditch"
+        if not half:
+            return "a ditch is dug round a ring at least half built"
+    elif work is DefenceWork.MOAT:
+        if ring.ditch >= MOAT:
+            return "this ring already has a moat"
+        if not ring.ditch:
+            return "a moat is flooded from a ditch"
+        tile = next(
+            item.tile
+            for item in civilization.settlements
+            if item.settlement_id == ring.settlement_id
+        )
+        if not water_near(state.world_map, tile):
+            return "a moat needs water on or beside the settlement"
+    elif work is DefenceWork.STAKES:
+        if ring.stakes:
+            return "stakes already stand round this ring"
+        if not half:
+            return "stakes are set round a ring at least half built"
+    else:
+        plan = civilization.town_plans.get(ring.settlement_id) or DEFAULT_PLAN
+        if plan.keep is not Place.CENTRE:
+            return "a citadel is raised round a keep at the centre"
+        if ring.ring < 2 or not ring.complete:
+            return "a citadel stands inside a complete ring of radius 2 or more"
+        if ring.settlement_id in civilization.citadels:
+            return "this settlement already has a citadel"
+    return None
+
+
+def _works_skills(work: DefenceWork, grade: WallGrade | None) -> list[CapabilityId]:
+    """What a ditch, a moat, stakes or a citadel needs its builders to know."""
+    if work is DefenceWork.STAKES:
+        return [CapabilityId.TIMBERCRAFT]
+    if work is DefenceWork.CITADEL and grade is not None:
+        return [
+            capability
+            for step in wall_steps(None, grade)
+            if (capability := WALL_GRADES[step].capability) is not None
+        ]
+    return []
 
 
 def besieged(state: WorldState, civilization_id: EntityId) -> dict[HexCoord, set[HexCoord]]:

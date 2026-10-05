@@ -49,7 +49,19 @@ from sovereign_world.ranks import (
 )
 from sovereign_world.research import CIVIL_TOPICS
 from sovereign_world.resources import Resource
-from sovereign_world.rings import GATE_WEAKNESS_BP, SALVAGE_SHARE, TOWER_COVER_BP
+from sovereign_world.rings import (
+    CITADEL_PIECES,
+    CITADEL_PLUNDER_BP,
+    DITCH_PERSON_DAYS,
+    GATE_WEAKNESS_BP,
+    MOAT_PERSON_DAYS,
+    SALVAGE_SHARE,
+    STAKES_BP,
+    STAKES_PERSON_DAYS,
+    STAKES_TIMBER,
+    TOWER_COVER_BP,
+    work_cost,
+)
 from sovereign_world.sites import (
     FINDS,
     MAX_WORK_DAYS,
@@ -82,6 +94,7 @@ from sovereign_world.walls import (
     SECTION_SHARE,
     TOWER_HITS_BP,
     WALL_GRADES,
+    DefenceWork,
     WallGrade,
     section_materials,
     section_person_days,
@@ -468,8 +481,31 @@ def defence_rule() -> str:
         "build_works order with work gatehouse and the gate sections' section_ids fortifies "
         "them, each for what a tower on that grade costs, and a gatehouse falls with its "
         "section. Attackers press the weakest section, so the walls are worth halfway "
-        "between the average section and the weakest one."
+        "between the average section and the weakest one.\n"
+        "build_works also raises works round the whole ring (name no sections). A ditch "
+        f"({DITCH_PERSON_DAYS} person-days a section, once at least half the ring stands) "
+        "keeps a ram from the walls: it does only what ladders do, halving low walls and "
+        f"leaving high ones whole. A moat ({MOAT_PERSON_DAYS} person-days a section) floods "
+        "a ditch from water on or beside the settlement: ladders cannot be set at all, and a "
+        "ram leaves low walls whole and halves high ones. Stakes "
+        f"({STAKES_TIMBER} timber and {STAKES_PERSON_DAYS} person-day a section, by someone "
+        "who knows timbercraft, once half the ring stands) make every standing section "
+        f"{STAKES_BP // 100}% harder in the next battle at home, and are spent in it. A "
+        "citadel (work citadel with a wall_grade) is a walled keep raised round a keep at the "
+        "centre inside a complete ring of radius 2 or more, for "
+        f"{CITADEL_PIECES} sections of that grade raised from nothing (a palisade citadel "
+        f"takes {_citadel_cost(WallGrade.PALISADE)}). If the town is lost its defenders fall "
+        "back into it: none are pursued or taken captive, and raiders carry off at most "
+        f"{CITADEL_PLUNDER_BP // 100}% of the store. Once no section of the ring stands, "
+        "catapults batter the citadel instead of the people. One wall or works job runs at a "
+        "settlement at a time."
     )
+
+
+def _citadel_cost(grade: WallGrade) -> str:
+    materials, person_days = work_cost(DefenceWork.CITADEL, grade)
+    parts = [f"{quantity * CITADEL_PIECES} {resource}" for resource, quantity in materials.items()]
+    return " and ".join([*parts, f"{person_days * CITADEL_PIECES} person-days"])
 
 
 def _ordinal(number: int) -> str:

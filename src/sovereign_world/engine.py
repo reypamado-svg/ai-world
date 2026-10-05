@@ -185,7 +185,13 @@ from sovereign_world.research import (
 )
 from sovereign_world.resources import Inventory, InventoryDelta, Resource
 from sovereign_world.rings import (
+    CITADEL_PLUNDER_BP,
+    DITCH,
+    MOAT,
+    Citadel,
+    WallRing,
     WallSection,
+    battered_citadel,
     battered_ring,
     ring_defence_bp,
     ring_for,
@@ -263,6 +269,7 @@ from sovereign_world.walls import (
     TOWER_HITS_BP,
     WALL_GRADES,
     WALL_HIT,
+    DefenceWork,
     WallJob,
     Walls,
     battered,
@@ -288,6 +295,7 @@ from sovereign_world.war import (
     WOUND_MAX,
     WOUND_MIN,
     Battle,
+    BattleOutcome,
     BattleReport,
     Drill,
     Occupation,
@@ -958,6 +966,9 @@ def _cede(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
     if sid in giver.wall_rings:
         taker.wall_rings = dict(sorted({**taker.wall_rings, sid: giver.wall_rings[sid]}.items()))
         giver.wall_rings = {key: value for key, value in giver.wall_rings.items() if key != sid}
+    if sid in giver.citadels:
+        taker.citadels = dict(sorted({**taker.citadels, sid: giver.citadels[sid]}.items()))
+        giver.citadels = {key: value for key, value in giver.citadels.items() if key != sid}
     if sid in giver.housing:
         taker.housing = dict(sorted({**taker.housing, sid: giver.housing[sid]}.items()))
         giver.housing = {key: value for key, value in giver.housing.items() if key != sid}
@@ -2289,6 +2300,9 @@ def _fight(
         )
     # Rules version 3: a home side whose store cannot feed it a day is short of supplies.
     supplied = supplies.get(Resource.FOOD, 0) >= len(line) + len(reserve) if ordered else True
+    # Rules version 3 defence: a citadel takes the defenders in if the town is lost.
+    home = settlement_at(state.civilizations[enemy], tile) if ordered else None
+    refuge = home is not None and home.settlement_id in state.civilizations[enemy].citadels
     battle_id = EntityId(f"battle:{state.day:06d}:{party.journey_id}")
     outcome = resolve_battle(
         attackers,
@@ -2307,6 +2321,7 @@ def _fight(
         tower_hits_bp=tower_hits,
         defender_reserve=waiting,
         reserve_joins_round=RESERVE_JOINS_ROUND,
+        defender_refuge=refuge,
     )
     battle = Battle(
         battle_id=battle_id,
@@ -2360,6 +2375,8 @@ def _fight(
                 count=len(reserve),
             )
         )
+    if home is not None:
+        events.extend(_after_home_battle(state, enemy, home.settlement_id, battle_id, outcome))
     events.extend(_hurt(state, battle))
     events.append(
         _event(
@@ -2441,6 +2458,39 @@ def _fight(
     return party, events
 
 
+def _after_home_battle(
+    state: WorldState,
+    civilization_id: EntityId,
+    settlement_id: EntityId,
+    battle_id: EntityId,
+    outcome: BattleOutcome,
+) -> list[DomainEvent]:
+    """Rules version 3 defence: the stakes round the town are spent, and if the town was
+    lost its people fell back to the citadel."""
+    events: list[DomainEvent] = []
+    civilization = state.civilizations[civilization_id]
+    ring = civilization.wall_rings.get(settlement_id)
+    if ring is not None and ring.stakes:
+        set_ring(civilization, ring.model_copy(update={"stakes": False}))
+        events.append(
+            _event(
+                state, EventPhase.MOVEMENT, "stakes_cleared", str(civilization_id), str(battle_id)
+            )
+        )
+    if outcome.attackers_won and settlement_id in civilization.citadels:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "fell_back_to_citadel",
+                str(civilization_id),
+                str(battle_id),
+                settlement=str(settlement_id),
+            )
+        )
+    return events
+
+
 def _room(state: WorldState, party: Journey) -> int:
     people = state.civilizations[party.sender_civilization_id].population.people
     living = sum(people[person_id].alive for person_id in party.traveller_ids)
@@ -2476,10 +2526,19 @@ def _plunder(
             tile,
             enemy,
         )
-    # Raiders empty the store of the settlement they beat, never the whole civilization's.
+    # Raiders empty the store of the settlement they beat, never the whole civilization's;
+    # under rules version 3 defence, only half of it while its people hold the citadel.
+    site = settlement_at(victim, tile)
+    share = (
+        CITADEL_PLUNDER_BP
+        if rules_for(state.rules_version).town_defence
+        and site is not None
+        and site.settlement_id in victim.citadels
+        else BASIS
+    )
     from_store: dict[Resource, int] = {}
     for resource in PLUNDER_ORDER:
-        grab = min(store_at(victim, tile).quantities.get(resource, 0), room)
+        grab = min(store_at(victim, tile).quantities.get(resource, 0) * share // BASIS, room)
         if grab:
             from_store[resource] = grab
             taken[resource] = taken.get(resource, 0) + grab
@@ -3539,6 +3598,7 @@ def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent
     civilization.town_plans = {}
     civilization.wall_rings = {}
     civilization.defence_orders = {}
+    civilization.citadels = {}
     civilization.realm_rank_reached = RealmRank.CHIEFDOM
     civilization.stores = {}
     civilization.inventory = Inventory(capacity=0)
@@ -4227,6 +4287,10 @@ def _bombard(
                 )
             )
         return events
+    citadel = state.civilizations[siege.defender_id].citadels.get(siege.settlement_id)
+    if citadel is not None:
+        # Rules version 3 defence: with no wall standing, the catapults turn on the citadel.
+        return _batter_citadel(state, siege, citadel, hits)
     walls = _walls_at(state, siege.defender_id, siege.settlement_tile)
     if walls is not None:
         after, fell = battered(walls, hits * WALL_HIT)
@@ -4289,6 +4353,34 @@ def _bombard(
                 )
             )
     return events
+
+
+def _batter_citadel(
+    state: WorldState, siege: Siege, citadel: Citadel, hits: int
+) -> list[DomainEvent]:
+    civilization = state.civilizations[siege.defender_id]
+    after = battered_citadel(citadel, hits)
+    civilization.citadels = {
+        key: value
+        for key, value in (
+            (key, after if key == siege.settlement_id else value)
+            for key, value in civilization.citadels.items()
+        )
+        if value is not None
+    }
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "citadel_damaged"
+            if after is not None and after.grade is citadel.grade
+            else "citadel_fell",
+            str(siege.besieger_id),
+            str(siege.settlement_id),
+            grade=after.grade.value if after is not None else "none",
+            strength=after.strength if after is not None else 0,
+        )
+    ]
 
 
 def _siege_order(
@@ -5379,6 +5471,9 @@ def _advance_ring_job(
                     sections=",".join(str(index) for index in raised),
                 )
             )
+    elif job.work is not None and job.work is not DefenceWork.GATEHOUSE:
+        if ring_job_done(job):
+            events.append(_finish_works(state, civilization_id, job, ring))
     elif job.sections:
         sections = list(ring.sections)
         for step in range(before, sections_done(job)):
@@ -5453,6 +5548,44 @@ def _advance_ring_job(
         )
         return None, events
     return job, events
+
+
+def _finish_works(
+    state: WorldState, civilization_id: EntityId, job: WallJob, ring: WallRing
+) -> DomainEvent:
+    """Rules version 3 defence: a ditch, a moat or stakes go round the ring, or the citadel
+    stands, once all of their work is done."""
+    civilization = state.civilizations[civilization_id]
+    work = job.work
+    assert work is not None
+    if work is DefenceWork.CITADEL:
+        grade = job.section_grades[0]
+        assert grade is not None
+        civilization.citadels = dict(
+            sorted(
+                {
+                    **civilization.citadels,
+                    job.settlement_id: Citadel(
+                        grade=grade, strength=WALL_GRADES[grade].strength, built_day=state.day
+                    ),
+                }.items()
+            )
+        )
+    elif work is DefenceWork.STAKES:
+        set_ring(civilization, ring.model_copy(update={"stakes": True}))
+    else:
+        set_ring(
+            civilization,
+            ring.model_copy(update={"ditch": MOAT if work is DefenceWork.MOAT else DITCH}),
+        )
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "works_built",
+        str(civilization_id),
+        str(job.settlement_id),
+        work=work.value,
+    )
 
 
 def _planned_defence(

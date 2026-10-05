@@ -173,6 +173,14 @@ class DefenceWork(StrEnum):
 
     GATEHOUSE = "gatehouse"
     """A gate section fortified, so that it is no weaker than the wall beside it."""
+    DITCH = "ditch"
+    """Dug round the whole ring: a ram cannot reach the walls to breach them."""
+    MOAT = "moat"
+    """A ditch flooded from water nearby: ladders cannot be set, nor a ram brought up."""
+    STAKES = "stakes"
+    """Sharpened stakes round the ring, spent in the next battle at home."""
+    CITADEL = "citadel"
+    """A walled keep at the centre that the defenders fall back to."""
 
 
 class WallJob(BaseModel):
@@ -202,7 +210,8 @@ class WallJob(BaseModel):
     section_grades: tuple[WallGrade | None, ...] = ()
     """Rules version 3: each of those sections' grade when the job began."""
     work: DefenceWork | None = None
-    """Rules version 3: a work raised on the named sections instead of walls or towers."""
+    """Rules version 3: a work raised instead of walls or towers: on the named gate sections,
+    round every section, or (a citadel) in pieces of the grade in `section_grades`."""
 
     @model_serializer(mode="wrap")
     def _omit_sections(self, handler: SerializerFunctionWrapHandler) -> object:
