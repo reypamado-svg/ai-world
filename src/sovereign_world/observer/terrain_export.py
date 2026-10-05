@@ -194,8 +194,14 @@ def export_terrain_for(manifest: RunManifest, out_dir: Path, chunk_tiles: int = 
     return terrain_bundle(manifest, chunk_tiles).write(out_dir)
 
 
-def terrain_bundle(manifest: RunManifest, chunk_tiles: int = 8) -> TerrainBundle:
-    """The terrain export's files for a run's own world, in memory."""
+def terrain_bundle(
+    manifest: RunManifest, chunk_tiles: int = 8, recorded: WorldMap | None = None
+) -> TerrainBundle:
+    """The terrain export's files for a run's own world, in memory.
+
+    `recorded` is the run's own map when it is not the one its seed generates (a scenario
+    that edited its land): its tiles and rivers are shown instead, and the manifest says so.
+    """
     if chunk_tiles < 1:
         raise ValueError("chunk_tiles must be positive")
     config = manifest.config
@@ -207,6 +213,8 @@ def terrain_bundle(manifest: RunManifest, chunk_tiles: int = 8) -> TerrainBundle
     tiles = generated.world_map.tiles
     if state.world_map.tiles != tiles:
         raise RuntimeError("day-0 state and world generation disagree about the map")
+    shown = generated.world_map if recorded is None else recorded
+    tiles = shown.tiles
 
     out: dict[str, bytes] = {}
     chunks: dict[tuple[int, int], list[list[int | str | bool | list[int]]]] = {}
@@ -242,7 +250,7 @@ def terrain_bundle(manifest: RunManifest, chunk_tiles: int = 8) -> TerrainBundle
     day0 = {"advanced_days": 0, "source": "build_initial_state", "civilizations": civilizations}
     out["day0.json"] = encode(day0)
     out["overview.json"] = encode(_overview(tiles, width, height))
-    out["hydrology.json"] = encode(_hydrology(generated.world_map))
+    out["hydrology.json"] = encode(_hydrology(shown))
     out["sites.json"] = encode(
         {
             "source": "engine worldgen, day 0",
@@ -266,6 +274,11 @@ def terrain_bundle(manifest: RunManifest, chunk_tiles: int = 8) -> TerrainBundle
         {
             "export_version": EXPORT_VERSION,
             "source": "engine worldgen",
+            **(
+                {"map": "the run's own recorded map, edited from its seed's"}
+                if recorded is not None
+                else {}
+            ),
             "engine": {
                 "seed": seed,
                 "width": width,

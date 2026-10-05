@@ -252,9 +252,12 @@ class RunService:
                 manifest = self._reader.manifest()
                 start = self._reader.state_at(self._reader.days()[0])
                 expected = build_initial_state(manifest).world_map.content_hash()
-                if start.world_map.content_hash() != expected:
-                    raise RuntimeError("the run's map is not the one its seed generates")
-                self._terrain = terrain_bundle(manifest, self.chunk_tiles)
+                # A run whose land was edited (a scenario) is shown as it was recorded; any
+                # other run's terrain is byte for byte the terrain export's.
+                edited = start.world_map.content_hash() != expected
+                self._terrain = terrain_bundle(
+                    manifest, self.chunk_tiles, start.world_map if edited else None
+                )
             body = self._terrain.files.get(path)
             if body is None:
                 raise KeyError(f"no terrain file {path}")

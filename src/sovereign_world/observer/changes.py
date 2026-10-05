@@ -6,7 +6,7 @@ the settlements whose rows changed, those gone, and the tiles whose owner change
 travellers and counts are small and sent whole. `apply_changes` rebuilds the later record,
 equal to the one the export writes. The people file is not diffed: it is sent whole.
 
-`routes` lists the parties on the road on a day: journeys and expeditions, with their
+`routes` lists the parties on the road on a day: active journeys and expeditions, with their
 routes and where their first traveller stands, for the observer to draw and inspect.
 """
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sovereign_world.exploration import ExpeditionStatus
 from sovereign_world.ids import EntityId
 from sovereign_world.state import WorldState
 
@@ -78,6 +79,8 @@ def routes(state: WorldState) -> dict[str, Any]:
 
     parties: list[dict[str, Any]] = []
     for journey in state.journeys:
+        if not journey.active:
+            continue
         people = tuple(str(person_id) for person_id in journey.traveller_ids)
         parties.append(
             {
@@ -92,6 +95,8 @@ def routes(state: WorldState) -> dict[str, Any]:
         )
     for civilization_id in civilizations:
         for expedition in state.civilizations[civilization_id].expeditions:
+            if expedition.status is not ExpeditionStatus.ACTIVE:
+                continue
             people = tuple(str(person_id) for person_id in expedition.explorer_ids)
             parties.append(
                 {

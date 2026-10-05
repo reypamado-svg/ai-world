@@ -392,3 +392,29 @@ def test_changes_rebuild_each_day_from_another(old_run: Path) -> None:
         apply_changes(json.loads(records[1]), unchanged)
     assert client.get("/api/run/days/2/changes", headers=AUTH).status_code == 422
     assert client.get("/api/run/days/2/changes?from=99", headers=AUTH).status_code == 404
+
+
+def test_a_run_whose_map_was_edited_is_shown_as_recorded(tmp_path: Path) -> None:
+    from observer.war_run import record_war
+
+    from sovereign_world.observer.reader import RunReader
+
+    run = tmp_path / "war"
+    record_war(run, 2)
+    service = RunService(run)
+    service.walk_all()
+    client = _client(service)
+    manifest = client.get("/api/run/terrain/manifest.json", headers=AUTH).json()
+    assert manifest["map"].startswith("the run's own recorded map")
+    recorded = RunReader(run).state_at(0).world_map
+    rows = []
+    for name in [
+        f"chunks/c{cq}_{cr}.json"
+        for cq in range(manifest["presentation"]["chunks"][0])
+        for cr in range(manifest["presentation"]["chunks"][1])
+    ]:
+        chunk = client.get(f"/api/run/terrain/{name}", headers=AUTH)
+        if chunk.status_code == 200:
+            rows += chunk.json()["tiles"]
+    shown = {(row[0], row[1]): row[2] for row in rows}
+    assert shown == {(t.coord.q, t.coord.r): t.terrain.value for t in recorded.tiles}

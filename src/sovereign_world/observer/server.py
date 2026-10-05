@@ -87,6 +87,9 @@ def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT
             raise HTTPException(status_code=409, detail=str(error)) from error
         except KeyError as error:
             raise HTTPException(status_code=404, detail=str(error.args[0])) from error
+        except RuntimeError as error:
+            # The run cannot be shown this way (a map edited away from its seed's).
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     @api.get("/status")
     def status() -> Response:

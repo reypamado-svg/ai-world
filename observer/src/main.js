@@ -1014,7 +1014,7 @@ function buildApi(app) {
       const hit = app.pickAt(cx, cy);
       app.applyPick(hit);
       app.frame(0, false);
-      return hit && !hit.list ? hit.hit.id : null;
+      return hit?.hit ? hit.hit.id : null;
     },
     /** A local-band click: the ids listed in the inspector, or null. */
     pickList: (cx, cy) => {

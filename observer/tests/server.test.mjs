@@ -200,8 +200,9 @@ test('the chronicle lists the day, and Go and Follow move the camera', async () 
 });
 
 test('travellers on the road can be picked, and their route is drawn', async () => {
+  // A short recorded war: a raiding party is on the road from day 1.
   const war = join(dir, 'war');
-  await run(join(repo, '.venv', 'bin', 'python'), [join(repo, 'tests', 'observer', 'war_run.py'), war, '12'], {
+  await run(join(repo, '.venv', 'bin', 'python'), [join(repo, 'tests', 'observer', 'war_run.py'), war, '6'], {
     cwd: repo,
     env: { ...process.env, PYTHONPATH: `${join(repo, 'src')}:${join(repo, 'tests')}` },
   });
@@ -219,11 +220,13 @@ test('travellers on the road can be picked, and their route is drawn', async () 
   };
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
   try {
-    await until(async () => (await ask('/api/status'))?.ready === 13, 60000, 'the war run to be walked');
+    await until(async () => (await ask('/api/status'))?.ready === 7, 60000, 'the war run to be walked');
     let day = null;
-    for (let d = 1; d <= 12 && day === null; d += 1) {
+    for (let d = 1; d <= 6 && day === null; d += 1) {
       const routes = await ask(`/api/run/days/${d}/routes`);
-      if (routes.parties.some((p) => p.kind === 'campaign' && p.tile)) day = d;
+      const record = await ask(`/api/run/days/${d}`);
+      const dots = new Set(record.travellers.map(([q, r]) => `${q},${r}`));
+      if (routes.parties.some((p) => p.kind === 'campaign' && p.tile && dots.has(p.tile.join(',')))) day = d;
     }
     assert.notEqual(day, null, 'a war party is on the road');
     const errors = [];
