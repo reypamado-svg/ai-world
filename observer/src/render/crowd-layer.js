@@ -490,6 +490,7 @@ export class CrowdLayer {
       }
     }
     // The town's walls and places in view.
+    const housesUsed = used;
     for (const piece of plan.pieces ?? []) {
       const ps = piece.x + piece.y;
       const pd = piece.x - piece.y;
@@ -509,7 +510,8 @@ export class CrowdLayer {
     for (let n = used; n < site.houseSprites.length; n += 1) site.houseSprites[n].visible = false;
     for (let n = badges; n < site.badges.length; n += 1) site.badges[n].visible = false;
     st.crowdedHouses = (st.crowdedHouses ?? 0) + badges;
-    st.houses = (st.houses ?? 0) + used;
+    st.houses = (st.houses ?? 0) + housesUsed;
+    st.townPieces = (st.townPieces ?? 0) + used - housesUsed;
   }
 
   _badgeSprite(site, n) {

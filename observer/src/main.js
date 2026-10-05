@@ -909,6 +909,29 @@ function buildApi(app) {
       };
     },
     loadDay: (day) => app.loadDay(day),
+    /** Each settlement's town as drawn: designed or plain, its walls, and pieces. */
+    townInfo: () =>
+      (app.population?.plans ?? []).map((plan, k) => ({
+        settlement: app.population.frame.settlements[k].id,
+        designed: plan.designed,
+        style: plan.design?.style ?? null,
+        walls: plan.design ? plan.wallsBuilt() : null,
+        planned: plan.planned?.length ?? 0,
+        pieces: (plan.pieces ?? []).reduce((n, p) => {
+          const kind = p.asset.startsWith('wall.gate')
+            ? 'gates'
+            : p.asset.startsWith('wall.tower')
+              ? 'towers'
+              : p.asset.startsWith('wall.')
+                ? 'walls'
+                : 'places';
+          return { ...n, [kind]: (n[kind] ?? 0) + 1 };
+        }, {}),
+        places: (plan.places ?? []).map((p) => ({ name: p.name, place: p.place, x: p.x, y: p.y })),
+        resident: app.population.frame.rowsOf(k).length
+          ? app.population.frame.idOf(app.population.frame.rowsOf(k)[0])
+          : null,
+      })),
     // ---- the crowd (?people=N)
     crowdCounts: () => ({ ...app.crowd.counts(), ...app.crowd.stat }),
     crowdBudget: () => app.crowdBudgetOverride ?? app.settings?.crowdBudget ?? Infinity,

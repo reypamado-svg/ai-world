@@ -12,6 +12,7 @@ import pytest
 from format_one import DAYS as OLD_DAYS
 from format_one import FIXTURE
 from perf.synthetic import grown_world
+from town_fixture import EXPORTED, record_town
 
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.observer.projection import AWAY, project_day
@@ -168,4 +169,22 @@ def test_a_planned_town_exports_its_plan_and_walls() -> None:
     assert all(
         "plan" not in item and "walls" not in item
         for item in day_record(project_day(older))["settlements"]
+    )
+
+
+TOWN = COMMITTED.parent / "run-town"
+
+
+def test_the_committed_town_fixture_is_a_fresh_export(tmp_path: Path) -> None:
+    """A designed, half-walled capital (rules 3) for the observer's town test."""
+    record_town(tmp_path / "town")
+    export_run(tmp_path / "town", tmp_path / "fresh", days=EXPORTED)
+    day = json.loads((tmp_path / "fresh" / "days" / f"d{EXPORTED[-1]:06d}.json").read_text())
+    [capital] = [item for item in day["settlements"] if item.get("walls") and item["capital"]]
+    assert capital["plan"]["style"] == "ringed"
+    built = sum(grade is not None for grade, _ in capital["walls"]["sections"])
+    assert 0 < built < 10, built
+    assert _files(TOWN) == _files(tmp_path / "fresh"), (
+        "observer/tests/fixtures/run-town is stale: run tests/observer/town_fixture.py's "
+        "record_town and export days 0 and 18 there"
     )

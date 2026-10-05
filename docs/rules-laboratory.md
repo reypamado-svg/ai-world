@@ -42,7 +42,13 @@ Without `--width` and `--height`, a world is 100 × 100 tiles (each 25 km across
 ## Rules versions
 
 Each world records the rules it runs under in its manifest.
-- **Rules 2:** worlds made with `init` now. They add:
+- **Rules 3:** worlds made with `init` now. They keep everything in rules 2 and add town plans:
+  - each council designs its settlements: a style (open, ringed, grid, river town, hill fort), where the keep, market, shrine and craft quarter stand, how far out the wall ring runs (1 to 5 blocks of 64 m) and where its 1 to 3 gates face; every settlement starts with a plain plan that changes nothing;
+  - walls go up section by section along the planned ring (6 to 22 sections), each costing a tenth of a whole wall's grade step, so a standard ring costs what walls always cost;
+  - walls defend in proportion to the share of the ring built and of the houses inside it; catapults batter the weakest section; houses beyond the ring burn first in a storm;
+  - moving the ring or its gates pulls the old ring down for half its cost;
+  - a keep at the centre with its hall open, a hill fort, a craft quarter by the water and a market by the store each change one number (defence, ground, the workshop's day, store room); the shrine is drawn only.
+- **Rules 2:** worlds made with `init` before rules 3. They add:
   - houses: every five people need one, and births need room;
   - settlement ranks (village to city) and realm ranks (chiefdom to empire), and what they unlock;
   - the hall, armoury and training grounds;
@@ -58,7 +64,7 @@ Each world records the rules it runs under in its manifest.
 - **Rules 1:** worlds made before rules versions were recorded. They keep rules 1 and replay and verify exactly as before.
 - **Forks:** a fork keeps its parent's rules.
 
-**Model-played runs and prompt versions.** Councils played by a model read a charter of a given prompt version. The current one is `council-5`: the council report sums up the people (counts by age, health and settlement, the idle grown-ups at each settlement, and up to 40 notable people) instead of listing every one, which kept the report readable at any population. A run recorded under an older prompt version still replays, verifies and rederives, but to carry on with a model sovereign it must be forked; the fork's sovereigns use the current version.
+**Model-played runs and prompt versions.** Councils played by a model read a charter of a given prompt version. The current one is `council-6`, which tells rules-3 councils how to design their towns and raise their walls by the section (its town plan rule is written from the engine's tables). Since `council-5` the council report sums up the people (counts by age, health and settlement, the idle grown-ups at each settlement, and up to 40 notable people) instead of listing every one, which kept the report readable at any population. A run recorded under an older prompt version still replays, verifies and rederives, but to carry on with a model sovereign it must be forked; the fork's sovereigns use the current version.
 
 ## Checkpoint, replay, and verify
 
