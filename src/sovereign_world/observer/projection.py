@@ -18,6 +18,7 @@ duty is done in the streets is presentation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -27,7 +28,9 @@ from sovereign_world.ids import EntityId
 from sovereign_world.institutions import InstitutionKind
 from sovereign_world.people_store import Sex
 from sovereign_world.ranks import settlement_rank
+from sovereign_world.rings import WallRing
 from sovereign_world.state import WorldState
+from sovereign_world.townplan import TownPlan
 from sovereign_world.work import WorkKind
 
 DUTIES: tuple[str, ...] = (
@@ -92,6 +95,29 @@ class SettlementRow:
     residents: int
     house_jobs: tuple[dict[str, int | str], ...]
     institutions: tuple[dict[str, int | str], ...]
+    plan: dict[str, Any] | None = None
+    """The council's town plan (rules version 3)."""
+    walls: dict[str, Any] | None = None
+    """Its wall ring as built (rules version 3): each section `[grade or None, strength]`,
+    the gate sections and the towers."""
+
+
+def _plan_of(plan: TownPlan | None) -> dict[str, Any] | None:
+    return None if plan is None else plan.model_dump(mode="json", exclude={"settlement_id"})
+
+
+def _walls_of(ring: WallRing | None) -> dict[str, Any] | None:
+    if ring is None:
+        return None
+    return {
+        "ring": ring.ring,
+        "gates": sorted(ring.gates()),
+        "sections": [
+            [None if item.grade is None else item.grade.value, item.strength]
+            for item in ring.sections
+        ],
+        "towers": ring.towers,
+    }
 
 
 @dataclass
@@ -194,6 +220,8 @@ def project_day(state: WorldState) -> DayProjection:
                         for institution in civilization.institutions
                         if institution.settlement_id == item.settlement_id
                     ),
+                    plan=_plan_of(civilization.town_plans.get(item.settlement_id)),
+                    walls=_walls_of(civilization.wall_rings.get(item.settlement_id)),
                 )
             )
     people = PeopleColumns()

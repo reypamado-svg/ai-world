@@ -36,7 +36,8 @@ from sovereign_world.observer.reader import RunReader
 from sovereign_world.observer.terrain_export import export_terrain_for
 from sovereign_world.state import build_initial_state
 
-EXPORT_VERSION = 1
+EXPORT_VERSION = 2
+"""2: settlements of rules-3 runs carry their town `plan` and wall ring (`walls`)."""
 PEOPLE_LAYOUT: tuple[tuple[str, str], ...] = (
     ("id", "<u4"),
     ("settlement", "<u2"),
@@ -103,6 +104,8 @@ def day_record(view: DayProjection) -> dict[str, Any]:
                 "residents": row.residents,
                 "house_jobs": list(row.house_jobs),
                 "institutions": list(row.institutions),
+                **({"plan": row.plan} if row.plan is not None else {}),
+                **({"walls": row.walls} if row.walls is not None else {}),
             }
             for row in view.settlements
         ],

@@ -13,8 +13,12 @@ from format_one import DAYS as OLD_DAYS
 from format_one import FIXTURE
 from perf.synthetic import grown_world
 
+from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.observer.projection import AWAY, project_day
-from sovereign_world.observer.run_export import PEOPLE_LAYOUT, export_run, people_bytes
+from sovereign_world.observer.run_export import PEOPLE_LAYOUT, day_record, export_run, people_bytes
+from sovereign_world.rings import empty_ring
+from sovereign_world.state import build_initial_state
+from sovereign_world.walls import WallGrade
 
 COMMITTED = Path(__file__).resolve().parents[2] / "observer" / "tests" / "fixtures" / "run-small"
 """The browser tests' run: an export of the format-1 fixture, checked here to stay current."""
@@ -123,4 +127,45 @@ def test_the_committed_browser_fixture_is_a_fresh_export(run: Path, tmp_path: Pa
     export_run(run, tmp_path / "fresh")
     assert _files(COMMITTED) == _files(tmp_path / "fresh"), (
         "observer/tests/fixtures/run-small is stale: re-export tests/fixtures/format-one there"
+    )
+
+
+def test_a_planned_town_exports_its_plan_and_walls() -> None:
+    config = WorldConfig(seed=9, width=24, height=24)
+    state = build_initial_state(RunManifest.new(config, "0.1.0", rules_version=3))
+    home = sorted(state.civilizations)[0]
+    civilization = state.civilizations[home]
+    [capital] = civilization.settlements
+    ring = empty_ring(capital.settlement_id, 2, (0,), 0)
+    sections = tuple(
+        item.model_copy(update={"grade": WallGrade.PALISADE, "strength": 25}) if index < 3 else item
+        for index, item in enumerate(ring.sections)
+    )
+    civilization.wall_rings = {
+        capital.settlement_id: ring.model_copy(update={"sections": sections})
+    }
+    record = day_record(project_day(state))
+    row = next(item for item in record["settlements"] if item["id"] == capital.settlement_id)
+    assert row["plan"] == {
+        "style": "open",
+        "keep": "edge",
+        "market": None,
+        "shrine": None,
+        "craft_quarter": None,
+        "wall_ring": 2,
+        "gates": [0],
+        "planned_day": 0,
+    }
+    assert row["walls"] == {
+        "ring": 2,
+        "gates": [0],
+        "sections": [["palisade", 25]] * 3 + [[None, 0]] * 7,
+        "towers": 0,
+    }
+    others = [item for item in record["settlements"] if item["id"] != capital.settlement_id]
+    assert all("walls" not in item and "plan" in item for item in others)
+    older = build_initial_state(RunManifest.new(config, "0.1.0", rules_version=2))
+    assert all(
+        "plan" not in item and "walls" not in item
+        for item in day_record(project_day(older))["settlements"]
     )
