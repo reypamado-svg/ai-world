@@ -66,9 +66,29 @@ class ExportSummary:
     files: tuple[str, ...]
 
 
-def _dump(path: Path, payload: Any) -> None:
+def encode(payload: Any) -> bytes:
+    """A terrain file's bytes: canonical JSON and a newline."""
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    path.write_text(text + "\n", encoding="ascii")
+    return (text + "\n").encode("ascii")
+
+
+@dataclass(frozen=True, slots=True)
+class TerrainBundle:
+    """Every file of a terrain export, by its path under the export directory, in write
+    order (the O3 server serves these bytes; the export writes them)."""
+
+    files: dict[str, bytes]
+    tiles: int
+    chunks: int
+
+    def write(self, out_dir: Path) -> ExportSummary:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "chunks").mkdir(exist_ok=True)
+        for name, raw in self.files.items():
+            (out_dir / name).write_bytes(raw)
+        return ExportSummary(
+            out_dir=out_dir, tiles=self.tiles, chunks=self.chunks, files=tuple(self.files)
+        )
 
 
 def _tile_row(tile: Tile) -> list[int | str | bool | list[int]]:
@@ -171,6 +191,11 @@ def export_terrain(
 def export_terrain_for(manifest: RunManifest, out_dir: Path, chunk_tiles: int = 8) -> ExportSummary:
     """The terrain export for a run's own world: its seed, size, civilizations and generator
     (O2 run exports use it; `export_terrain` is the same for a fresh seed)."""
+    return terrain_bundle(manifest, chunk_tiles).write(out_dir)
+
+
+def terrain_bundle(manifest: RunManifest, chunk_tiles: int = 8) -> TerrainBundle:
+    """The terrain export's files for a run's own world, in memory."""
     if chunk_tiles < 1:
         raise ValueError("chunk_tiles must be positive")
     config = manifest.config
@@ -183,19 +208,15 @@ def export_terrain_for(manifest: RunManifest, out_dir: Path, chunk_tiles: int = 
     if state.world_map.tiles != tiles:
         raise RuntimeError("day-0 state and world generation disagree about the map")
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    chunk_dir = out_dir / "chunks"
-    chunk_dir.mkdir(exist_ok=True)
-
+    out: dict[str, bytes] = {}
     chunks: dict[tuple[int, int], list[list[int | str | bool | list[int]]]] = {}
     for tile in tiles:
         key = (tile.coord.q // chunk_tiles, tile.coord.r // chunk_tiles)
         chunks.setdefault(key, []).append(_tile_row(tile))
-    files: list[str] = []
     for (cq, cr), rows in sorted(chunks.items()):
-        name = f"chunks/c{cq}_{cr}.json"
-        _dump(out_dir / name, {"cq": cq, "cr": cr, "fields": list(TILE_FIELDS), "tiles": rows})
-        files.append(name)
+        out[f"chunks/c{cq}_{cr}.json"] = encode(
+            {"cq": cq, "cr": cr, "fields": list(TILE_FIELDS), "tiles": rows}
+        )
 
     starts = {start.center: start for start in generated.starts}
     civilizations = []
@@ -219,11 +240,10 @@ def export_terrain_for(manifest: RunManifest, out_dir: Path, chunk_tiles: int = 
             }
         )
     day0 = {"advanced_days": 0, "source": "build_initial_state", "civilizations": civilizations}
-    _dump(out_dir / "day0.json", day0)
-    _dump(out_dir / "overview.json", _overview(tiles, width, height))
-    _dump(out_dir / "hydrology.json", _hydrology(generated.world_map))
-    _dump(
-        out_dir / "sites.json",
+    out["day0.json"] = encode(day0)
+    out["overview.json"] = encode(_overview(tiles, width, height))
+    out["hydrology.json"] = encode(_hydrology(generated.world_map))
+    out["sites.json"] = encode(
         {
             "source": "engine worldgen, day 0",
             "fields": ["site_id", "q", "r", "kind", "richness", "remaining"],
@@ -242,8 +262,7 @@ def export_terrain_for(manifest: RunManifest, out_dir: Path, chunk_tiles: int = 
     )
 
     chunk_counts = (-(-width // chunk_tiles), -(-height // chunk_tiles))
-    _dump(
-        out_dir / "manifest.json",
+    out["manifest.json"] = encode(
         {
             "export_version": EXPORT_VERSION,
             "source": "engine worldgen",
@@ -311,8 +330,7 @@ def export_terrain_for(manifest: RunManifest, out_dir: Path, chunk_tiles: int = 
             },
         },
     )
-    files += ["day0.json", "overview.json", "hydrology.json", "sites.json", "manifest.json"]
-    return ExportSummary(out_dir=out_dir, tiles=len(tiles), chunks=len(chunks), files=tuple(files))
+    return TerrainBundle(files=out, tiles=len(tiles), chunks=len(chunks))
 
 
 def main(argv: list[str] | None = None) -> None:

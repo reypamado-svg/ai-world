@@ -31,6 +31,7 @@ from typing import Any
 
 import numpy as np
 
+from sovereign_world.config import RunManifest
 from sovereign_world.observer.projection import AWAY, DUTIES, DayProjection, project_day
 from sovereign_world.observer.reader import RunReader
 from sovereign_world.observer.terrain_export import export_terrain_for
@@ -64,8 +65,13 @@ class RunExportSummary:
     bytes: int
 
 
+def encode_json(data: Any) -> bytes:
+    """A run export file's bytes: canonical JSON, no trailing newline."""
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+
+
 def _dump(path: Path, data: Any) -> int:
-    raw = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    raw = encode_json(data)
     path.write_bytes(raw)
     return len(raw)
 
@@ -114,6 +120,47 @@ def day_record(view: DayProjection) -> dict[str, Any]:
         ],
         "travellers": [list(item) for item in view.travellers],
         "owners": [list(item) for item in view.owners],
+    }
+
+
+def manifest_record(
+    manifest: RunManifest,
+    *,
+    journal_format: int,
+    history_epoch: int,
+    civilizations: tuple[str, ...],
+    days: tuple[int, ...],
+    saved: tuple[int, ...],
+) -> dict[str, Any]:
+    """The export's manifest.json for these days of a run (the O3 server serves the same)."""
+    return {
+        "export_version": EXPORT_VERSION,
+        "kind": "recorded run",
+        "run_id": str(manifest.run_id),
+        "engine_version": manifest.engine_version,
+        "journal_format": journal_format,
+        "history_epoch": history_epoch,
+        "rules_version": manifest.rules_version,
+        "generator_version": manifest.generator_version,
+        "seed": manifest.config.seed,
+        "width": manifest.config.width,
+        "height": manifest.config.height,
+        "civilizations": list(civilizations),
+        "days": list(days),
+        "saved_days": [saved[0], saved[-1]],
+        "duties": list(DUTIES),
+        "away": AWAY,
+        "people_layout": [list(item) for item in PEOPLE_LAYOUT],
+        "files": {
+            "terrain": "terrain/manifest.json",
+            "ids": "ids.json",
+            "day": "days/d{day:06d}.json",
+            "people": "days/d{day:06d}.people.bin.gz",
+        },
+        "note": (
+            "Recorded engine data: who lives where, houses, duties, owners. Where people"
+            " stand inside a settlement, and their movement, are presentation."
+        ),
     }
 
 
@@ -176,35 +223,14 @@ def export_run(
     total += _dump(out_dir / "ids.json", ordered)
     total += _dump(
         out_dir / "manifest.json",
-        {
-            "export_version": EXPORT_VERSION,
-            "kind": "recorded run",
-            "run_id": str(manifest.run_id),
-            "engine_version": manifest.engine_version,
-            "journal_format": reader.journal_format,
-            "history_epoch": reader.history_epoch,
-            "rules_version": manifest.rules_version,
-            "generator_version": manifest.generator_version,
-            "seed": manifest.config.seed,
-            "width": manifest.config.width,
-            "height": manifest.config.height,
-            "civilizations": list(civilizations),
-            "days": list(chosen),
-            "saved_days": [saved[0], saved[-1]],
-            "duties": list(DUTIES),
-            "away": AWAY,
-            "people_layout": [list(item) for item in PEOPLE_LAYOUT],
-            "files": {
-                "terrain": "terrain/manifest.json",
-                "ids": "ids.json",
-                "day": "days/d{day:06d}.json",
-                "people": "days/d{day:06d}.people.bin.gz",
-            },
-            "note": (
-                "Recorded engine data: who lives where, houses, duties, owners. Where people"
-                " stand inside a settlement, and their movement, are presentation."
-            ),
-        },
+        manifest_record(
+            manifest,
+            journal_format=reader.journal_format,
+            history_epoch=reader.history_epoch,
+            civilizations=civilizations,
+            days=chosen,
+            saved=saved,
+        ),
     )
     return RunExportSummary(out_dir=out_dir, days=chosen, people=len(ordered), bytes=total)
 

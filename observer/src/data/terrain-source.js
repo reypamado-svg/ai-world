@@ -68,9 +68,11 @@ export function indexHydrology(hydrology, chunkTiles) {
 }
 
 export class TerrainSource {
-  constructor(base, manifest, hydrology = null, sites = null) {
+  /** `fetch` is injectable so a server source can add its credentials (O3). */
+  constructor(base, manifest, hydrology = null, sites = null, { fetch: get = (...args) => fetch(...args) } = {}) {
     this.base = base;
     this.manifest = manifest;
+    this.fetch = get;
     /** Ore deposits, quarries, ancient ruins and troves (engine day 0), or null. */
     this.sites = sites
       ? sites.sites.map((row) => Object.fromEntries(sites.fields.map((field, k) => [field, row[k]])))
@@ -79,13 +81,18 @@ export class TerrainSource {
     this.rivers = indexHydrology(hydrology, manifest.presentation.chunk_tiles);
   }
 
-  static async open(base) {
-    const manifest = await (await fetch(`${base}/manifest.json`)).json();
+  static async open(base, { fetch: get = (...args) => fetch(...args) } = {}) {
+    const json = async (path) => {
+      const res = await get(`${base}/${path}`);
+      if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+      return res.json();
+    };
+    const manifest = await json('manifest.json');
     const file = manifest.files?.hydrology;
-    const hydrology = file ? await (await fetch(`${base}/${file}`)).json() : null;
+    const hydrology = file ? await json(file) : null;
     const sitesFile = manifest.files?.sites;
-    const sites = sitesFile ? await (await fetch(`${base}/${sitesFile}`)).json() : null;
-    return new TerrainSource(base, manifest, hydrology, sites);
+    const sites = sitesFile ? await json(sitesFile) : null;
+    return new TerrainSource(base, manifest, hydrology, sites, { fetch: get });
   }
 
   get width() {
@@ -97,18 +104,18 @@ export class TerrainSource {
   }
 
   async load(cq, cr, signal) {
-    const res = await fetch(`${this.base}/chunks/c${cq}_${cr}.json`, { signal });
+    const res = await this.fetch(`${this.base}/chunks/c${cq}_${cr}.json`, { signal });
     if (!res.ok) throw new Error(`chunk ${cq},${cr}: HTTP ${res.status}`);
     const json = await res.json();
     return packChunk(cq, cr, json.fields, json.tiles);
   }
 
   async overview() {
-    return (await fetch(`${this.base}/overview.json`)).json();
+    return (await this.fetch(`${this.base}/overview.json`)).json();
   }
 
   async day0() {
-    return (await fetch(`${this.base}/day0.json`)).json();
+    return (await this.fetch(`${this.base}/day0.json`)).json();
   }
 }
 
