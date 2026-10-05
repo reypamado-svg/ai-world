@@ -59,20 +59,29 @@ Then open:
 - `http://127.0.0.1:8765/?run=NAME&day=N` — a recorded run (O2), exported first with
 
   ```sh
-  .venv/bin/sovereign-world init runs/baseline-21 --seed 21 --width 48 --height 48
+  .venv/bin/sovereign-world init runs/baseline-21 --seed 21 --width 48 --height 48   # rules 3: councils design their towns
   .venv/bin/sovereign-world run runs/baseline-21 --days 365
   PYTHONPATH=src .venv/bin/python -m sovereign_world.observer.run_export runs/baseline-21 \
       --out observer/data/runs/baseline-21          # [--stride N] [--days 0,30,60] [--replace]
   ```
 
-  The export reads the run without writing to it (the journal is followed by byte offset,
-  SQLite is opened read-only and immutable) and holds the run's own terrain, every person
+  The export reads the run without writing to it (the journal is followed by byte offset;
+  SQLite is opened read-only, through the writer's own log while a run is still being
+  written, else as an unchanging file) and holds the run's own terrain, every person
   id, and for each day the settlements, houses by grade, house work, travellers, borders
   and every living person (about 310 KB a day at 100,000 people). Exports live in
   `observer/data/runs/`, which git ignores. In the page, **‹ ›** step through the exported
   days; the camera stays put. What is recorded and what is presentation is labelled:
   who lives where, their houses, duties, age and health are the engine's; where in a
   settlement they stand and walk is a visual approximation; names are observer-assigned.
+
+  In a rules-3 run each settlement also has its council's town plan and its wall ring
+  (export version 2). A designed town fills the ring with wards first, puts the keep (with
+  a hall), market, shrine and craft quarter (with a workshop) where the plan says, and
+  draws each built section of wall in its grade with gatehouses and towers; sections not
+  yet built are a dashed line, and battered ones are tinted. The badge reads, for example,
+  "ringed town, designed by the council · walls 6 of 10 sections". The committed
+  `tests/fixtures/run-town` shows one: `?run=tests/fixtures/run-town&day=18`.
   Houses are drawn by recorded grade (hut, house, stone house) with building sites for
   houses under construction; a house holding more than five people carries an amber
   badge, and the inspector says "12 people, room for 5 (crowded)". People counted at no
