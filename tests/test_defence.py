@@ -274,3 +274,5 @@ def test_council_seven_tells_rules_three_councils_how_a_town_is_defended() -> No
         for item in value:
             assert item.value in rule
     assert "15% of the time" in rule and "20% of the time" in rule
+    for word in ("section_ids", "build_works", "gatehouse", "5% harder", "10% weaker"):
+        assert word in rule

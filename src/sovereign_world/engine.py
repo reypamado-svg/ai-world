@@ -198,6 +198,7 @@ from sovereign_world.rings import (
     set_ring,
     sheltered,
     tower_cap,
+    tower_positions,
     unspent,
     weakest,
 )
@@ -5280,7 +5281,11 @@ def _start_ring_work(
     site = settlement_at(civilization, tile)
     assert site is not None
     ring, chosen, grades, materials = ring_order(
-        civilization, site.settlement_id, command, state.day
+        civilization,
+        site.settlement_id,
+        command,
+        state.day,
+        placed=rules_for(state.rules_version).town_defence,
     )
     job_id = EntityId(f"wall-job:{civilization_id}:{state.day}:{command.command_id}")
     if not has(civilization, tile, materials):
@@ -5290,13 +5295,17 @@ def _start_ring_work(
     take(civilization, tile, materials)
     set_ring(civilization, ring)
     building = command.kind is DirectOrderKind.BUILD_WALLS
+    works = command.work if command.kind is DirectOrderKind.BUILD_WORKS else None
     standing = [grade for grade in grades if grade is not None]
     if building:
         start = min(grades, key=wall_rank) if grades else None
-    elif command.kind is DirectOrderKind.REPAIR_WALLS:
+    elif command.kind is DirectOrderKind.REPAIR_WALLS or works is not None:
         start = min(standing, key=wall_rank)
     else:
         start = weakest(ring)
+    towers = 0
+    if command.kind is DirectOrderKind.BUILD_TOWERS:
+        towers = len(chosen) if chosen else command.tower_count
     job = WallJob(
         job_id=job_id,
         settlement_id=site.settlement_id,
@@ -5304,13 +5313,24 @@ def _start_ring_work(
         worker_ids=tuple(sorted(command.worker_ids)),
         start_grade=start,
         target=command.wall_grade if building else None,
-        towers=command.tower_count if command.kind is DirectOrderKind.BUILD_TOWERS else 0,
+        towers=towers,
         repair=command.kind is DirectOrderKind.REPAIR_WALLS,
         started_day=state.day,
         sections=chosen,
         section_grades=grades,
+        work=works,
     )
     civilization.wall_jobs = (*civilization.wall_jobs, job)
+    if works is not None:
+        return _event(
+            state,
+            EventPhase.PROJECT,
+            "works_started",
+            str(civilization_id),
+            str(site.settlement_id),
+            work=works.value,
+            sections=",".join(str(index) for index in chosen),
+        )
     return _event(
         state,
         EventPhase.PROJECT,
@@ -5337,7 +5357,29 @@ def _advance_ring_job(
     ring = ring_for(civilization, job.settlement_id, state.day)
     before = sections_done(job) if job.sections else job.towers_built()
     job = job.model_copy(update={"person_days_done": job.person_days_done + present})
-    if job.sections:
+    if job.towers and job.sections:
+        # Rules version 3 defence: each tower rises on its named section, if it still stands.
+        raised = [
+            index
+            for index in job.sections[before : sections_done(job)]
+            if ring.sections[index].grade is not None
+        ]
+        if raised:
+            placed = sorted({*tower_positions(ring), *raised})[: tower_cap(ring)]
+            ring = ring.model_copy(update={"towers": len(placed), "tower_sections": tuple(placed)})
+            set_ring(civilization, ring)
+            events.append(
+                _event(
+                    state,
+                    EventPhase.PROJECT,
+                    "towers_built",
+                    str(civilization_id),
+                    str(job.settlement_id),
+                    towers=ring.towers,
+                    sections=",".join(str(index) for index in raised),
+                )
+            )
+    elif job.sections:
         sections = list(ring.sections)
         for step in range(before, sections_done(job)):
             index = job.sections[step]
@@ -5349,6 +5391,11 @@ def _advance_ring_job(
                     gate=section.gate,
                 )
                 kind = "wall_section_built"
+            elif job.work is not None:
+                if section.grade is None or not section.gate or section.gatehouse:
+                    continue
+                sections[index] = section.model_copy(update={"gatehouse": True})
+                kind = "gatehouse_built"
             elif section.grade is not None and section.grade is job.section_grades[step]:
                 sections[index] = section.model_copy(
                     update={"strength": WALL_GRADES[section.grade].strength}
@@ -5435,7 +5482,9 @@ def _planned_defence(
     base = KEEP_DEFENCE_BP if keep else SETTLEMENT_DEFENCE_BP
     walls_bp = (
         settlement_bonus_after_engines(base, engines)
-        * ring_defence_bp(ring, engines, houses)
+        * ring_defence_bp(
+            ring, engines, houses, assault=rules_for(state.rules_version).town_defence
+        )
         // BASIS
     )
     if plan.style is PlanStyle.HILL_FORT:

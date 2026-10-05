@@ -403,7 +403,10 @@ def test_the_keep_the_hill_and_the_houses_inside_change_the_defence(
     civilization.wall_rings = {capital.settlement_id: _ring(2, [WallGrade.PALISADE] * 10, towers=2)}
     houses = civilization.housing[capital.settlement_id].count
     assert houses <= 384
-    assert defence() == (2, 10_500, 12_500 * 12_500 // BASIS)
+    # The attackers press the weakest section (rules 3 defence): the open gate at section 0
+    # is worth 12,000 under its tower's cover, the five covered sections 13,000, the rest
+    # 12,500; mean 12,700, weakest 12,000, so the walls give (12,700 + 12,000) / 2 = 12,350.
+    assert defence() == (2, 10_500, 12_500 * 12_350 // BASIS)
 
 
 def test_a_craft_quarter_by_the_water_and_a_market_by_the_store(

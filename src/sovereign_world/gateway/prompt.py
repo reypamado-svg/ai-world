@@ -49,7 +49,7 @@ from sovereign_world.ranks import (
 )
 from sovereign_world.research import CIVIL_TOPICS
 from sovereign_world.resources import Resource
-from sovereign_world.rings import SALVAGE_SHARE
+from sovereign_world.rings import GATE_WEAKNESS_BP, SALVAGE_SHARE, TOWER_COVER_BP
 from sovereign_world.sites import (
     FINDS,
     MAX_WORK_DAYS,
@@ -457,7 +457,18 @@ def defence_rule() -> str:
         f"the towers, where two veterans hit {VETERAN_TOWER_HITS_BP // 100}% of the time; "
         "and arms_priority any (kits in turn), or veterans (the best kits to the most "
         "practised first). It costs nothing, and one settlement's defence is set once a "
-        "council."
+        "council.\n"
+        "Where you build counts. build_walls, repair_walls and build_towers may name "
+        "section_ids, the ring's sections to work on, in that order (numbered from 0 at the "
+        "gate facing direction 0, round the ring; your report lists each section); "
+        "build_towers puts one tower on each named section, or, without them, "
+        "on the gates first and then spread round the ring. A tower covers its own section "
+        f"and the two beside it: they are {TOWER_COVER_BP // 100}% harder to take. A gate "
+        f"without a gatehouse is {GATE_WEAKNESS_BP // 100}% weaker than its wall; a "
+        "build_works order with work gatehouse and the gate sections' section_ids fortifies "
+        "them, each for what a tower on that grade costs, and a gatehouse falls with its "
+        "section. Attackers press the weakest section, so the walls are worth halfway "
+        "between the average section and the weakest one."
     )
 
 

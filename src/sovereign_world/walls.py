@@ -168,6 +168,13 @@ class Walls(BaseModel):
         return self
 
 
+class DefenceWork(StrEnum):
+    """Rules version 3: works raised on a ring besides its walls and towers."""
+
+    GATEHOUSE = "gatehouse"
+    """A gate section fortified, so that it is no weaker than the wall beside it."""
+
+
 class WallJob(BaseModel):
     """Builders raising a settlement's walls to a target grade, or adding towers to them.
 
@@ -194,14 +201,19 @@ class WallJob(BaseModel):
     """Rules version 3: the ring sections raised or repaired, one after another."""
     section_grades: tuple[WallGrade | None, ...] = ()
     """Rules version 3: each of those sections' grade when the job began."""
+    work: DefenceWork | None = None
+    """Rules version 3: a work raised on the named sections instead of walls or towers."""
 
     @model_serializer(mode="wrap")
     def _omit_sections(self, handler: SerializerFunctionWrapHandler) -> object:
         # Jobs on walls without rings dump exactly as before rings existed.
         dumped = handler(self)
-        if isinstance(dumped, dict) and not self.sections:
-            dumped.pop("sections", None)
-            dumped.pop("section_grades", None)
+        if isinstance(dumped, dict):
+            if not self.sections:
+                dumped.pop("sections", None)
+                dumped.pop("section_grades", None)
+            if self.work is None:
+                dumped.pop("work", None)
         return dumped
 
     @model_validator(mode="after")
@@ -210,10 +222,12 @@ class WallJob(BaseModel):
             raise ValueError("a ring job records each section's grade")
         if len(set(self.sections)) != len(self.sections):
             raise ValueError("a ring job works on each section once")
-        if self.sections and self.towers:
-            raise ValueError("a ring job raises or repairs sections, or adds towers")
-        if sum((self.target is not None, self.towers > 0, self.repair)) != 1:
-            raise ValueError("a wall job raises the walls, adds towers, or repairs them")
+        if self.sections and self.towers and len(self.sections) != self.towers:
+            raise ValueError("a ring job places each tower it adds on a section")
+        if self.work is not None and not self.sections:
+            raise ValueError("a work is raised on named sections")
+        if sum((self.target is not None, self.towers > 0, self.repair, self.work is not None)) != 1:
+            raise ValueError("a wall job raises the walls, adds towers, repairs, or raises a work")
         if self.repair and self.start_grade is None:
             raise ValueError("only standing walls are repaired")
         if self.target is not None and rank(self.target) <= rank(self.start_grade):

@@ -126,9 +126,11 @@ from sovereign_world.resources import Resource
 from sovereign_world.rings import (
     MAX_SECTIONS,
     WallRing,
+    damaged_sections,
     ring_for,
     ring_work,
     tower_cap,
+    tower_positions,
     weakest,
 )
 from sovereign_world.roads import (
@@ -178,6 +180,7 @@ from sovereign_world.travel import (
 )
 from sovereign_world.walls import (
     WALL_GRADES,
+    DefenceWork,
     WallGrade,
     WallJob,
     Walls,
@@ -255,6 +258,8 @@ class DirectOrderKind(StrEnum):
     """Rules version 3: lay out one of this civilization's settlements to a design."""
     SET_DEFENCE = "set_defence"
     """Rules version 3: how one of this civilization's settlements fights when attacked."""
+    BUILD_WORKS = "build_works"
+    """Rules version 3: raise a work on a settlement's ring, such as gatehouses on its gates."""
 
 
 MESSAGE_ORDERS = frozenset(
@@ -292,7 +297,12 @@ CAMP_ORDERS = frozenset(
 SETTLEMENT_ORDERS = frozenset({DirectOrderKind.PLAN_SETTLEMENT, DirectOrderKind.SET_DEFENCE})
 """Orders whose `settlement_id` names the settlement they act on, not a worker count's."""
 WALL_ORDERS = frozenset(
-    {DirectOrderKind.BUILD_WALLS, DirectOrderKind.BUILD_TOWERS, DirectOrderKind.REPAIR_WALLS}
+    {
+        DirectOrderKind.BUILD_WALLS,
+        DirectOrderKind.BUILD_TOWERS,
+        DirectOrderKind.REPAIR_WALLS,
+        DirectOrderKind.BUILD_WORKS,
+    }
 )
 REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
     JourneyKind.SHIPMENT: TreatyKind.TRADE,
@@ -410,6 +420,10 @@ class DirectOrder(BaseModel):
     """Rules version 3: the design a plan order gives its settlement."""
     defence: DefenceOrderSpec | None = None
     """Rules version 3: the standing defence a set_defence order gives its settlement."""
+    section_ids: tuple[int, ...] = Field(default=(), max_length=MAX_SECTIONS)
+    """Rules version 3: the ring sections a wall, tower or works order works on, in order."""
+    work: DefenceWork | None = None
+    """Rules version 3: the work a build_works order raises."""
 
     @model_serializer(mode="wrap")
     def _omit_unset_counts(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -418,6 +432,9 @@ class DirectOrder(BaseModel):
         if isinstance(dumped, dict):
             for key in ("worker_count", "settlement_id", "town_plan", "wall_sections", "defence"):
                 if key in dumped and dumped[key] is None:
+                    dumped.pop(key)
+            for key in ("section_ids", "work"):
+                if key in dumped and dumped[key] in (None, [], ()):
                     dumped.pop(key)
         return dumped
 
@@ -2376,17 +2393,28 @@ def _walls_of(civilization: CivilizationState, tile: HexCoord) -> Walls | None:
 
 
 def ring_order(
-    civilization: CivilizationState, settlement_id: EntityId, command: DirectOrder, day: int
+    civilization: CivilizationState,
+    settlement_id: EntityId,
+    command: DirectOrder,
+    day: int,
+    *,
+    placed: bool = False,
 ) -> tuple[WallRing, tuple[int, ...], tuple[WallGrade | None, ...], dict[Resource, int]]:
     """Rules version 3: a wall order's ring, the sections it works on, their grades, and what
-    it takes from the store."""
+    it takes from the store. With `placed` (defence rules), towers stand on sections."""
     ring = ring_for(civilization, settlement_id, day)
+    towers = 0
+    if command.kind is DirectOrderKind.BUILD_TOWERS:
+        towers = len(command.section_ids) if command.section_ids else command.tower_count
     chosen, grades, materials = ring_work(
         ring,
         target=command.wall_grade if command.kind is DirectOrderKind.BUILD_WALLS else None,
         repair=command.kind is DirectOrderKind.REPAIR_WALLS,
-        towers=command.tower_count if command.kind is DirectOrderKind.BUILD_TOWERS else 0,
+        towers=towers,
         count=command.wall_sections,
+        named=command.section_ids,
+        work=command.work if command.kind is DirectOrderKind.BUILD_WORKS else None,
+        placed=placed,
     )
     return ring, chosen, grades, materials
 
@@ -2399,7 +2427,8 @@ def _wall_materials(
     if rules_for(state.rules_version).town_plans:
         site = settlement_at(civilization, tile)
         assert site is not None
-        return ring_order(civilization, site.settlement_id, command, state.day)[3]
+        placed = rules_for(state.rules_version).town_defence
+        return ring_order(civilization, site.settlement_id, command, state.day, placed=placed)[3]
     walls = _walls_of(civilization, tile)
     current = walls.grade if walls is not None else None
     if command.kind is DirectOrderKind.BUILD_TOWERS:
@@ -2437,6 +2466,13 @@ def _walls_error(
     busy = {job.settlement_id for job in civilization.wall_jobs}
     if site.settlement_id in busy or site.tile in walling:
         return error("invalid_walls", "that settlement's walls are already being worked on")
+    if (
+        command.kind is DirectOrderKind.BUILD_WORKS
+        and not rules_for(state.rules_version).town_defence
+    ):
+        return error("invalid_works", "this world's rules have no defensive works")
+    if command.section_ids and not rules_for(state.rules_version).town_defence:
+        return error("invalid_walls", "this world's rules do not name wall sections")
     if rules_for(state.rules_version).town_plans:
         return _ring_walls_error(command, civilization, site.settlement_id, state, reserved)
     if command.wall_sections is not None:
@@ -2492,9 +2528,39 @@ def _ring_walls_error(
     def error(code: str, message: str) -> CommandError:
         return CommandError(command_id=command.command_id, code=code, message=message)
 
-    ring, chosen, grades, materials = ring_order(civilization, settlement_id, command, state.day)
+    placed = rules_for(state.rules_version).town_defence
+    named = command.section_ids
+    if named:
+        count = len(ring_for(civilization, settlement_id, state.day).sections)
+        if command.wall_sections is not None:
+            return error("invalid_walls", "name the sections or count them, not both")
+        if len(set(named)) != len(named):
+            return error("invalid_walls", "each section is named once")
+        if any(index >= count for index in named):
+            outside = next(index for index in named if index >= count)
+            return error("invalid_walls", f"section {outside} is not in this ring")
+    ring, chosen, grades, materials = ring_order(
+        civilization, settlement_id, command, state.day, placed=placed
+    )
     needed: list[CapabilityId]
-    if command.kind is DirectOrderKind.REPAIR_WALLS:
+    if command.kind is DirectOrderKind.BUILD_WORKS:
+        if command.work is None or not named:
+            return error("invalid_works", "a works order names its work and its sections")
+        for index in named:
+            section = ring.sections[index]
+            if not section.gate or section.grade is None:
+                return error("invalid_works", f"section {index} is not a standing gate")
+            if section.gatehouse:
+                return error("invalid_works", f"section {index} already has a gatehouse")
+        needed = sorted(
+            {tower_spec(grade).capability for grade in grades if grade is not None},
+            key=lambda item: item.value,
+        )
+    elif command.kind is DirectOrderKind.REPAIR_WALLS:
+        damaged = set(damaged_sections(ring))
+        for index in named:
+            if index not in damaged:
+                return error("invalid_walls", f"section {index} is not damaged")
         if not chosen:
             return error("invalid_walls", "only damaged sections are repaired")
         needed = [
@@ -2503,9 +2569,14 @@ def _ring_walls_error(
             if (capability := WALL_GRADES[grade].capability) is not None
         ]
     elif command.kind is DirectOrderKind.BUILD_TOWERS:
-        if not ring.complete or command.tower_count < 1:
+        adding = len(named) if named else command.tower_count
+        if not ring.complete or adding < 1:
             return error("invalid_walls", "towers are added, one or more, to a complete ring")
-        if ring.towers + command.tower_count > tower_cap(ring):
+        standing = set(tower_positions(ring))
+        for index in named:
+            if index in standing:
+                return error("invalid_walls", f"section {index} already has a tower")
+        if ring.towers + adding > tower_cap(ring):
             return error("invalid_walls", f"this ring carries at most {tower_cap(ring)} towers")
         grade = weakest(ring)
         assert grade is not None
@@ -2514,6 +2585,9 @@ def _ring_walls_error(
         target = command.wall_grade
         if target is None or command.tower_count:
             return error("invalid_walls", "a wall order names the grade to raise sections to")
+        for index in named:
+            if wall_rank(ring.sections[index].grade) >= wall_rank(target):
+                return error("invalid_walls", f"section {index} already stands at that grade")
         if not chosen:
             return error("invalid_walls", "every section already stands at that grade")
         lowest = min(grades, key=wall_rank)
