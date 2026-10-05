@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import random
 import shutil
+import sqlite3
 from pathlib import Path
+from typing import Any
 
+import pytest
 from format_one import DAYS as OLD_DAYS
 from format_one import FIXTURE
 from parity import SCENARIOS, initial
 
+from sovereign_world import persistence
 from sovereign_world.config import RunManifest
 from sovereign_world.engine import advance_day
 from sovereign_world.gateway.records import journal_councils
@@ -167,3 +171,38 @@ def test_a_journal_cut_back_starts_a_new_history(tmp_path: Path) -> None:
     assert reader.history_epoch == 1
     assert reader.days() == (0, 1, 2, 3)
     assert state_hash(reader.state_at(3)) == state_hash(states[3])
+
+
+def test_a_run_whose_writer_is_still_open_reads_from_its_write_ahead_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live run's writer keeps its connections open, so what it saved can sit in the
+    write-ahead log rather than the database file. The reader still sees it, and makes no
+    file of its own."""
+    held: list[sqlite3.Connection] = []
+    connect = sqlite3.connect
+
+    def keep_open(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = connect(*args, **kwargs)
+        held.append(connection)
+        return connection
+
+    monkeypatch.setattr(persistence.sqlite3, "connect", keep_open)
+    states = _record(tmp_path, 3)
+    monkeypatch.undo()
+    names = {path.name for path in tmp_path.iterdir()}
+    assert {"world.sqlite3-wal", "world.sqlite3-shm"} <= names
+    # Nothing has reached the database file itself yet: a reader that skipped the log would
+    # find no tables at all.
+    with sqlite3.connect(
+        f"{(tmp_path / 'world.sqlite3').resolve().as_uri()}?mode=ro&immutable=1", uri=True
+    ) as blind:
+        assert blind.execute("SELECT name FROM sqlite_master").fetchall() == []
+    reader = RunReader(tmp_path)
+    assert reader.days() == (0, 1, 2, 3)
+    assert [state_hash(reader.state_at(day)) for day in reader.days()] == [
+        state_hash(state) for state in states
+    ]
+    assert {path.name for path in tmp_path.iterdir()} == names
+    for connection in held:
+        connection.close()

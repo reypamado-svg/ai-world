@@ -36,10 +36,18 @@ from sovereign_world.state import WorldState, state_hash, state_hash_v2
 
 
 def _readonly(path: Path) -> sqlite3.Connection:
-    """A connection that cannot write, and leaves no journal, WAL or shared-memory file."""
+    """A connection that cannot write, and leaves no journal, WAL or shared-memory file.
+
+    While a writer has the database open, what it saved may still be only in its write-ahead
+    log; a reader then opens read-only through the writer's own log and shared-memory files,
+    which already exist, so nothing new is made. With no writer, every saved page is in the
+    database file, which is read as unchanging.
+    """
     if not path.exists():
         raise FileNotFoundError(path)
-    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
+    live = all(path.with_name(path.name + suffix).exists() for suffix in ("-wal", "-shm"))
+    mode = "mode=ro" if live else "mode=ro&immutable=1"
+    return sqlite3.connect(f"{path.resolve().as_uri()}?{mode}", uri=True)
 
 
 class RunReader:
