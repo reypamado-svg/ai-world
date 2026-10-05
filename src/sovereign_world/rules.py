@@ -34,6 +34,9 @@ class Rules:
     town_plans: bool
     """Councils design their settlements (rules version 3): walls go up section by section
     along the planned ring, and the keep, market and craft quarter count where they stand."""
+    town_defence: bool
+    """Councils give standing defence orders (who fights, a reserve, tower crews, arms),
+    place towers and gatehouses, dig works, fire back and sally; besieged towns need food."""
 
 
 def rules_for(version: int) -> Rules:
@@ -50,4 +53,5 @@ def rules_for(version: int) -> Rules:
         reach_cap=second,
         worker_counts=second,
         town_plans=third,
+        town_defence=third,
     )

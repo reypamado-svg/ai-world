@@ -10,9 +10,16 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from sovereign_world.armoury import RECIPES
+from sovereign_world.armoury import CATAPULT_HITS_BP, RECIPES
 from sovereign_world.bridges import BRIDGE_LABOUR, BRIDGE_MATERIALS, BRIDGING_GRADE, MASONRY
 from sovereign_world.commands import COUNTED_ORDERS, MAX_WORKER_COUNT, CouncilReport
+from sovereign_world.defence import (
+    FIGHTER_ARMS,
+    MAX_RESERVE_BP,
+    MIN_LINE,
+    RESERVE_JOINS_ROUND,
+    VETERAN_TOWER_HITS_BP,
+)
 from sovereign_world.gateway.envelope import COMMAND_ALLOWANCE, reply_schema
 from sovereign_world.gateway.memory import Budgets, retrieved, state_summary, transcript
 from sovereign_world.gateway.records import CouncilRecord
@@ -73,14 +80,22 @@ from sovereign_world.walls import (
 from sovereign_world.walls import (
     REPAIR_SHARE,
     SECTION_SHARE,
+    TOWER_HITS_BP,
     WALL_GRADES,
     WallGrade,
     section_materials,
     section_person_days,
 )
-from sovereign_world.war import SETTLEMENT_DEFENCE_BP
+from sovereign_world.war import (
+    HOME_DEFENCE_MORALE_BP,
+    MAX_ROUNDS,
+    SETTLEMENT_DEFENCE_BP,
+    VETERAN,
+    VETERAN_MORALE_BP_PER_TENTH,
+    WAR_PARTY_MORALE_BP,
+)
 
-PROMPT_VERSION = "council-6"
+PROMPT_VERSION = "council-7"
 """council-3 added the travel rule: tile scale, terrain and river costs, and bridges.
 council-4 added houses, ranks, rank buildings and civil research, told only to worlds under
 rules version 2, and the reply fields that order them.
@@ -88,7 +103,9 @@ council-5 sums up the people (`population`, `notable_people`) instead of listing
 tells rules-2 worlds how far a settlement's hold can reach, and lets their orders count
 workers at a settlement instead of naming them (`worker_count`, `settlement_id`).
 council-6 tells rules-3 worlds how their councils design their settlements (`plan_settlement`,
-`town_plan`) and raise walls section by section along the planned ring (`wall_sections`)."""
+`town_plan`) and raise walls section by section along the planned ring (`wall_sections`).
+council-7 tells rules-3 worlds how a settlement's defence is fought and lets their councils
+set it (`set_defence`, `defence`)."""
 
 
 def _days(tenths: int) -> str:
@@ -411,6 +428,39 @@ def town_plan_rule() -> str:
     )
 
 
+def defence_rule() -> str:
+    """How a settlement is defended, and the standing order that shapes it, from the tables."""
+    return (
+        "When enemies fall on one of your settlements, its people fight there and then. A "
+        f"battle runs up to {MAX_ROUNDS} rounds; each round each side loses a share of its "
+        "standing fighters that grows with the other side's strength, multiplied for the "
+        "defenders by the ground, the settlement and its walls. A side breaks once the share "
+        f"it has lost passes its resolve: {HOME_DEFENCE_MORALE_BP // 100}% at home "
+        f"({WAR_PARTY_MORALE_BP // 100}% for a war party), plus "
+        f"{VETERAN_MORALE_BP_PER_TENTH // 100}% for each tenth of it that are veterans "
+        f"(arms {VETERAN} or more), plus what its arms add; hunger, or a store that cannot "
+        "feed the defenders for a day, cuts it by up to half. The broken side is pursued and "
+        "some are taken captive; a stormed settlement loses a quarter of its houses. Defenders "
+        "take "
+        "kits from the settlement's store, best first. Each tower is manned by two "
+        f"defenders, who still fight, and hits the attackers {TOWER_HITS_BP // 100}% of the "
+        "time in the opening volley and before every round. An attacker's catapults hit "
+        f"{CATAPULT_HITS_BP // 100}% of the time before every round; a ram breaches low "
+        "walls and halves high ones, ladders halve low walls.\n"
+        "A set_defence order (settlement_id and defence) sets how a settlement fights until "
+        "you change it: posture everyone (every able person, the default), fighters (only "
+        f"those with arms {FIGHTER_ARMS} or more, or everyone if fewer than {MIN_LINE}), or "
+        "craftsmen_back (all but those with a building or making skill, who are kept safe); "
+        f"reserve_bp, up to {MAX_RESERVE_BP // 100}% of the line, the least practised, held "
+        f"back until round {RESERVE_JOINS_ROUND} or until the line would break, when they "
+        "come up and steady it; tower_crews any, or drilled, putting the best fighters in "
+        f"the towers, where two veterans hit {VETERAN_TOWER_HITS_BP // 100}% of the time; "
+        "and arms_priority any (kits in turn), or veterans (the best kits to the most "
+        "practised first). It costs nothing, and one settlement's defence is set once a "
+        "council."
+    )
+
+
 def _ordinal(number: int) -> str:
     return {2: "half", 3: "third", 4: "quarter", 10: "tenth"}[number]
 
@@ -434,7 +484,7 @@ def charter(report: CouncilReport) -> str:
             if report.rules_version >= 2
             else ""
         )
-        + (f"{town_plan_rule()}\n\n" if report.rules_version >= 3 else "")
+        + (f"{town_plan_rule()}\n\n{defence_rule()}\n\n" if report.rules_version >= 3 else "")
         + f"Answer with one JSON object and nothing else. It may hold at most "
         f"{COMMAND_ALLOWANCE} commands and a short rationale. Orders that break the world's "
         "rules are refused one by one; the rest are carried out. If you give no commands, "

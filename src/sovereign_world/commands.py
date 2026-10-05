@@ -38,6 +38,7 @@ from sovereign_world.bridges import (
 )
 from sovereign_world.capabilities import CapabilityId
 from sovereign_world.cover import WET_FIELD
+from sovereign_world.defence import DefenceOrder, DefenceOrderSpec
 from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
@@ -252,6 +253,8 @@ class DirectOrderKind(StrEnum):
     """Rules version 2: send workers to a deposit or quarry to work it for some days."""
     PLAN_SETTLEMENT = "plan_settlement"
     """Rules version 3: lay out one of this civilization's settlements to a design."""
+    SET_DEFENCE = "set_defence"
+    """Rules version 3: how one of this civilization's settlements fights when attacked."""
 
 
 MESSAGE_ORDERS = frozenset(
@@ -286,6 +289,8 @@ CAMP_ORDERS = frozenset(
     }
 )
 """Orders to a war party holding the end of its route: besiegers or occupiers."""
+SETTLEMENT_ORDERS = frozenset({DirectOrderKind.PLAN_SETTLEMENT, DirectOrderKind.SET_DEFENCE})
+"""Orders whose `settlement_id` names the settlement they act on, not a worker count's."""
 WALL_ORDERS = frozenset(
     {DirectOrderKind.BUILD_WALLS, DirectOrderKind.BUILD_TOWERS, DirectOrderKind.REPAIR_WALLS}
 )
@@ -403,13 +408,15 @@ class DirectOrder(BaseModel):
     version 3: the settlement a plan order lays out."""
     town_plan: TownPlanSpec | None = None
     """Rules version 3: the design a plan order gives its settlement."""
+    defence: DefenceOrderSpec | None = None
+    """Rules version 3: the standing defence a set_defence order gives its settlement."""
 
     @model_serializer(mode="wrap")
     def _omit_unset_counts(self, handler: SerializerFunctionWrapHandler) -> object:
         # Orders that name their workers dump exactly as before counts existed.
         dumped = handler(self)
         if isinstance(dumped, dict):
-            for key in ("worker_count", "settlement_id", "town_plan", "wall_sections"):
+            for key in ("worker_count", "settlement_id", "town_plan", "wall_sections", "defence"):
                 if key in dumped and dumped[key] is None:
                     dumped.pop(key)
         return dumped
@@ -601,6 +608,7 @@ _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("extractions", []),
     ("town_plans", {}),
     ("wall_rings", {}),
+    ("defence_orders", {}),
 )
 """Report fields added since council-3, and the value at which each is left out, so reports
 from older worlds read, and so prompt, exactly as before."""
@@ -710,6 +718,8 @@ class CouncilReport(BaseModel):
     """How each settlement is laid out (rules version 3)."""
     wall_rings: dict[EntityId, WallRing] = Field(default_factory=dict)
     """Each settlement's walls, section by section along its planned ring (rules version 3)."""
+    defence_orders: dict[EntityId, DefenceOrder] = Field(default_factory=dict)
+    """Each settlement's standing defence order (rules version 3)."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -1136,6 +1146,7 @@ def build_council_report(
         storehouse_jobs=civilization.storehouse_jobs,
         walls=civilization.walls,
         wall_rings=dict(civilization.wall_rings),
+        defence_orders=dict(civilization.defence_orders),
         wall_jobs=civilization.wall_jobs,
         store_capacity={
             settlement_id: inventory.capacity
@@ -2767,6 +2778,26 @@ def _plan_error(
     return error(problem) if problem is not None else None
 
 
+def _defence_error(
+    command: DirectOrder, civilization_id: EntityId, state: WorldState, defending: set[EntityId]
+) -> CommandError | None:
+    """Validate a standing defence order for one of this civilization's settlements."""
+
+    def error(message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code="invalid_defence", message=message)
+
+    if not rules_for(state.rules_version).town_defence:
+        return error("this world's rules have no defence orders")
+    if command.defence is None or command.settlement_id is None:
+        return error("a defence order names its settlement and gives its defence")
+    civilization = state.civilizations[civilization_id]
+    if command.settlement_id not in {item.settlement_id for item in civilization.settlements}:
+        return error("only this civilization's own settlements are defended by its orders")
+    if command.settlement_id in defending:
+        return error("a settlement's defence is set once a council")
+    return None
+
+
 def _counted_workers(
     command: DirectOrder, civilization_id: EntityId, state: WorldState, busy: set[EntityId]
 ) -> tuple[DirectOrder, CommandError | None]:
@@ -2839,6 +2870,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     committed_at_home: set[EntityId] = set()
     tolled: set[HexCoord] = set()
     planning: set[EntityId] = set()
+    defending: set[EntityId] = set()
     researching: set[CapabilityId] = set()
     teaching_people = {
         person_id
@@ -2872,8 +2904,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
         if isinstance(command, DirectOrder):
             command_error: CommandError | None = None
             if command.worker_count is not None or (
-                command.settlement_id is not None
-                and command.kind is not DirectOrderKind.PLAN_SETTLEMENT
+                command.settlement_id is not None and command.kind not in SETTLEMENT_ORDERS
             ):
                 # Counted workers become named ones; every check below then sees them.
                 command, counted_error = _counted_workers(
@@ -3385,6 +3416,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 command_error = _toll_error(command, envelope.civilization_id, state, tolled)
             if command.kind is DirectOrderKind.PLAN_SETTLEMENT and command_error is None:
                 command_error = _plan_error(command, envelope.civilization_id, state, planning)
+            if command.kind is DirectOrderKind.SET_DEFENCE and command_error is None:
+                command_error = _defence_error(command, envelope.civilization_id, state, defending)
             if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
                 assert command.capability is not None
@@ -3541,6 +3574,9 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             if command.kind is DirectOrderKind.PLAN_SETTLEMENT:
                 assert command.settlement_id is not None
                 planning.add(command.settlement_id)
+            if command.kind is DirectOrderKind.SET_DEFENCE:
+                assert command.settlement_id is not None
+                defending.add(command.settlement_id)
             if command.kind is DirectOrderKind.RESEARCH and command.research_topic is not None:
                 researching.add(command.research_topic)
             civilization = state.civilizations[envelope.civilization_id]

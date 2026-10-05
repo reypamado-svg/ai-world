@@ -55,6 +55,18 @@ from sovereign_world.commands import (
     war_party_carry,
 )
 from sovereign_world.culture import ASSIMILATION_INTERVAL, ancestry, assimilate, culture
+from sovereign_world.defence import (
+    FIGHTER_ARMS,
+    MIN_LINE,
+    RESERVE_JOINS_ROUND,
+    VETERAN_TOWER_HITS_BP,
+    Arms,
+    Crews,
+    DefenceOrder,
+    DefenceOrderSpec,
+    Posture,
+    is_craftsman,
+)
 from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
@@ -247,6 +259,7 @@ from sovereign_world.townplan import (
 )
 from sovereign_world.travel import crossing, travel_days, way_to
 from sovereign_world.walls import (
+    TOWER_HITS_BP,
     WALL_GRADES,
     WALL_HIT,
     WallJob,
@@ -270,6 +283,7 @@ from sovereign_world.war import (
     MIN_BESIEGERS,
     RISING_RATIO,
     SETTLEMENT_DEFENCE_BP,
+    VETERAN,
     WOUND_MAX,
     WOUND_MIN,
     Battle,
@@ -935,6 +949,11 @@ def _cede(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
         )
     )
     giver.walls = tuple(item for item in giver.walls if item.settlement_id != sid)
+    if sid in giver.defence_orders:
+        # The new owner's council has not yet said how the town defends itself.
+        giver.defence_orders = {
+            key: value for key, value in giver.defence_orders.items() if key != sid
+        }
     if sid in giver.wall_rings:
         taker.wall_rings = dict(sorted({**taker.wall_rings, sid: giver.wall_rings[sid]}.items()))
         giver.wall_rings = {key: value for key, value in giver.wall_rings.items() if key != sid}
@@ -2207,9 +2226,25 @@ def _fight(
         and journey.sender_civilization_id == enemy
         and any(person_id in marching for person_id in journey.traveller_ids)
     ]
+    # Rules version 3: the settlement's standing order decides who stands in the line, who
+    # waits in reserve and who is kept back.
+    ordered = at_home and rules_for(state.rules_version).town_defence
+    stance, line, reserve, held_back = (
+        _arrange_defence(state, enemy, tile, home_side)
+        if ordered
+        else (DefenceOrderSpec(), list(home_side), [], [])
+    )
+    arms_of = {item: enemy_people[item].skills.get(ARMS, 0) for item in (*line, *reserve)}
     # Home defenders arm from their store; defending war parties use what they carry.
     formations = knows(state.civilizations[enemy].capabilities, CapabilityId.SPEAR_FORMATIONS)
-    defender_kits = kit_assignment(home_side, personal_kits(dict(supplies)), formations=formations)
+    by_practice = stance.arms_priority is Arms.VETERANS
+    armed = sorted([*line, *reserve], key=lambda item: (-arms_of[item], item))
+    defender_kits = kit_assignment(
+        armed if by_practice else [*line, *reserve],
+        personal_kits(dict(supplies)),
+        formations=formations,
+        ordered=by_practice,
+    )
     for journey in defending_parties:
         defender_kits.update(
             kit_assignment(
@@ -2223,8 +2258,12 @@ def _fight(
     towers = manned_towers(walls.towers, len(home_side)) if walls is not None else 0
     defenders = [
         fighter(enemy_people[person_id], defender_kits.get(person_id), attacking=False)
-        for person_id in [*home_side, *marching]
+        for person_id in [*line, *marching]
     ]
+    waiting = tuple(
+        fighter(enemy_people[person_id], defender_kits.get(person_id), attacking=False)
+        for person_id in reserve
+    )
     terrain_bp = defence_bonus_bp(state.world_map.tile(tile).terrain, settlement=False)
     walls_bp = (
         settlement_bonus_after_engines(SETTLEMENT_DEFENCE_BP, working)
@@ -2235,8 +2274,20 @@ def _fight(
     )
     if at_home and rules_for(state.rules_version).town_plans:
         towers, terrain_bp, walls_bp = _planned_defence(
-            state, enemy, tile, working, len(home_side), terrain_bp
+            state, enemy, tile, working, len(line) if ordered else len(home_side), terrain_bp
         )
+    tower_hits: tuple[int, ...] = ()
+    if ordered and towers and stance.tower_crews is Crews.DRILLED:
+        # The best fighters man the towers, two to each; a tower of two veterans hits more.
+        best = sorted(line, key=lambda item: (-arms_of[item], item))
+        tower_hits = tuple(
+            VETERAN_TOWER_HITS_BP
+            if all(arms_of[item] >= VETERAN for item in best[2 * index : 2 * index + 2])
+            else TOWER_HITS_BP
+            for index in range(towers)
+        )
+    # Rules version 3: a home side whose store cannot feed it a day is short of supplies.
+    supplied = supplies.get(Resource.FOOD, 0) >= len(line) + len(reserve) if ordered else True
     battle_id = EntityId(f"battle:{state.day:06d}:{party.journey_id}")
     outcome = resolve_battle(
         attackers,
@@ -2244,7 +2295,7 @@ def _fight(
         defence_bp=terrain_bp * walls_bp // BASIS,
         attacker_morale_bp=morale_bp(attackers, at_home=False, supplied=True),
         defender_morale_bp=(
-            morale_bp(defenders, at_home=True, supplied=True)
+            morale_bp([*defenders, *waiting], at_home=True, supplied=supplied)
             if at_home and home_side
             else morale_bp(defenders, at_home=False, supplied=True)
         ),
@@ -2252,6 +2303,9 @@ def _fight(
         stream=f"day:{state.day}:war:{battle_id}",
         catapults=working.get(Resource.CATAPULT, 0),
         towers=towers,
+        tower_hits_bp=tower_hits,
+        defender_reserve=waiting,
+        reserve_joins_round=RESERVE_JOINS_ROUND,
     )
     battle = Battle(
         battle_id=battle_id,
@@ -2260,7 +2314,7 @@ def _fight(
         attacker_id=sender,
         defender_id=enemy,
         attackers=tuple(attacker_ids),
-        defenders=tuple(sorted([*home_side, *marching])),
+        defenders=tuple(sorted([*line, *reserve, *marching])),
         rounds=outcome.rounds,
         winner_id=sender if outcome.attackers_won else enemy,
         casualties=outcome.casualties,
@@ -2281,6 +2335,30 @@ def _fight(
             r=tile.r,
         )
     )
+    if held_back:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "held_back",
+                str(enemy),
+                str(battle_id),
+                count=len(held_back),
+                posture=stance.posture.value,
+            )
+        )
+    if outcome.reserve_round:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "reserve_joined",
+                str(enemy),
+                str(battle_id),
+                round=outcome.reserve_round,
+                count=len(reserve),
+            )
+        )
     events.extend(_hurt(state, battle))
     events.append(
         _event(
@@ -3459,6 +3537,7 @@ def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent
     civilization.ranks_reached = {}
     civilization.town_plans = {}
     civilization.wall_rings = {}
+    civilization.defence_orders = {}
     civilization.realm_rank_reached = RealmRank.CHIEFDOM
     civilization.stores = {}
     civilization.inventory = Inventory(capacity=0)
@@ -5039,6 +5118,61 @@ def _advance_institutions(state: WorldState) -> list[DomainEvent]:
     return events
 
 
+def _set_defence(state: WorldState, civilization_id: EntityId, command: DirectOrder) -> DomainEvent:
+    """Record how a settlement fights when attacked; it holds until changed."""
+    assert command.defence is not None and command.settlement_id is not None
+    civilization = state.civilizations[civilization_id]
+    spec = command.defence
+    order = DefenceOrder(
+        **spec.model_dump(), settlement_id=command.settlement_id, set_day=state.day
+    )
+    civilization.defence_orders = dict(
+        sorted({**civilization.defence_orders, command.settlement_id: order}.items())
+    )
+    return _event(
+        state,
+        EventPhase.COMMAND,
+        "defence_set",
+        str(civilization_id),
+        str(command.settlement_id),
+        posture=spec.posture.value,
+        reserve_bp=spec.reserve_bp,
+        tower_crews=spec.tower_crews.value,
+        arms_priority=spec.arms_priority.value,
+    )
+
+
+def _arrange_defence(
+    state: WorldState, civilization_id: EntityId, tile: HexCoord, home_side: list[EntityId]
+) -> tuple[DefenceOrderSpec, list[EntityId], list[EntityId], list[EntityId]]:
+    """Rules version 3: a settlement's standing order applied to the people at home: its
+    line, its reserve and those held back, each in id order."""
+    civilization = state.civilizations[civilization_id]
+    site = settlement_at(civilization, tile)
+    order: DefenceOrderSpec = (
+        civilization.defence_orders.get(site.settlement_id, DefenceOrderSpec())
+        if site is not None
+        else DefenceOrderSpec()
+    )
+    people = civilization.population.people
+    standing = list(home_side)
+    if order.posture is Posture.FIGHTERS:
+        fighters = [item for item in standing if people[item].skills.get(ARMS, 0) >= FIGHTER_ARMS]
+        standing = fighters if len(fighters) >= MIN_LINE else standing
+    elif order.posture is Posture.CRAFTSMEN_BACK:
+        keep = [item for item in standing if not is_craftsman(people[item].skills)]
+        standing = keep or standing
+    kept = set(standing)
+    held_back = [item for item in home_side if item not in kept]
+    count = -(-len(standing) * order.reserve_bp // 10_000)
+    count = min(count, max(len(standing) - 1, 0))
+    weakest = sorted(standing, key=lambda item: (people[item].skills.get(ARMS, 0), item))
+    reserve = sorted(weakest[:count])
+    waiting = set(reserve)
+    line = [item for item in standing if item not in waiting]
+    return order, line, reserve, held_back
+
+
 def _plan_settlement(
     state: WorldState, civilization_id: EntityId, command: DirectOrder
 ) -> list[DomainEvent]:
@@ -6072,6 +6206,8 @@ def _run_councils(
                 isinstance(command, DirectOrder) and command.kind is DirectOrderKind.PLAN_SETTLEMENT
             ):
                 events.extend(_plan_settlement(state, civilization_id, command))
+            elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.SET_DEFENCE:
+                events.append(_set_defence(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.CRAFT_EQUIPMENT

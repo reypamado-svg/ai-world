@@ -41,7 +41,7 @@ def _report(rules_version: int = 3):  # type: ignore[no-untyped-def]
 
 
 def test_rules_three_councils_are_told_how_towns_and_walls_are_laid_out() -> None:
-    assert PROMPT_VERSION == "council-6"
+    assert PROMPT_VERSION == "council-7"
     rule = town_plan_rule()
     assert rule in charter(_report(3))
     assert rule not in charter(_report(2))

@@ -63,7 +63,7 @@ def test_the_charter_states_the_travel_rules_from_the_tables() -> None:
 
 
 def test_new_sovereigns_use_this_prompt_version() -> None:
-    assert PROMPT_VERSION == "council-6"
+    assert PROMPT_VERSION == "council-7"
     assert SovereignConfig().prompt_version == PROMPT_VERSION
 
 

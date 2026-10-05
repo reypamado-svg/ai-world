@@ -26,6 +26,7 @@ from sovereign_world.capabilities import (
     regional_capability,
 )
 from sovereign_world.config import CURRENT_RULES, RunManifest, WorldConfig
+from sovereign_world.defence import DefenceOrder
 from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
@@ -139,6 +140,8 @@ class CivilizationState(BaseModel):
     """Each settlement's design, by settlement id (rules version 3)."""
     wall_rings: dict[EntityId, WallRing] = Field(default_factory=dict)
     """Each settlement's walls along its planned ring, by settlement id (rules version 3)."""
+    defence_orders: dict[EntityId, DefenceOrder] = Field(default_factory=dict)
+    """Each settlement's standing defence order, by settlement id (rules version 3)."""
 
 
 _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
@@ -148,6 +151,7 @@ _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("realm_rank_reached", "chiefdom"),
     ("town_plans", {}),
     ("wall_rings", {}),
+    ("defence_orders", {}),
 )
 """Civilization fields added by rules versions 2 and 3, and the value at which each is left
 out."""
@@ -524,6 +528,13 @@ def validate_world(state: WorldState) -> None:
         builders = [person_id for job in civilization.house_jobs for person_id in job.worker_ids]
         if len(builders) != len(set(builders)):
             raise ValueError("a builder works on one house job at a time")
+        defended = list(civilization.defence_orders)
+        if (
+            defended != sorted(defended)
+            or not set(defended) <= settlement_ids
+            or any(order.settlement_id != key for key, order in civilization.defence_orders.items())
+        ):
+            raise ValueError("defence orders belong to their own settlements, sorted")
         rings = list(civilization.wall_rings)
         if rings != sorted(rings) or not set(rings) <= settlement_ids:
             raise ValueError("wall rings belong to the civilization's own settlements, sorted")
