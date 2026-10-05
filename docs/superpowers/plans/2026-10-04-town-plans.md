@@ -123,6 +123,26 @@ The user can change any of these:
 - `wall_sections` larger than the sections still below the grade raises all of them.
 - The rules-2 charter's text is unchanged apart from its reply schema, which now shows the new order and fields.
 
+## The shown year
+
+**The run:** seed 21, 48×48, rules 3, the scripted baseline councils, 365 days, with no AI calls.
+- It records in 12 s and verifies through day 365.
+- It exports in 4 s (3.3 MB, not committed: `observer/data/runs/baseline-21-r3`).
+
+**The designs:** all four capitals keep the plain plan until day 30, when the baseline's design lands: ringed, keep at the centre, market by the store, gates east and west. Three of them put their craft quarter by the water, and one, with no water beside it, by the store.
+
+**Growth:** the year ends at 141 people, as the rules-2 year did. Designing costs the baseline nothing, and it builds no walls.
+
+**In the observer:**
+- The capital shows its hall at the centre and the market's well by the store, with its houses in the first ward block inside the dashed planned ring.
+- The badge reads "ringed town, designed by the council · walls 0 of 10 sections".
+- `?run=tests/fixtures/run-town&day=18` shows a walled one: six palisade sections with both gatehouses, the four still to build dashed, and the shrine outside.
+
+**Validation:**
+- Full Python suite: 767 passed.
+- Soak matrices after C2 (siege, war, seed, cession, endings): 132 passed.
+- Observer suite: 79 of 79.
+
 ## Tests
 
 - `tests/test_town_plans.py` covers:
