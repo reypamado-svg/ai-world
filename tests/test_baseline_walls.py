@@ -1,5 +1,6 @@
 """The scripted baseline walls its designed capital (rules version 3): earthwork, or a
-palisade when someone idle knows timbercraft; repairs first; never below its reserve."""
+palisade when someone idle knows timbercraft; repairs first; then towers and gatehouses on
+its gates; never below its reserve. It also sets its capital's defence once."""
 
 from functools import cache
 
@@ -18,6 +19,8 @@ from sovereign_world.resources import Resource
 from sovereign_world.rings import WallRing, empty_ring, ring_grade
 from sovereign_world.rng import StableRng
 from sovereign_world.scripted import (
+    BASELINE_DEFENCE,
+    COUNCIL_ORDERS,
     RESERVED_HANDS,
     WALL_CREW,
     WALL_RESERVE,
@@ -25,10 +28,15 @@ from sovereign_world.scripted import (
     plan_baseline_commands,
 )
 from sovereign_world.state import WorldState, build_initial_state, validate_world
-from sovereign_world.walls import WALL_GRADES, WallGrade, WallJob
+from sovereign_world.walls import WALL_GRADES, DefenceWork, WallGrade, WallJob
 
 CONFIG = WorldConfig(seed=21, width=24, height=24)
-WALL_KINDS = {DirectOrderKind.BUILD_WALLS, DirectOrderKind.REPAIR_WALLS}
+WALL_KINDS = {
+    DirectOrderKind.BUILD_WALLS,
+    DirectOrderKind.REPAIR_WALLS,
+    DirectOrderKind.BUILD_TOWERS,
+    DirectOrderKind.BUILD_WORKS,
+}
 
 
 def _state(rules_version: int = 3) -> WorldState:
@@ -56,21 +64,32 @@ def _walls(commands: tuple[object, ...]) -> list[DirectOrder]:
     return [item for item in commands if isinstance(item, DirectOrder) and item.kind in WALL_KINDS]
 
 
+def _defence(commands: tuple[object, ...]) -> list[DirectOrder]:
+    return [
+        item
+        for item in commands
+        if isinstance(item, DirectOrder) and item.kind is DirectOrderKind.SET_DEFENCE
+    ]
+
+
 def _capital(report: CouncilReport) -> EntityId:
     return next(item.settlement_id for item in report.settlements if item.capital)
 
 
+def _knows(report: CouncilReport, capability: CapabilityId) -> bool:
+    return any(person.skills.get(capability.value, 0) > 0 for person in report.notable_people)
+
+
 def _timbercraft(report: CouncilReport) -> bool:
-    return any(
-        person.skills.get(CapabilityId.TIMBERCRAFT.value, 0) > 0 for person in report.notable_people
-    )
+    return _knows(report, CapabilityId.TIMBERCRAFT)
 
 
-def _ring(report: CouncilReport, grades: list[WallGrade | None]) -> WallRing:
+def _ring(report: CouncilReport, grades: list[WallGrade | None], **more: object) -> WallRing:
     sid = _capital(report)
     ring = empty_ring(sid, 2, (0, 3), 0)
     return ring.model_copy(
         update={
+            **more,
             "sections": tuple(
                 item.model_copy(
                     update={
@@ -79,7 +98,7 @@ def _ring(report: CouncilReport, grades: list[WallGrade | None]) -> WallRing:
                     }
                 )
                 for item, grade in zip(ring.sections, grades, strict=True)
-            )
+            ),
         }
     )
 
@@ -158,7 +177,7 @@ def test_the_baseline_waits_for_its_job_its_reserve_and_its_hands() -> None:
     assert not _walls(plan_baseline_commands(report.model_copy(update={"notable_people": few})))
 
 
-def test_an_earthwork_ring_is_raised_a_palisade_one_left_and_a_battered_one_mended() -> None:
+def test_an_earthwork_ring_is_raised_a_palisade_one_towered_and_a_battered_one_mended() -> None:
     state = _designed()
     reports = [build_council_report(state, key) for key in sorted(state.civilizations)]
     skilled = next(report for report in reports if _timbercraft(report))
@@ -170,18 +189,137 @@ def test_an_earthwork_ring_is_raised_a_palisade_one_left_and_a_battered_one_mend
 
     [raise_] = orders(skilled, _ring(skilled, [WallGrade.EARTHWORK] * 10))
     assert raise_.kind is DirectOrderKind.BUILD_WALLS and raise_.wall_grade is WallGrade.PALISADE
-    assert orders(skilled, _ring(skilled, [WallGrade.PALISADE] * 10)) == []
+    [towers] = orders(skilled, _ring(skilled, [WallGrade.PALISADE] * 10))
+    assert towers.kind is DirectOrderKind.BUILD_TOWERS and towers.section_ids == (0, 5)
     assert orders(unskilled, _ring(unskilled, [WallGrade.EARTHWORK] * 10)) == []
 
-    battered = _ring(skilled, [WallGrade.PALISADE] * 10)
+    battered = _ring(skilled, [WallGrade.PALISADE] * 10, towers=2, tower_sections=(0, 5))
     sections = list(battered.sections)
     sections[4] = sections[4].model_copy(update={"strength": 5})
     battered = battered.model_copy(update={"sections": tuple(sections)})
     [mend] = orders(skilled, battered)
     assert mend.kind is DirectOrderKind.REPAIR_WALLS
-    # Nobody who can mend a palisade: the ring is raised instead, here to nothing new.
+    # Nobody who can mend a palisade, nor build on it: nothing to do.
     battered_there = battered.model_copy(update={"settlement_id": _capital(unskilled)})
     assert orders(unskilled, battered_there) == []
+
+
+def test_a_complete_palisade_ring_gets_towers_on_its_gates_then_gatehouses() -> None:
+    state = _designed()
+    reports = [build_council_report(state, key) for key in sorted(state.civilizations)]
+    skilled = next(report for report in reports if _timbercraft(report))
+    unskilled = next(
+        report
+        for report in reports
+        if not _timbercraft(report) and not _knows(report, CapabilityId.STONEWORKING)
+    )
+    mason = next(
+        report
+        for report in reports
+        if not _timbercraft(report) and _knows(report, CapabilityId.STONEWORKING)
+    )
+    sid = _capital(skilled)
+    palisade = [WallGrade.PALISADE] * 10
+
+    def orders(report: CouncilReport, ring: WallRing, timber: int | None = None):  # type: ignore[no-untyped-def]
+        update: dict[str, object] = {"wall_rings": {_capital(report): ring}}
+        if timber is not None:
+            update["stores"] = {
+                key: {**value, Resource.TIMBER: timber} if key == sid else value
+                for key, value in report.stores.items()
+            }
+            update["inventory"] = {**report.inventory, Resource.TIMBER: timber}
+        return _walls(plan_baseline_commands(report.model_copy(update=update)))
+
+    [towers] = orders(skilled, _ring(skilled, palisade))
+    assert towers.kind is DirectOrderKind.BUILD_TOWERS
+    assert towers.section_ids == (0, 5) and towers.wall_grade is None and towers.tower_count == 0
+    assert len(towers.worker_ids) == WALL_CREW
+    assert not set(towers.worker_ids) & set(skilled.person_ids[:RESERVED_HANDS])
+    [one_more] = orders(skilled, _ring(skilled, palisade, towers=1, tower_sections=(0,)))
+    assert one_more.section_ids == (5,)
+    # Two wooden towers take 20 timber; the store keeps its reserve after paying.
+    assert orders(skilled, _ring(skilled, palisade), WALL_RESERVE + 19) == []
+    assert orders(skilled, _ring(skilled, palisade), WALL_RESERVE + 20)
+
+    towered = _ring(skilled, palisade, towers=2, tower_sections=(0, 5))
+    [gatehouses] = orders(skilled, towered)
+    assert gatehouses.kind is DirectOrderKind.BUILD_WORKS
+    assert gatehouses.work is DefenceWork.GATEHOUSE and gatehouses.section_ids == (0, 5)
+    assert orders(skilled, towered, WALL_RESERVE + 19) == []
+    assert orders(skilled, towered, WALL_RESERVE + 20)
+    sections = tuple(
+        item.model_copy(update={"gatehouse": True}) if item.gate else item
+        for item in towered.sections
+    )
+    assert orders(skilled, towered.model_copy(update={"sections": sections})) == []
+    # Nobody who knows timbercraft, or an earthwork ring: no towers, no gatehouses.
+    other = _ring(unskilled, palisade)
+    assert orders(unskilled, other) == []
+    assert orders(unskilled, _ring(unskilled, [WallGrade.EARTHWORK] * 10)) == []
+    # An earthwork ring carries no towers, but a crew that knows stoneworking puts stone
+    # gatehouses on its gates.
+    [stone] = orders(mason, _ring(mason, [WallGrade.EARTHWORK] * 10))
+    assert stone.kind is DirectOrderKind.BUILD_WORKS and stone.section_ids == (0, 5)
+
+
+def test_the_baseline_sets_its_capitals_defence_once_there_is_room() -> None:
+    first = _state()
+    for key in sorted(first.civilizations):
+        commands = plan_baseline_commands(build_council_report(first, key))
+        assert not _defence(commands[:COUNCIL_ORDERS]), "the first council is full"
+    state = _run(_state(), 30)[0]
+    for key in sorted(state.civilizations):
+        report = build_council_report(state, key)
+        commands = plan_baseline_commands(report)
+        [defence] = _defence(commands)
+        assert commands[-1] == defence and len(commands) <= COUNCIL_ORDERS
+        assert commands[-2].kind is DirectOrderKind.PLAN_SETTLEMENT  # type: ignore[union-attr]
+        assert defence.settlement_id == _capital(report) and defence.defence == BASELINE_DEFENCE
+        full = report.model_copy(
+            update={
+                "defence_orders": {
+                    _capital(report): _designed()
+                    .civilizations[key]
+                    .defence_orders[_capital(report)]
+                }
+            }
+        )
+        assert not _defence(plan_baseline_commands(full)), "set once"
+    older = _run(_state(2), 30)[0]
+    for key in sorted(older.civilizations):
+        assert not _defence(plan_baseline_commands(build_council_report(older, key)))
+
+
+def test_palisade_capitals_carry_towers_and_gatehouses_within_six_months() -> None:
+    state, events = _run(_state(), 165)
+    assert not [event for event in events if event.kind == "walls_unfunded"]
+    assert not [event for event in events if "reject" in event.kind]
+    validate_world(state)
+    for key, civilization in state.civilizations.items():
+        [capital] = [item for item in civilization.settlements if item.capital]
+        sid = capital.settlement_id
+        order = civilization.defence_orders[sid]
+        assert order.set_day == 30 and order.spec() == BASELINE_DEFENCE
+        ring = civilization.wall_rings[sid]
+        report = build_council_report(state, key)
+        gatehouses = [index for index, item in enumerate(ring.sections) if item.gatehouse]
+        if _timbercraft(report):
+            assert ring.towers == 2 and ring.tower_sections == (0, 5) and gatehouses == [0, 5]
+        else:
+            assert ring.towers == 0
+            stone = _knows(report, CapabilityId.STONEWORKING)
+            assert gatehouses == ([0, 5] if stone else []), key
+        assert civilization.wall_jobs == ()
+        assert civilization.inventory.quantities.get(Resource.TIMBER, 0) >= WALL_RESERVE
+        assert report.population is not None and report.population.hungry == 0
+        assert len(civilization.population.living_ids) == 32
+    built = sorted(
+        (event.day, event.actor_id, event.kind)
+        for event in events
+        if event.kind in ("towers_built", "gatehouse_built")
+    )
+    assert built and all(day <= 160 for day, _, _ in built)
 
 
 def test_the_baseline_walls_every_capital_within_four_months() -> None:
@@ -198,7 +336,8 @@ def test_the_baseline_walls_every_capital_within_four_months() -> None:
         report = build_council_report(state, key)
         expected = WallGrade.PALISADE if _timbercraft(report) else WallGrade.EARTHWORK
         assert ring_grade(ring) is expected
-        assert civilization.wall_jobs == ()
+        # Only gatehouses may still be going up on a finished earthwork ring.
+        assert all(job.work is DefenceWork.GATEHOUSE for job in civilization.wall_jobs)
         assert civilization.inventory.quantities.get(Resource.TIMBER, 0) >= WALL_RESERVE
         assert report.population is not None and report.population.hungry == 0
         assert len(civilization.population.living_ids) == 32

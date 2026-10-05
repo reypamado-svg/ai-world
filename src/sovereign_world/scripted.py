@@ -16,12 +16,19 @@ from sovereign_world.commands import (
     PersonView,
     ProjectKind,
 )
+from sovereign_world.defence import Arms, Crews, DefenceOrderSpec, Posture
 from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.housing import HOUSE_GRADES, HOUSEHOLD, MAX_HOUSES_PER_ORDER, HouseGrade
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import InstitutionKind
 from sovereign_world.resources import Resource
-from sovereign_world.rings import damaged_sections, empty_ring
+from sovereign_world.rings import (
+    damaged_sections,
+    empty_ring,
+    tower_cap,
+    tower_positions,
+    weakest,
+)
 from sovereign_world.townplan import (
     STANDARD_RING,
     Place,
@@ -31,10 +38,12 @@ from sovereign_world.townplan import (
 )
 from sovereign_world.walls import (
     WALL_GRADES,
+    DefenceWork,
     WallGrade,
     rank,
     section_materials,
     section_repair_materials,
+    tower_spec,
 )
 
 
@@ -191,24 +200,48 @@ def _plan_rules_two(report: CouncilReport) -> tuple[Command, ...]:
 
 def _plan_rules_three(report: CouncilReport) -> tuple[Command, ...]:
     """Rules version 3: the rules-2 policy, then a design for the capital while it still
-    has the plain plan; once it is designed, walls along its ring. Either goes last, so it
-    waits for a council with an order to spare."""
-    commands = _plan_rules_two(report)
+    has the plain plan; once it is designed, work on its ring. Either goes last, so it waits
+    for a council with an order to spare; the capital's standing defence order follows,
+    only when the council still has room for it."""
     capital = next((item for item in report.settlements if item.capital), None)
+    commands = _plan_rules_two(report)
     if capital is None:
         return commands
-    plan = report.town_plans.get(capital.settlement_id)
+    commands = _design_or_walls(report, capital.settlement_id, commands)
+    defence = _defence_order(report, capital.settlement_id)
+    if defence is not None and len(commands) < COUNCIL_ORDERS:
+        commands = (*commands, defence)
+    return commands
+
+
+def _defence_order(report: CouncilReport, settlement_id: EntityId) -> DirectOrder | None:
+    """The capital's standing defence order, once."""
+    if settlement_id in report.defence_orders:
+        return None
+    return DirectOrder(
+        command_id=f"defence:{report.day}:capital",
+        kind=DirectOrderKind.SET_DEFENCE,
+        settlement_id=settlement_id,
+        defence=BASELINE_DEFENCE,
+        priority=70,
+    )
+
+
+def _design_or_walls(
+    report: CouncilReport, settlement_id: EntityId, commands: tuple[Command, ...]
+) -> tuple[Command, ...]:
+    plan = report.town_plans.get(settlement_id)
     if plan is None:
         return commands
     if not is_default(plan):
-        walls = _wall_order(report, capital.settlement_id)
+        walls = _wall_order(report, settlement_id)
         return commands if walls is None else (*commands, walls)
-    land = report.land.get(capital.settlement_id)
+    land = report.land.get(settlement_id)
     watered = land is not None and land.watered
     design = DirectOrder(
         command_id=f"plan:{report.day}:capital",
         kind=DirectOrderKind.PLAN_SETTLEMENT,
-        settlement_id=capital.settlement_id,
+        settlement_id=settlement_id,
         town_plan=TownPlanSpec(
             style=PlanStyle.RINGED,
             keep=Place.CENTRE,
@@ -221,6 +254,16 @@ def _plan_rules_three(report: CouncilReport) -> tuple[Command, ...]:
     return (*commands, design)
 
 
+COUNCIL_ORDERS = 8
+"""The most orders the baseline gives a council, as a model's reply may hold."""
+BASELINE_DEFENCE = DefenceOrderSpec(
+    posture=Posture.EVERYONE,
+    reserve_bp=1_000,
+    tower_crews=Crews.DRILLED,
+    arms_priority=Arms.VETERANS,
+)
+"""Everyone fights, a tenth held back, the best fighters in the towers, the best kits to
+the veterans."""
 WALL_CREW = 2
 """Builders the baseline sets to its walls, as many as to a house."""
 BASELINE_WALL = WallGrade.PALISADE
@@ -231,9 +274,10 @@ wall crew is drawn from the rest, so no two orders in a council claim one person
 
 
 def _wall_order(report: CouncilReport, settlement_id: EntityId) -> DirectOrder | None:
-    """Rules version 3: walls along the capital's designed ring. Mend damaged sections the
-    crew can mend, else raise every section to palisade (earthwork when no crew member knows
-    timbercraft), in one job, keeping half the materials target in store."""
+    """Rules version 3: work on the capital's designed ring, keeping half the materials
+    target in store. Mend damaged sections the crew can mend; else raise every section to
+    palisade (earthwork when no crew member knows timbercraft), in one job; once the ring
+    is complete, towers on its gates, then gatehouses on them, as the crew knows how."""
     if any(job.settlement_id == settlement_id for job in report.wall_jobs):
         return None
     reserved = set(report.person_ids[:RESERVED_HANDS])
@@ -271,12 +315,20 @@ def _wall_order(report: CouncilReport, settlement_id: EntityId) -> DirectOrder |
                 out[resource] = out.get(resource, 0) + quantity
         return out
 
-    def order(kind: DirectOrderKind, grade: WallGrade | None = None) -> DirectOrder:
+    def order(
+        kind: DirectOrderKind,
+        grade: WallGrade | None = None,
+        *,
+        section_ids: tuple[int, ...] = (),
+        work: DefenceWork | None = None,
+    ) -> DirectOrder:
         return DirectOrder(
             command_id=f"walls:{report.day}:capital",
             kind=kind,
             worker_ids=tuple(person.person_id for person in crew),
             wall_grade=grade,
+            section_ids=section_ids,
+            work=work,
             priority=75,
         )
 
@@ -291,9 +343,36 @@ def _wall_order(report: CouncilReport, settlement_id: EntityId) -> DirectOrder |
             return order(DirectOrderKind.REPAIR_WALLS)
     target = BASELINE_WALL if knows(crew[0], CapabilityId.TIMBERCRAFT) else WallGrade.EARTHWORK
     below = [item.grade for item in ring.sections if rank(item.grade) < rank(target)]
-    if not below or not affordable(total([section_materials(grade, target) for grade in below])):
-        return None
-    return order(DirectOrderKind.BUILD_WALLS, target)
+    if below:
+        if not affordable(total([section_materials(grade, target) for grade in below])):
+            return None
+        return order(DirectOrderKind.BUILD_WALLS, target)
+    # The ring is complete: towers on its gates, then gatehouses.
+    grade = weakest(ring)
+    assert grade is not None
+    spec = tower_spec(grade)
+    free = sorted(ring.gates() - set(tower_positions(ring)))[: tower_cap(ring) - ring.towers]
+    if free and any(knows(person, spec.capability) for person in crew):
+        if not affordable(
+            {resource: count * len(free) for resource, count in spec.materials.items()}
+        ):
+            return None
+        return order(DirectOrderKind.BUILD_TOWERS, section_ids=tuple(free))
+    gates = tuple(
+        index
+        for index, item in enumerate(ring.sections)
+        if item.gate and item.grade is not None and not item.gatehouse
+    )
+    specs = [
+        tower_spec(grade) for index in gates if (grade := ring.sections[index].grade) is not None
+    ]
+    if (
+        gates
+        and all(any(knows(person, item.capability) for person in crew) for item in specs)
+        and affordable(total([dict(item.materials) for item in specs]))
+    ):
+        return order(DirectOrderKind.BUILD_WORKS, section_ids=gates, work=DefenceWork.GATEHOUSE)
+    return None
 
 
 SPARE_ROOM_PCT = 10
@@ -378,5 +457,5 @@ class BaselineSovereign:
             civilization_id=report.civilization_id,
             council_day=report.day,
             correlation_id=report.report_id,
-            commands=plan_baseline_commands(report)[:8],
+            commands=plan_baseline_commands(report)[:COUNCIL_ORDERS],
         )
