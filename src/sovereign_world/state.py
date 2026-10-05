@@ -51,6 +51,7 @@ from sovereign_world.people_store import people_hash
 from sovereign_world.ranks import RealmRank, SettlementRank
 from sovereign_world.research import ResearchAssignment
 from sovereign_world.resources import Inventory, Resource
+from sovereign_world.rings import WallRing, gate_sections, tower_cap
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView
 from sovereign_world.sites import Site
@@ -63,7 +64,7 @@ from sovereign_world.stores import (
 )
 from sovereign_world.territory import Claim, Garrison, Settlement, Territory
 from sovereign_world.tolls import TollPost, TollView
-from sovereign_world.townplan import TownPlan, default_plan, site_error
+from sovereign_world.townplan import DEFAULT_PLAN, TownPlan, default_plan, site_error
 from sovereign_world.walls import WallJob, Walls
 from sovereign_world.war import Battle, BattleReport, Drill, Occupation, Siege, War
 from sovereign_world.work import ConstructionProject, WorkOrder
@@ -136,6 +137,8 @@ class CivilizationState(BaseModel):
     realm_rank_reached: RealmRank = RealmRank.CHIEFDOM
     town_plans: dict[EntityId, TownPlan] = Field(default_factory=dict)
     """Each settlement's design, by settlement id (rules version 3)."""
+    wall_rings: dict[EntityId, WallRing] = Field(default_factory=dict)
+    """Each settlement's walls along its planned ring, by settlement id (rules version 3)."""
 
 
 _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
@@ -144,6 +147,7 @@ _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("ranks_reached", {}),
     ("realm_rank_reached", "chiefdom"),
     ("town_plans", {}),
+    ("wall_rings", {}),
 )
 """Civilization fields added by rules versions 2 and 3, and the value at which each is left
 out."""
@@ -520,6 +524,26 @@ def validate_world(state: WorldState) -> None:
         builders = [person_id for job in civilization.house_jobs for person_id in job.worker_ids]
         if len(builders) != len(set(builders)):
             raise ValueError("a builder works on one house job at a time")
+        rings = list(civilization.wall_rings)
+        if rings != sorted(rings) or not set(rings) <= settlement_ids:
+            raise ValueError("wall rings belong to the civilization's own settlements, sorted")
+        if rings and civilization.walls:
+            raise ValueError("a civilization builds walls by ring or whole, not both")
+        for settlement_id, ring in civilization.wall_rings.items():
+            design = civilization.town_plans.get(settlement_id) or DEFAULT_PLAN
+            if ring.settlement_id != settlement_id:
+                raise ValueError("wall ring key does not match its settlement")
+            if ring.ring != design.wall_ring or ring.gates() != gate_sections(
+                ring.ring, design.gates
+            ):
+                raise ValueError("a wall ring runs along its settlement's planned line")
+            if ring.towers > tower_cap(ring):
+                raise ValueError("a ring carries no more towers than its walls allow")
+        for job in civilization.wall_jobs:
+            if job.sections:
+                ring_of_job = civilization.wall_rings.get(job.settlement_id)
+                if ring_of_job is None or max(job.sections) >= len(ring_of_job.sections):
+                    raise ValueError("a ring job works on its ring's own sections")
         walled = [item.settlement_id for item in civilization.walls]
         if walled != sorted(set(walled)) or not set(walled) <= settlement_ids:
             raise ValueError("each settlement has at most one set of walls, sorted")

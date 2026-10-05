@@ -122,6 +122,14 @@ from sovereign_world.research import (
     research_error,
 )
 from sovereign_world.resources import Resource
+from sovereign_world.rings import (
+    MAX_SECTIONS,
+    WallRing,
+    ring_for,
+    ring_work,
+    tower_cap,
+    weakest,
+)
 from sovereign_world.roads import (
     STONE_LAYING,
     STONEWORKING,
@@ -373,6 +381,9 @@ class DirectOrder(BaseModel):
     """The grade a settlement's walls are raised to, one step at a time."""
     tower_count: int = Field(default=0, ge=0, le=6)
     """Towers to add to a settlement's walls."""
+    wall_sections: int | None = Field(default=None, ge=1, le=MAX_SECTIONS)
+    """Rules version 3: how many of the ring's weakest sections to raise; none means every
+    section below the grade."""
     craft_quantity: int = Field(default=1, ge=1, le=MAX_CRAFT_QUANTITY)
     research_topic: CapabilityId | None = None
     research_days: int = Field(default=30, ge=1, le=MAX_RESEARCH_DAYS)
@@ -398,7 +409,7 @@ class DirectOrder(BaseModel):
         # Orders that name their workers dump exactly as before counts existed.
         dumped = handler(self)
         if isinstance(dumped, dict):
-            for key in ("worker_count", "settlement_id", "town_plan"):
+            for key in ("worker_count", "settlement_id", "town_plan", "wall_sections"):
                 if key in dumped and dumped[key] is None:
                     dumped.pop(key)
         return dumped
@@ -589,6 +600,7 @@ _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("land", {}),
     ("extractions", []),
     ("town_plans", {}),
+    ("wall_rings", {}),
 )
 """Report fields added since council-3, and the value at which each is left out, so reports
 from older worlds read, and so prompt, exactly as before."""
@@ -696,6 +708,8 @@ class CouncilReport(BaseModel):
     """Up to 40 of its people: those on a duty, then idle grown-ups at each settlement."""
     town_plans: dict[EntityId, TownPlan] = Field(default_factory=dict)
     """How each settlement is laid out (rules version 3)."""
+    wall_rings: dict[EntityId, WallRing] = Field(default_factory=dict)
+    """Each settlement's walls, section by section along its planned ring (rules version 3)."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -1121,6 +1135,7 @@ def build_council_report(
         storehouses=civilization.storehouses,
         storehouse_jobs=civilization.storehouse_jobs,
         walls=civilization.walls,
+        wall_rings=dict(civilization.wall_rings),
         wall_jobs=civilization.wall_jobs,
         store_capacity={
             settlement_id: inventory.capacity
@@ -2349,9 +2364,31 @@ def _walls_of(civilization: CivilizationState, tile: HexCoord) -> Walls | None:
     )
 
 
-def _wall_materials(civilization: CivilizationState, command: DirectOrder) -> dict[Resource, int]:
+def ring_order(
+    civilization: CivilizationState, settlement_id: EntityId, command: DirectOrder, day: int
+) -> tuple[WallRing, tuple[int, ...], tuple[WallGrade | None, ...], dict[Resource, int]]:
+    """Rules version 3: a wall order's ring, the sections it works on, their grades, and what
+    it takes from the store."""
+    ring = ring_for(civilization, settlement_id, day)
+    chosen, grades, materials = ring_work(
+        ring,
+        target=command.wall_grade if command.kind is DirectOrderKind.BUILD_WALLS else None,
+        repair=command.kind is DirectOrderKind.REPAIR_WALLS,
+        towers=command.tower_count if command.kind is DirectOrderKind.BUILD_TOWERS else 0,
+        count=command.wall_sections,
+    )
+    return ring, chosen, grades, materials
+
+
+def _wall_materials(
+    state: WorldState, civilization: CivilizationState, command: DirectOrder
+) -> dict[Resource, int]:
     """What a validated wall or tower order takes from its settlement's store."""
     tile = civilization.population.people[command.worker_ids[0]].location
+    if rules_for(state.rules_version).town_plans:
+        site = settlement_at(civilization, tile)
+        assert site is not None
+        return ring_order(civilization, site.settlement_id, command, state.day)[3]
     walls = _walls_of(civilization, tile)
     current = walls.grade if walls is not None else None
     if command.kind is DirectOrderKind.BUILD_TOWERS:
@@ -2389,6 +2426,10 @@ def _walls_error(
     busy = {job.settlement_id for job in civilization.wall_jobs}
     if site.settlement_id in busy or site.tile in walling:
         return error("invalid_walls", "that settlement's walls are already being worked on")
+    if rules_for(state.rules_version).town_plans:
+        return _ring_walls_error(command, civilization, site.settlement_id, state, reserved)
+    if command.wall_sections is not None:
+        return error("invalid_walls", "walls go up by the section only in planned towns")
     walls = _walls_of(civilization, site.tile)
     current = walls.grade if walls is not None else None
     skills = [people[person_id].skills for person_id in command.worker_ids]
@@ -2421,8 +2462,65 @@ def _walls_error(
     for capability in needed:
         if not any(item.get(capability.value, 0) > 0 for item in skills):
             return error("unqualified_worker", f"this work needs someone who knows {capability}")
-    for resource, quantity in _wall_materials(civilization, command).items():
+    for resource, quantity in _wall_materials(state, civilization, command).items():
         if _short(civilization, site.tile, reserved, resource, quantity):
+            return error("insufficient_materials", f"not enough {resource} for the walls")
+    return None
+
+
+def _ring_walls_error(
+    command: DirectOrder,
+    civilization: CivilizationState,
+    settlement_id: EntityId,
+    state: WorldState,
+    reserved: Reserved,
+) -> CommandError | None:
+    """Rules version 3: raise the ring's weakest sections, repair its damaged ones, or add
+    towers to a complete ring."""
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    ring, chosen, grades, materials = ring_order(civilization, settlement_id, command, state.day)
+    needed: list[CapabilityId]
+    if command.kind is DirectOrderKind.REPAIR_WALLS:
+        if not chosen:
+            return error("invalid_walls", "only damaged sections are repaired")
+        needed = [
+            capability
+            for grade in sorted({grade for grade in grades if grade is not None}, key=wall_rank)
+            if (capability := WALL_GRADES[grade].capability) is not None
+        ]
+    elif command.kind is DirectOrderKind.BUILD_TOWERS:
+        if not ring.complete or command.tower_count < 1:
+            return error("invalid_walls", "towers are added, one or more, to a complete ring")
+        if ring.towers + command.tower_count > tower_cap(ring):
+            return error("invalid_walls", f"this ring carries at most {tower_cap(ring)} towers")
+        grade = weakest(ring)
+        assert grade is not None
+        needed = [tower_spec(grade).capability]
+    else:
+        target = command.wall_grade
+        if target is None or command.tower_count:
+            return error("invalid_walls", "a wall order names the grade to raise sections to")
+        if not chosen:
+            return error("invalid_walls", "every section already stands at that grade")
+        lowest = min(grades, key=wall_rank)
+        needed = [
+            capability
+            for grade in wall_steps(lowest, target)
+            if (capability := WALL_GRADES[grade].capability) is not None
+        ]
+    people = civilization.population.people
+    skills = [people[person_id].skills for person_id in command.worker_ids]
+    for capability in needed:
+        if not any(item.get(capability.value, 0) > 0 for item in skills):
+            return error("unqualified_worker", f"this work needs someone who knows {capability}")
+    tile = next(
+        item.tile for item in civilization.settlements if item.settlement_id == settlement_id
+    )
+    for resource, quantity in materials.items():
+        if _short(civilization, tile, reserved, resource, quantity):
             return error("insufficient_materials", f"not enough {resource} for the walls")
     return None
 
@@ -3472,7 +3570,10 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             if command.kind in WALL_ORDERS:
                 site_tile = civilization.population.people[command.worker_ids[0]].location
                 _reserve(
-                    civilization, site_tile, reserved_cargo, _wall_materials(civilization, command)
+                    civilization,
+                    site_tile,
+                    reserved_cargo,
+                    _wall_materials(state, civilization, command),
                 )
                 walling.add(site_tile)
         elif (decree_error := _decree_error(command, state)) is not None:

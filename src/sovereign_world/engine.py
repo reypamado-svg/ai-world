@@ -48,6 +48,7 @@ from sovereign_world.commands import (
     known_roads,
     known_spans,
     known_tolls,
+    ring_order,
     sight_of,
     trade_partners,
     validate_envelope,
@@ -171,6 +172,23 @@ from sovereign_world.research import (
     knows,
 )
 from sovereign_world.resources import Inventory, InventoryDelta, Resource
+from sovereign_world.rings import (
+    WallSection,
+    battered_ring,
+    ring_defence_bp,
+    ring_for,
+    ring_from_ruin,
+    ring_grade,
+    ring_job_done,
+    ring_salvage,
+    ruin_walls,
+    sections_done,
+    set_ring,
+    sheltered,
+    tower_cap,
+    unspent,
+    weakest,
+)
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView, grade_below, grades_of
 from sovereign_world.rules import rules_for
@@ -216,7 +234,17 @@ from sovereign_world.territory import (
     visible_tiles,
 )
 from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
-from sovereign_world.townplan import TownPlan, default_plan
+from sovereign_world.townplan import (
+    DEFAULT_PLAN,
+    HILL_FORT_BP,
+    KEEP_DEFENCE_BP,
+    MARKET_ROOM,
+    WATER_WORKSHOP_DAY,
+    Place,
+    PlanStyle,
+    TownPlan,
+    default_plan,
+)
 from sovereign_world.travel import crossing, travel_days, way_to
 from sovereign_world.walls import (
     WALL_GRADES,
@@ -229,6 +257,7 @@ from sovereign_world.walls import (
     tower_materials,
     wall_bonus_after_engines,
 )
+from sovereign_world.walls import rank as wall_rank
 from sovereign_world.walls import step_materials as wall_step_materials
 from sovereign_world.war import (
     ARMS,
@@ -906,6 +935,9 @@ def _cede(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
         )
     )
     giver.walls = tuple(item for item in giver.walls if item.settlement_id != sid)
+    if sid in giver.wall_rings:
+        taker.wall_rings = dict(sorted({**taker.wall_rings, sid: giver.wall_rings[sid]}.items()))
+        giver.wall_rings = {key: value for key, value in giver.wall_rings.items() if key != sid}
     if sid in giver.housing:
         taker.housing = dict(sorted({**taker.housing, sid: giver.housing[sid]}.items()))
         giver.housing = {key: value for key, value in giver.housing.items() if key != sid}
@@ -2201,6 +2233,10 @@ def _fight(
         if at_home
         else BASIS
     )
+    if at_home and rules_for(state.rules_version).town_plans:
+        towers, terrain_bp, walls_bp = _planned_defence(
+            state, enemy, tile, working, len(home_side), terrain_bp
+        )
     battle_id = EntityId(f"battle:{state.day:06d}:{party.journey_id}")
     outcome = resolve_battle(
         attackers,
@@ -2771,6 +2807,7 @@ def _advance_espionage(state: WorldState, rng: StableRng) -> list[DomainEvent]:
             (item for item in target.walls if item.settlement_id == settlement.settlement_id),
             None,
         )
+        ring = target.wall_rings.get(settlement.settlement_id)
         truth = _truth(state, target_id, settlement)
         seen = observe(
             settlement_id=settlement.settlement_id,
@@ -2780,8 +2817,8 @@ def _advance_espionage(state: WorldState, rng: StableRng) -> list[DomainEvent]:
             residents=truth["residents"],
             fighters=truth["fighters"],
             store_units=truth["store_units"],
-            wall_grade=None if walls is None else walls.grade,
-            towers=0 if walls is None else walls.towers,
+            wall_grade=ring_grade(ring) if walls is None else walls.grade,
+            towers=(0 if ring is None else ring.towers) if walls is None else walls.towers,
             works=truth["works"],
             spies=living,
             roll=roll,
@@ -3392,7 +3429,8 @@ def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent
                     item for item in civilization.storehouses if item.settlement_id == sid
                 ),
                 walls=next(
-                    (item for item in civilization.walls if item.settlement_id == sid), None
+                    (item for item in civilization.walls if item.settlement_id == sid),
+                    ruin_walls(civilization.wall_rings.get(sid)),
                 ),
             )
         )
@@ -3420,6 +3458,7 @@ def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent
     civilization.house_jobs = ()
     civilization.ranks_reached = {}
     civilization.town_plans = {}
+    civilization.wall_rings = {}
     civilization.realm_rank_reached = RealmRank.CHIEFDOM
     civilization.stores = {}
     civilization.inventory = Inventory(capacity=0)
@@ -3572,7 +3611,12 @@ def _resettle(
             key=lambda item: item.storehouse_id,
         )
     )
-    if ruin.walls is not None:
+    if ruin.walls is not None and rules_for(state.rules_version).town_plans:
+        set_ring(
+            civilization,
+            ring_from_ruin(ring_for(civilization, settlement_id, state.day), ruin.walls, state.day),
+        )
+    elif ruin.walls is not None:
         civilization.walls = tuple(
             sorted(
                 (
@@ -4081,6 +4125,28 @@ def _bombard(
 ) -> list[DomainEvent]:
     """Catapult hits batter the walls, or wound people in a settlement without them."""
     events: list[DomainEvent] = []
+    ring = state.civilizations[siege.defender_id].wall_rings.get(siege.settlement_id)
+    if ring is not None and ring.built:
+        # Rules version 3: each hit lands on the most battered standing section.
+        after_ring, hit = battered_ring(ring, hits)
+        set_ring(state.civilizations[siege.defender_id], after_ring)
+        for index in dict.fromkeys(index for index, _ in hit):
+            section = after_ring.sections[index]
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "wall_section_fell"
+                    if section.grade is not ring.sections[index].grade
+                    else "wall_section_damaged",
+                    str(siege.besieger_id),
+                    str(siege.settlement_id),
+                    section=index,
+                    grade=section.grade.value if section.grade is not None else "none",
+                    strength=section.strength,
+                )
+            )
+        return events
     walls = _walls_at(state, siege.defender_id, siege.settlement_tile)
     if walls is not None:
         after, fell = battered(walls, hits * WALL_HIT)
@@ -4635,6 +4701,11 @@ def _lose_houses(
         return []
     left, lost = housing.minus(count)
     civilization.housing = {**civilization.housing, settlement_id: left}
+    outside: dict[str, int] = {}
+    if rules_for(state.rules_version).town_plans and cause != "abandoned":
+        # Rules version 3: the houses beyond the wall line burn first.
+        plan = civilization.town_plans.get(settlement_id) or DEFAULT_PLAN
+        outside["outside"] = min(lost, sheltered(plan.wall_ring, housing.count)[1])
     return [
         _event(
             state,
@@ -4644,6 +4715,7 @@ def _lose_houses(
             str(settlement_id),
             cause=cause,
             count=lost,
+            **outside,
         )
     ]
 
@@ -4672,11 +4744,19 @@ def _workshop_bonus(
     present: int,
     away: set[EntityId],
 ) -> int:
-    """Every fourth day, each worker at a settlement with an open workshop does a day extra."""
-    if not present or state.day % WORKSHOP_DAY:
+    """Every fourth day, each worker at a settlement with an open workshop does a day extra
+    (every third day with the craft quarter by the water, rules version 3)."""
+    if not present:
         return 0
     civilization = state.civilizations[civilization_id]
     site = supplying(civilization, tile)
+    every = WORKSHOP_DAY
+    if site is not None and rules_for(state.rules_version).town_plans:
+        plan = civilization.town_plans.get(site.settlement_id)
+        if plan is not None and plan.craft_quarter is Place.BY_WATER:
+            every = WATER_WORKSHOP_DAY
+    if state.day % every:
+        return 0
     tiles = serving_tiles(civilization, InstitutionKind.WORKSHOP, away)
     return present if site is not None and site.tile in tiles else 0
 
@@ -4961,26 +5041,273 @@ def _advance_institutions(state: WorldState) -> list[DomainEvent]:
 
 def _plan_settlement(
     state: WorldState, civilization_id: EntityId, command: DirectOrder
-) -> DomainEvent:
-    """Record a settlement's design; it costs nothing until something is built to it."""
+) -> list[DomainEvent]:
+    """Record a settlement's design; it costs nothing until something is built to it.
+
+    Moving the wall line (a new ring or new gates) pulls the old ring down: half of what its
+    sections and towers cost comes back, and wall work on it stops with its unused materials
+    returned. A market moved to or from the store adds or takes its store room.
+    """
     assert command.town_plan is not None and command.settlement_id is not None
     civilization = state.civilizations[civilization_id]
     spec = command.town_plan
+    old = civilization.town_plans.get(command.settlement_id) or DEFAULT_PLAN
+    events: list[DomainEvent] = []
+    if (old.wall_ring, old.gates) != (spec.wall_ring, spec.gates):
+        events.extend(_pull_down_ring(state, civilization_id, command.settlement_id))
+    tile = next(
+        item.tile
+        for item in civilization.settlements
+        if item.settlement_id == command.settlement_id
+    )
+    was, now = old.market is Place.BY_STORE, spec.market is Place.BY_STORE
+    if now and not was:
+        enlarge(civilization, tile, MARKET_ROOM)
+    elif was and not now:
+        lost = shrink(civilization, tile, MARKET_ROOM)
+        if lost:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.COMMAND,
+                    "goods_lost",
+                    str(civilization_id),
+                    str(command.settlement_id),
+                    **{str(resource): quantity for resource, quantity in lost.items()},
+                )
+            )
     plan = TownPlan(**spec.model_dump(), settlement_id=command.settlement_id, planned_day=state.day)
     civilization.town_plans = dict(
         sorted({**civilization.town_plans, command.settlement_id: plan}.items())
     )
+    events.insert(
+        0,
+        _event(
+            state,
+            EventPhase.COMMAND,
+            "settlement_planned",
+            str(civilization_id),
+            str(command.settlement_id),
+            style=spec.style.value,
+            keep=spec.keep.value,
+            wall_ring=spec.wall_ring,
+            gates=",".join(str(gate) for gate in spec.gates),
+        ),
+    )
+    return events
+
+
+def _pull_down_ring(
+    state: WorldState, civilization_id: EntityId, settlement_id: EntityId
+) -> list[DomainEvent]:
+    """Take a settlement's ring down for a new line: half its cost back, and its wall work
+    stopped with the unused materials returned."""
+    civilization = state.civilizations[civilization_id]
+    ring = civilization.wall_rings.get(settlement_id)
+    jobs = [job for job in civilization.wall_jobs if job.settlement_id == settlement_id]
+    if ring is None and not jobs:
+        return []
+    returned: dict[Resource, int] = {}
+    for part in (ring_salvage(ring) if ring is not None else {}, *map(unspent, jobs)):
+        for resource, quantity in part.items():
+            returned[resource] = returned.get(resource, 0) + quantity
+    civilization.wall_jobs = tuple(
+        job for job in civilization.wall_jobs if job.settlement_id != settlement_id
+    )
+    civilization.wall_rings = {
+        key: value for key, value in civilization.wall_rings.items() if key != settlement_id
+    }
+    tile = next(
+        item.tile for item in civilization.settlements if item.settlement_id == settlement_id
+    )
+    put(civilization, tile, dict(sorted(returned.items())))
+    return [
+        _event(
+            state,
+            EventPhase.COMMAND,
+            "walls_salvaged",
+            str(civilization_id),
+            str(settlement_id),
+            sections=ring.built if ring is not None else 0,
+            towers=ring.towers if ring is not None else 0,
+            jobs_stopped=len(jobs),
+            **{str(resource): quantity for resource, quantity in sorted(returned.items())},
+        )
+    ]
+
+
+def _start_ring_work(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> DomainEvent:
+    """Rules version 3: take the materials for every section or tower now; the builders then
+    raise the sections one at a time."""
+    civilization = state.civilizations[civilization_id]
+    tile = civilization.population.people[command.worker_ids[0]].location
+    site = settlement_at(civilization, tile)
+    assert site is not None
+    ring, chosen, grades, materials = ring_order(
+        civilization, site.settlement_id, command, state.day
+    )
+    job_id = EntityId(f"wall-job:{civilization_id}:{state.day}:{command.command_id}")
+    if not has(civilization, tile, materials):
+        return _event(
+            state, EventPhase.PROJECT, "walls_unfunded", str(civilization_id), str(job_id)
+        )
+    take(civilization, tile, materials)
+    set_ring(civilization, ring)
+    building = command.kind is DirectOrderKind.BUILD_WALLS
+    standing = [grade for grade in grades if grade is not None]
+    if building:
+        start = min(grades, key=wall_rank) if grades else None
+    elif command.kind is DirectOrderKind.REPAIR_WALLS:
+        start = min(standing, key=wall_rank)
+    else:
+        start = weakest(ring)
+    job = WallJob(
+        job_id=job_id,
+        settlement_id=site.settlement_id,
+        tile=tile,
+        worker_ids=tuple(sorted(command.worker_ids)),
+        start_grade=start,
+        target=command.wall_grade if building else None,
+        towers=command.tower_count if command.kind is DirectOrderKind.BUILD_TOWERS else 0,
+        repair=command.kind is DirectOrderKind.REPAIR_WALLS,
+        started_day=state.day,
+        sections=chosen,
+        section_grades=grades,
+    )
+    civilization.wall_jobs = (*civilization.wall_jobs, job)
     return _event(
         state,
-        EventPhase.COMMAND,
-        "settlement_planned",
+        EventPhase.PROJECT,
+        "wall_work_started",
         str(civilization_id),
-        str(command.settlement_id),
-        style=spec.style.value,
-        keep=spec.keep.value,
-        wall_ring=spec.wall_ring,
-        gates=",".join(str(gate) for gate in spec.gates),
+        str(site.settlement_id),
+        target=job.target.value if job.target is not None else "repair" if job.repair else "towers",
+        towers=job.towers,
+        sections=len(chosen),
     )
+
+
+def _advance_ring_job(
+    state: WorldState,
+    civilization_id: EntityId,
+    job: WallJob,
+    present: int,
+    builders_alive: bool,
+) -> tuple[WallJob | None, list[DomainEvent]]:
+    """Rules version 3: a day's work on a ring; each section or tower stands as its share of
+    the work is done. The job is kept until done, or ends with its builders."""
+    civilization = state.civilizations[civilization_id]
+    events: list[DomainEvent] = []
+    ring = ring_for(civilization, job.settlement_id, state.day)
+    before = sections_done(job) if job.sections else job.towers_built()
+    job = job.model_copy(update={"person_days_done": job.person_days_done + present})
+    if job.sections:
+        sections = list(ring.sections)
+        for step in range(before, sections_done(job)):
+            index = job.sections[step]
+            section = sections[index]
+            if job.target is not None:
+                sections[index] = WallSection(
+                    grade=job.target,
+                    strength=WALL_GRADES[job.target].strength,
+                    gate=section.gate,
+                )
+                kind = "wall_section_built"
+            elif section.grade is not None and section.grade is job.section_grades[step]:
+                sections[index] = section.model_copy(
+                    update={"strength": WALL_GRADES[section.grade].strength}
+                )
+                kind = "wall_section_repaired"
+            else:
+                continue
+            grade = sections[index].grade
+            assert grade is not None
+            events.append(
+                _event(
+                    state,
+                    EventPhase.PROJECT,
+                    kind,
+                    str(civilization_id),
+                    str(job.settlement_id),
+                    section=index,
+                    grade=grade.value,
+                    standing=sum(item.grade is not None for item in sections),
+                    of=len(sections),
+                )
+            )
+        if events:
+            built_day = state.day if job.target is not None else ring.built_day
+            set_ring(
+                civilization,
+                ring.model_copy(update={"sections": tuple(sections), "built_day": built_day}),
+            )
+    elif job.towers_built() > before:
+        towers = min(ring.towers + job.towers_built() - before, tower_cap(ring))
+        set_ring(civilization, ring.model_copy(update={"towers": towers}))
+        events.append(
+            _event(
+                state,
+                EventPhase.PROJECT,
+                "towers_built",
+                str(civilization_id),
+                str(job.settlement_id),
+                towers=towers,
+            )
+        )
+    if ring_job_done(job):
+        return None, events
+    if not builders_alive:
+        # With every builder dead, the materials not yet used go back into the store.
+        put(civilization, job.tile, unspent(job))
+        events.append(
+            _event(
+                state,
+                EventPhase.PROJECT,
+                "wall_work_stopped",
+                str(civilization_id),
+                str(job.settlement_id),
+            )
+        )
+        return None, events
+    return job, events
+
+
+def _planned_defence(
+    state: WorldState,
+    civilization_id: EntityId,
+    tile: HexCoord,
+    engines: dict[Resource, int],
+    home_defenders: int,
+    terrain_bp: int,
+) -> tuple[int, int, int]:
+    """Rules version 3: a settlement's manned towers, ground and walls bonuses at home.
+
+    Its walls count for the share of the ring built and of the houses inside it; a keep at
+    the centre with its hall open strengthens the settlement, and a hill fort its ground.
+    """
+    civilization = state.civilizations[civilization_id]
+    site = settlement_at(civilization, tile)
+    if site is None:
+        return 0, terrain_bp, settlement_bonus_after_engines(SETTLEMENT_DEFENCE_BP, engines)
+    plan = civilization.town_plans.get(site.settlement_id) or DEFAULT_PLAN
+    ring = civilization.wall_rings.get(site.settlement_id)
+    housing = civilization.housing.get(site.settlement_id)
+    houses = housing.count if housing is not None else 0
+    keep = plan.keep is Place.CENTRE and site.tile in serving_tiles(
+        civilization, InstitutionKind.HALL, _away(state)
+    )
+    base = KEEP_DEFENCE_BP if keep else SETTLEMENT_DEFENCE_BP
+    walls_bp = (
+        settlement_bonus_after_engines(base, engines)
+        * ring_defence_bp(ring, engines, houses)
+        // BASIS
+    )
+    if plan.style is PlanStyle.HILL_FORT:
+        terrain_bp += HILL_FORT_BP
+    towers = manned_towers(ring.towers, home_defenders) if ring is not None else 0
+    return towers, terrain_bp, walls_bp
 
 
 def _walls_at(state: WorldState, civilization_id: EntityId, tile: HexCoord) -> Walls | None:
@@ -5055,6 +5382,7 @@ def _advance_walls(state: WorldState) -> list[DomainEvent]:
     """Builders at the site put in a day each; each finished grade or tower stands at once."""
     events: list[DomainEvent] = []
     away = _away(state)
+    ringed = rules_for(state.rules_version).town_plans
     for civilization_id in sorted(state.civilizations):
         civilization = state.civilizations[civilization_id]
         people = civilization.population.people
@@ -5065,6 +5393,15 @@ def _advance_walls(state: WorldState) -> list[DomainEvent]:
                 people[person_id].location == job.tile and person_id not in away
                 for person_id in living
             )
+            if ringed:
+                present += _workshop_bonus(state, civilization_id, job.tile, present, away)
+                still, ring_events = _advance_ring_job(
+                    state, civilization_id, job, present, bool(living)
+                )
+                events.extend(ring_events)
+                if still is not None:
+                    kept.append(still)
+                continue
             before_grade, before_towers = job.built(), job.towers_built()
             present += _workshop_bonus(state, civilization_id, job.tile, present, away)
             job = job.model_copy(update={"person_days_done": job.person_days_done + present})
@@ -5734,7 +6071,7 @@ def _run_councils(
             elif (
                 isinstance(command, DirectOrder) and command.kind is DirectOrderKind.PLAN_SETTLEMENT
             ):
-                events.append(_plan_settlement(state, civilization_id, command))
+                events.extend(_plan_settlement(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.CRAFT_EQUIPMENT
@@ -5748,7 +6085,10 @@ def _run_councils(
             ):
                 events.append(_start_storehouse(state, civilization_id, command))
             elif isinstance(command, DirectOrder) and command.kind in WALL_ORDERS:
-                events.append(_start_walls(state, civilization_id, command))
+                if rules_for(state.rules_version).town_plans:
+                    events.append(_start_ring_work(state, civilization_id, command))
+                else:
+                    events.append(_start_walls(state, civilization_id, command))
             elif isinstance(command, DirectOrder) and command.kind in CAMP_ORDERS:
                 events.extend(_siege_order(state, civilization_id, command))
             elif (

@@ -40,6 +40,16 @@ def sections_of(ring: int) -> int:
 STANDARD_RING = 2
 """The ring whose walls cost what walls cost before plans: ten sections."""
 
+KEEP_DEFENCE_BP = 13_000
+"""A settlement's defence with its keep at the centre and its hall open (else 12,500)."""
+HILL_FORT_BP = 500
+"""What a hill fort adds to the ground's defence at home."""
+MARKET_ROOM = 2_000
+"""Store room a market by the store adds."""
+WATER_WORKSHOP_DAY = 3
+"""With the craft quarter by the water, an open workshop's extra day comes every third day
+instead of every fourth."""
+
 
 class PlanStyle(StrEnum):
     OPEN = "open"

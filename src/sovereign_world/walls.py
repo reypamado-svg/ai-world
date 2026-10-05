@@ -5,7 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from sovereign_world.capabilities import CapabilityId
 from sovereign_world.hexmap import HexCoord
@@ -102,6 +109,37 @@ def step_materials(current: WallGrade | None, target: WallGrade) -> dict[Resourc
     return dict(sorted(materials.items()))
 
 
+SECTION_SHARE = 10
+"""Rules version 3: a ring section costs a tenth of a whole wall's grade step (a standard
+ring has ten sections)."""
+REPAIR_SHARE = 4
+"""Repairing a section costs a quarter of its share of its grade's own step."""
+
+
+def section_materials(current: WallGrade | None, target: WallGrade) -> dict[Resource, int]:
+    """What raising one section from `current` to `target` costs."""
+    return {
+        resource: quantity // SECTION_SHARE
+        for resource, quantity in step_materials(current, target).items()
+    }
+
+
+def section_person_days(current: WallGrade | None, target: WallGrade) -> int:
+    return sum(WALL_GRADES[grade].person_days for grade in steps(current, target)) // SECTION_SHARE
+
+
+def section_repair_materials(grade: WallGrade) -> dict[Resource, int]:
+    """A quarter of one section's share of the grade's own materials, rounded up."""
+    return {
+        resource: -(-(quantity // SECTION_SHARE) // REPAIR_SHARE)
+        for resource, quantity in sorted(WALL_GRADES[grade].materials.items())
+    }
+
+
+def section_repair_person_days(grade: WallGrade) -> int:
+    return -(-(WALL_GRADES[grade].person_days // SECTION_SHARE) // REPAIR_SHARE)
+
+
 def tower_materials(grade: WallGrade, count: int) -> dict[Resource, int]:
     return {
         resource: quantity * count
@@ -152,9 +190,28 @@ class WallJob(BaseModel):
     """Restore walls of `start_grade` to full strength."""
     started_day: int = Field(ge=0)
     person_days_done: int = Field(default=0, ge=0)
+    sections: tuple[int, ...] = ()
+    """Rules version 3: the ring sections raised or repaired, one after another."""
+    section_grades: tuple[WallGrade | None, ...] = ()
+    """Rules version 3: each of those sections' grade when the job began."""
+
+    @model_serializer(mode="wrap")
+    def _omit_sections(self, handler: SerializerFunctionWrapHandler) -> object:
+        # Jobs on walls without rings dump exactly as before rings existed.
+        dumped = handler(self)
+        if isinstance(dumped, dict) and not self.sections:
+            dumped.pop("sections", None)
+            dumped.pop("section_grades", None)
+        return dumped
 
     @model_validator(mode="after")
     def one_task(self) -> WallJob:
+        if len(self.sections) != len(self.section_grades):
+            raise ValueError("a ring job records each section's grade")
+        if len(set(self.sections)) != len(self.sections):
+            raise ValueError("a ring job works on each section once")
+        if self.sections and self.towers:
+            raise ValueError("a ring job raises or repairs sections, or adds towers")
         if sum((self.target is not None, self.towers > 0, self.repair)) != 1:
             raise ValueError("a wall job raises the walls, adds towers, or repairs them")
         if self.repair and self.start_grade is None:

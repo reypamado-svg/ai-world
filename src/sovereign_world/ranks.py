@@ -18,6 +18,7 @@ from sovereign_world.culture import culture
 from sovereign_world.housing import HouseGrade
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import SEAT, InstitutionKind, serving_tiles
+from sovereign_world.rings import ring_grade
 from sovereign_world.stores import StorehouseGrade
 from sovereign_world.stores import rank as storehouse_rank
 from sovereign_world.walls import WallGrade
@@ -207,7 +208,8 @@ def settlement_facts(
         item.grade for item in civilization.storehouses if item.settlement_id == settlement_id
     ]
     walls = next(
-        (item.grade for item in civilization.walls if item.settlement_id == settlement_id), None
+        (item.grade for item in civilization.walls if item.settlement_id == settlement_id),
+        ring_grade(civilization.wall_rings.get(settlement_id)),
     )
     return SettlementFacts(
         residents=residents,
