@@ -106,7 +106,7 @@ When a settlement is stormed, the houses beyond the wall line are the first to b
   - **Reserve:** it keeps 150 timber (half its materials target) after paying.
   - **Repairs:** it mends damaged sections first, when the crew can.
   - **Upgrades:** an earthwork ring is raised to palisade once a timbercraft knower is idle.
-  - No towers. The wall order goes last too, so it never displaces houses, storage or the hall.
+  - Towers and gatehouses came later, with the base defence work (`2026-10-05-base-defence.md`). The wall order goes last too, so it never displaces houses, storage or the hall.
 
 ### Observer
 

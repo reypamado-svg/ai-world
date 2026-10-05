@@ -48,7 +48,8 @@ Each world records the rules it runs under in its manifest.
   - walls defend in proportion to the share of the ring built and of the houses inside it; catapults batter the weakest section; houses beyond the ring burn first in a storm;
   - moving the ring or its gates pulls the old ring down for half its cost;
   - a keep at the centre with its hall open, a hill fort, a craft quarter by the water and a market by the store each change one number (defence, ground, the workshop's day, store room); the shrine is drawn only.
-  - the scripted baseline designs its capital as a ringed town on day 30 and walls it from day 60: earthwork, or a palisade where its people know timbercraft.
+  - councils say how each town is defended: who stands in the line and who in reserve, who mans the towers and who gets the best kits; they choose which sections to build and where towers stand, and may add gatehouses, a ditch or moat, stakes and a citadel; a town's own catapults fight for it and fire on a siege camp, its towers cover a sally, and its council sees how many days its store lasts under siege;
+  - the scripted baseline designs its capital as a ringed town on day 30 and walls it from day 60: earthwork, or a palisade where its people know timbercraft; once the ring is complete it puts towers and then gatehouses on its gates where its crew can, and it sets its capital's defence (everyone fights, a tenth in reserve, drilled tower crews, best kits to veterans).
 - **Rules 2:** worlds made with `init` before rules 3. They add:
   - houses: every five people need one, and births need room;
   - settlement ranks (village to city) and realm ranks (chiefdom to empire), and what they unlock;
@@ -65,7 +66,7 @@ Each world records the rules it runs under in its manifest.
 - **Rules 1:** worlds made before rules versions were recorded. They keep rules 1 and replay and verify exactly as before.
 - **Forks:** a fork keeps its parent's rules.
 
-**Model-played runs and prompt versions.** Councils played by a model read a charter of a given prompt version. The current one is `council-6`, which tells rules-3 councils how to design their towns and raise their walls by the section (its town plan rule is written from the engine's tables). Since `council-5` the council report sums up the people (counts by age, health and settlement, the idle grown-ups at each settlement, and up to 40 notable people) instead of listing every one, which kept the report readable at any population. A run recorded under an older prompt version still replays, verifies and rederives, but to carry on with a model sovereign it must be forked; the fork's sovereigns use the current version.
+**Model-played runs and prompt versions.** Councils played by a model read a charter of a given prompt version. The current one is `council-7`, which tells rules-3 councils how to design their towns and raise their walls by the section, and how a town is defended (its town plan and defence rules are written from the engine's tables). Since `council-5` the council report sums up the people (counts by age, health and settlement, the idle grown-ups at each settlement, and up to 40 notable people) instead of listing every one, which kept the report readable at any population. A run recorded under an older prompt version still replays, verifies and rederives, but to carry on with a model sovereign it must be forked; the fork's sovereigns use the current version.
 
 ## Checkpoint, replay, and verify
 
