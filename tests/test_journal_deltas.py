@@ -362,10 +362,13 @@ def test_changes_between_copies_of_one_table_are_found_the_quick_way(before_ops,
             _apply(day, oracle, op)
     quick = people_delta(saved, day.table)
     general = _people_delta(saved, day.table)
-    # Where the general way can keep the order, both agree; where it cannot (someone left
-    # and came back), the quick way still records the day, as their leaving and arrival.
+    # Where nobody left and came back, both agree. Where someone did, the general way either
+    # cannot keep the order or (when they came back last) sees them as having stayed; the
+    # quick way records their leaving and arrival. Either way the day rebuilds exactly.
     assert quick is not None
-    if general is not None:
+    left = {op[1] for op in after_ops if op[0] == "pop"}
+    came = {op[1] for op in after_ops if op[0] == "insert"}
+    if general is not None and not left & came:
         assert quick == general
     table = saved.copy()
     apply_people_delta(table, json.loads(json.dumps(quick)))
