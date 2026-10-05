@@ -65,6 +65,8 @@ PROTECTED = (
     "rules_version",
     "ranks",
     "realm_rank",
+    "town_plans",
+    "wall_rings",
 )
 """Fields dropped only as a last resort, from the end of this list; the first three never."""
 

@@ -1,4 +1,4 @@
-"""council-3 to council-5: sovereigns are told how the land is crossed and, under rules
+"""council-3 to council-6: sovereigns are told how the land is crossed and, under rules
 version 2, how houses, ranks, civil research and the reach of a settlement's hold work, in
 words made from the rules."""
 
@@ -63,7 +63,7 @@ def test_the_charter_states_the_travel_rules_from_the_tables() -> None:
 
 
 def test_new_sovereigns_use_this_prompt_version() -> None:
-    assert PROMPT_VERSION == "council-5"
+    assert PROMPT_VERSION == "council-6"
     assert SovereignConfig().prompt_version == PROMPT_VERSION
 
 

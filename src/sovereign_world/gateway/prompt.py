@@ -42,6 +42,7 @@ from sovereign_world.ranks import (
 )
 from sovereign_world.research import CIVIL_TOPICS
 from sovereign_world.resources import Resource
+from sovereign_world.rings import SALVAGE_SHARE
 from sovereign_world.sites import (
     FINDS,
     MAX_WORK_DAYS,
@@ -51,15 +52,43 @@ from sovereign_world.sites import (
     SiteKind,
 )
 from sovereign_world.territory import REACH_CAP
+from sovereign_world.townplan import (
+    DEFAULT_PLAN,
+    GATE_SECTORS,
+    HILL_FORT_BP,
+    KEEP_DEFENCE_BP,
+    MARKET_ROOM,
+    MAX_GATES,
+    MAX_RING,
+    SHELTERED_HOUSES,
+    WATER_WORKSHOP_DAY,
+    Place,
+    PlanStyle,
+    sections_of,
+)
 from sovereign_world.travel import CROSSING_COST, DAY, ENTRY_COST, TILE_SPACING_M, Depth
+from sovereign_world.walls import (
+    GRADES as WALL_GRADE_ORDER,
+)
+from sovereign_world.walls import (
+    REPAIR_SHARE,
+    SECTION_SHARE,
+    WALL_GRADES,
+    WallGrade,
+    section_materials,
+    section_person_days,
+)
+from sovereign_world.war import SETTLEMENT_DEFENCE_BP
 
-PROMPT_VERSION = "council-5"
+PROMPT_VERSION = "council-6"
 """council-3 added the travel rule: tile scale, terrain and river costs, and bridges.
 council-4 added houses, ranks, rank buildings and civil research, told only to worlds under
 rules version 2, and the reply fields that order them.
 council-5 sums up the people (`population`, `notable_people`) instead of listing every one,
 tells rules-2 worlds how far a settlement's hold can reach, and lets their orders count
-workers at a settlement instead of naming them (`worker_count`, `settlement_id`)."""
+workers at a settlement instead of naming them (`worker_count`, `settlement_id`).
+council-6 tells rules-3 worlds how their councils design their settlements (`plan_settlement`,
+`town_plan`) and raise walls section by section along the planned ring (`wall_sections`)."""
 
 
 def _days(tenths: int) -> str:
@@ -316,6 +345,76 @@ def workers_rule() -> str:
     )
 
 
+def _bonus(bp: int) -> str:
+    return f"+{(bp - 10_000) / 100:g}%"
+
+
+def town_plan_rule() -> str:
+    """How councils lay out their settlements and wall them, from the engine's tables."""
+    rings = ", ".join(
+        f"{sections_of(ring)} sections at ring {ring} ({SHELTERED_HOUSES[ring]} houses inside)"
+        for ring in range(1, MAX_RING + 1)
+    )
+    below = (None, *WALL_GRADE_ORDER[:-1])
+
+    def step(before: WallGrade | None, grade: WallGrade) -> str:
+        goods = _goods(
+            {
+                f"{r.value}s" if r is Resource.TOOL and q != 1 else r.value: q
+                for r, q in section_materials(before, grade).items()
+            }
+        )
+        needs = WALL_GRADES[grade].capability
+        return (
+            f"{_name(grade.value)} {goods + ' and ' if goods else ''}"
+            f"{section_person_days(before, grade)} person-days"
+            + (f" (needs {_name(needs.value)})" if needs else "")
+        )
+
+    steps = "; ".join(
+        step(before, grade) for before, grade in zip(below, WALL_GRADE_ORDER, strict=True)
+    )
+    plain = (
+        f"{DEFAULT_PLAN.style.value}, keep at the {DEFAULT_PLAN.keep.value}, ring "
+        f"{DEFAULT_PLAN.wall_ring}, one gate"
+    )
+    return (
+        "Your council designs each settlement like a kingdom's town. A plan_settlement order "
+        "names the settlement (settlement_id) and gives its town_plan: a style ("
+        + ", ".join(style.value for style in PlanStyle)
+        + "); where the keep, its hall, stands, and if you wish the market, shrine and craft "
+        "quarter ("
+        + ", ".join(place.value for place in Place)
+        + f"); a wall_ring of 1 to {MAX_RING} blocks of 64 m out from the centre; and 1 to "
+        f"{MAX_GATES} gates facing directions 0 to {GATE_SECTORS - 1}. A river_town, or "
+        "anything by_water, needs water on or beside the settlement; a hill_fort needs hills "
+        "or mountains. A settlement is planned once a council at most; until you plan it, it "
+        f"has the plain plan ({plain}), and planning costs nothing.\n"
+        "Walls follow the plan's ring, section by section: a ring has "
+        f"{rings}. Each section costs a {_ordinal(SECTION_SHARE)} of a grade's step, taken "
+        f"when the work begins: {steps}. A build_walls order raises the weakest sections to "
+        "its wall_grade, wall_sections of them or all that are lower. Walls defend in "
+        "proportion to the share of the ring built and the share of the settlement's houses "
+        "inside it; the houses beyond the ring are the first a storm burns. Catapults batter "
+        "the weakest section, and a fallen earthwork section leaves a gap. repair_walls mends "
+        f"every damaged section for a {_ordinal(REPAIR_SHARE)} of its share; build_towers adds "
+        "towers to a complete ring, as many as its weakest grade carries for each ten "
+        "sections. Moving the ring or its gates pulls the old ring down: "
+        f"{_ordinal(SALVAGE_SHARE)} of what it cost comes back, and wall work on it stops with its "
+        "unused materials returned.\n"
+        "Where things stand counts. A keep at the centre with its hall open makes the "
+        f"settlement's defence {_bonus(KEEP_DEFENCE_BP)} instead of "
+        f"{_bonus(SETTLEMENT_DEFENCE_BP)}; a hill_fort adds {HILL_FORT_BP / 100:g}% to its "
+        "ground's; a craft quarter by_water gives an open workshop's extra day every "
+        f"{_ordinal(WATER_WORKSHOP_DAY)} day instead of every fourth; a market by_store adds "
+        f"{MARKET_ROOM} to the store's room. The shrine is drawn, and does nothing yet."
+    )
+
+
+def _ordinal(number: int) -> str:
+    return {2: "half", 3: "third", 4: "quarter", 10: "tenth"}[number]
+
+
 def charter(report: CouncilReport) -> str:
     """The identity charter: the same for every turn of a prompt version."""
     schema = json.dumps(reply_schema(), sort_keys=True, separators=(",", ":"))
@@ -335,6 +434,7 @@ def charter(report: CouncilReport) -> str:
             if report.rules_version >= 2
             else ""
         )
+        + (f"{town_plan_rule()}\n\n" if report.rules_version >= 3 else "")
         + f"Answer with one JSON object and nothing else. It may hold at most "
         f"{COMMAND_ALLOWANCE} commands and a short rationale. Orders that break the world's "
         "rules are refused one by one; the rest are carried out. If you give no commands, "

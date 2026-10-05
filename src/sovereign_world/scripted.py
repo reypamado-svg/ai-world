@@ -18,6 +18,13 @@ from sovereign_world.hexmap import HexCoord, Terrain
 from sovereign_world.housing import HOUSE_GRADES, HOUSEHOLD, MAX_HOUSES_PER_ORDER, HouseGrade
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import InstitutionKind
+from sovereign_world.townplan import (
+    STANDARD_RING,
+    Place,
+    PlanStyle,
+    TownPlanSpec,
+    is_default,
+)
 
 
 class Sovereign(Protocol):
@@ -25,6 +32,8 @@ class Sovereign(Protocol):
 
 
 def plan_baseline_commands(report: CouncilReport) -> tuple[Command, ...]:
+    if report.rules_version >= 3:
+        return _plan_rules_three(report)
     if report.rules_version >= 2:
         return _plan_rules_two(report)
     commands: tuple[Command, ...] = (
@@ -167,6 +176,34 @@ def _plan_rules_two(report: CouncilReport) -> tuple[Command, ...]:
             )
         )
     return tuple(commands)
+
+
+def _plan_rules_three(report: CouncilReport) -> tuple[Command, ...]:
+    """Rules version 3: the rules-2 policy, then a design for the capital while it still
+    has the plain plan. It goes last, so it waits for a council with an order to spare."""
+    commands = _plan_rules_two(report)
+    capital = next((item for item in report.settlements if item.capital), None)
+    if capital is None:
+        return commands
+    plan = report.town_plans.get(capital.settlement_id)
+    if plan is None or not is_default(plan):
+        return commands
+    land = report.land.get(capital.settlement_id)
+    watered = land is not None and land.watered
+    design = DirectOrder(
+        command_id=f"plan:{report.day}:capital",
+        kind=DirectOrderKind.PLAN_SETTLEMENT,
+        settlement_id=capital.settlement_id,
+        town_plan=TownPlanSpec(
+            style=PlanStyle.RINGED,
+            keep=Place.CENTRE,
+            market=Place.BY_STORE,
+            craft_quarter=Place.BY_WATER if watered else Place.BY_STORE,
+            wall_ring=STANDARD_RING,
+            gates=(0, 3),
+        ),
+    )
+    return (*commands, design)
 
 
 SPARE_ROOM_PCT = 10

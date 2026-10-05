@@ -55,7 +55,7 @@ class SovereignConfig(BaseModel):
     require_token: bool = False
     allow_private_http: bool = False
     max_retries: int = Field(default=2, ge=0, le=5)
-    prompt_version: str = "council-5"
+    prompt_version: str = "council-6"
 
 
 class BudgetConfig(BaseModel):
