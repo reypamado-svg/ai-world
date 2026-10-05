@@ -152,6 +152,28 @@ def test_works_are_checked(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
 
 
+def test_a_town_with_a_citadel_keeps_its_keep_at_the_centre() -> None:
+    state, home, sid = _walled_capital()
+    civilization = state.civilizations[home]
+    civilization.citadels = {sid: Citadel(grade=LOW, strength=25, built_day=0)}
+    plan = civilization.town_plans[sid]
+
+    def plan_order(keep: Place) -> DirectOrder:
+        return DirectOrder(
+            command_id="plan",
+            kind=DirectOrderKind.PLAN_SETTLEMENT,
+            settlement_id=sid,
+            town_plan=plan.spec().model_copy(update={"keep": keep}),
+        )
+
+    assert _messages(state, home, plan_order(Place.CENTRE)) == []
+    assert _messages(state, home, plan_order(Place.EDGE)) == [
+        "invalid_town_plan: a settlement with a citadel keeps its keep at the centre"
+    ]
+    civilization.citadels = {}
+    assert _messages(state, home, plan_order(Place.EDGE)) == []
+
+
 def test_what_works_cost() -> None:
     ring = _ring([LOW] * 6 + [None] * 4)
 

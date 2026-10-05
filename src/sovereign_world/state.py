@@ -55,7 +55,7 @@ from sovereign_world.resources import Inventory, Resource
 from sovereign_world.rings import Citadel, WallRing, gate_sections, tower_cap
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView
-from sovereign_world.sites import Site
+from sovereign_world.sites import Site, SiteSighting
 from sovereign_world.stores import (
     FOUNDING_GRADE,
     Storehouse,
@@ -106,6 +106,9 @@ class CivilizationState(BaseModel):
     caught_spies: tuple[CaughtSpy, ...] = ()
     institutions: tuple[Institution, ...] = ()
     ruin_intel: tuple[RuinView, ...] = ()
+    site_sightings: tuple[SiteSighting, ...] = ()
+    """Sites its people have seen worked or emptied, as they last saw them, by site id
+    (rules version 2)."""
     """Ruins its people have seen, as they last saw them; by tile."""
     fallen: dict[EntityId, int] = Field(default_factory=dict)
     """Civilizations it knows have died out, and the day it learned each."""
@@ -155,6 +158,7 @@ _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("wall_rings", {}),
     ("defence_orders", {}),
     ("citadels", {}),
+    ("site_sightings", []),
 )
 """Civilization fields added by rules versions 2 and 3, and the value at which each is left
 out."""
@@ -397,6 +401,7 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
 def validate_world(state: WorldState) -> None:
     if state.day < 0:
         raise ValueError("world day cannot be negative")
+    sites_by_id = {site.site_id: site for site in state.sites}
     for civilization_id, civilization in state.civilizations.items():
         if civilization_id != civilization.civilization_id:
             raise ValueError("civilization key does not match state")
@@ -432,6 +437,15 @@ def validate_world(state: WorldState) -> None:
         tiles = [view.ruin.tile for view in civilization.ruin_intel]
         if tiles != sorted(set(tiles)):
             raise ValueError("ruin intel is one view per tile, by tile")
+        sighted = [item.site_id for item in civilization.site_sightings]
+        if sighted != sorted(set(sighted)):
+            raise ValueError("site sightings are one per site, by site id")
+        for sighting in civilization.site_sightings:
+            site = sites_by_id.get(sighting.site_id)
+            if site is None or sighting.remaining > site.richness:
+                raise ValueError("a site sighting is of a real site, within what it held")
+            if sighting.as_of_day > state.day:
+                raise ValueError("a site sighting is not from the future")
         if set(civilization.fallen) - (set(state.civilizations) - {civilization_id}):
             raise ValueError("a civilization learns only of other civilizations falling")
         if civilization.known_captives != tuple(sorted(set(civilization.known_captives))):

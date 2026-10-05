@@ -1282,7 +1282,9 @@ def trade_partners(state: WorldState, civilization_id: EntityId) -> frozenset[En
 
 
 def known_sites(state: WorldState, civilization: CivilizationState) -> tuple[SiteView, ...]:
-    """The sites on tiles a civilization knows, as of the day it last saw each tile."""
+    """The sites on tiles a civilization knows, as it last saw them: as they were made, or
+    as its people last saw them after they were worked or emptied. Work it never saw stays
+    hidden from it."""
     if not state.sites:
         return ()
     known = set(civilization.known_tiles)
@@ -1290,18 +1292,23 @@ def known_sites(state: WorldState, civilization: CivilizationState) -> tuple[Sit
     for observation in civilization.observations:
         if observation.tile in known:
             seen[observation.tile] = max(seen.get(observation.tile, 0), observation.observed_day)
-    return tuple(
-        SiteView(
-            site_id=site.site_id,
-            tile=site.tile,
-            kind=site.kind,
-            richness=site.richness,
-            remaining=site.remaining,
-            as_of_day=seen.get(site.tile, 0),
+    sightings = {item.site_id: item for item in civilization.site_sightings}
+    views: list[SiteView] = []
+    for site in state.sites:
+        if site.tile not in known:
+            continue
+        sighting = sightings.get(site.site_id)
+        views.append(
+            SiteView(
+                site_id=site.site_id,
+                tile=site.tile,
+                kind=site.kind,
+                richness=site.richness,
+                remaining=site.richness if sighting is None else sighting.remaining,
+                as_of_day=seen.get(site.tile, 0) if sighting is None else sighting.as_of_day,
+            )
         )
-        for site in state.sites
-        if site.tile in known
-    )
+    return tuple(views)
 
 
 def known_rivers(world_map: WorldMap, known: frozenset[HexCoord]) -> tuple[RiverView, ...]:
@@ -2956,7 +2963,14 @@ def _plan_error(
     if settlement.settlement_id in planning:
         return error("a settlement is planned once a council")
     problem = site_error(state.world_map, settlement.tile, command.town_plan)
-    return error(problem) if problem is not None else None
+    if problem is not None:
+        return error(problem)
+    if (
+        settlement.settlement_id in civilization.citadels
+        and command.town_plan.keep is not Place.CENTRE
+    ):
+        return error("a settlement with a citadel keeps its keep at the centre")
+    return None
 
 
 def _defence_error(

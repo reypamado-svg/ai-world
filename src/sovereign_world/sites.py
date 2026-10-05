@@ -41,6 +41,17 @@ class Site(BaseModel):
     spent_day: int | None = None
 
 
+class SiteSighting(BaseModel):
+    """A site as a civilization last saw it after it had been worked or emptied. A site it
+    has never seen touched it knows as it was made."""
+
+    model_config = ConfigDict(frozen=True)
+
+    site_id: EntityId
+    remaining: int = Field(ge=0)
+    as_of_day: int = Field(ge=0)
+
+
 KIT: tuple[tuple[SiteKind, int, int], ...] = (
     (SiteKind.ORE_DEPOSIT, 3, 5),
     (SiteKind.ORE_DEPOSIT, 6, 9),

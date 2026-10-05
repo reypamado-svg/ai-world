@@ -141,6 +141,8 @@ def export_run(
         if not (out_dir / "manifest.json").exists():
             raise FileExistsError(f"{out_dir} does not hold a run export; not replacing it")
         shutil.rmtree(out_dir)
+    if days is not None:
+        days = tuple(sorted(set(days)))
     reader = RunReader(root)
     manifest = reader.manifest()
     saved = reader.days()

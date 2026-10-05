@@ -28,9 +28,12 @@ from sovereign_world.state import WorldState, state_hash
 DAYS = 64
 
 
-def _record(root: Path, days: int, store: WorldStore | None = None) -> list[WorldState]:
-    """A rules-2 run saved in format 2 with recorded councils; every day's world."""
-    start = initial(SCENARIOS[1])
+def _record(
+    root: Path, days: int, store: WorldStore | None = None, scenario: int = 1
+) -> list[WorldState]:
+    """A run (rules 2 unless told) saved in format 2 with recorded councils; every day's
+    world."""
+    start = initial(SCENARIOS[scenario])
     if store is None:
         manifest = RunManifest.model_validate(
             {
@@ -171,6 +174,27 @@ def test_a_journal_cut_back_starts_a_new_history(tmp_path: Path) -> None:
     assert reader.history_epoch == 1
     assert reader.days() == (0, 1, 2, 3)
     assert state_hash(reader.state_at(3)) == state_hash(states[3])
+
+
+def test_a_replaced_run_is_read_with_its_own_manifest(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    _record(run, 3)
+    reader = RunReader(run)
+    before = reader.manifest()
+    other = tmp_path / "other"
+    states = _record(other, 2, scenario=0)
+    # The whole run is replaced: its database with its own write-ahead files, if any.
+    for name in ("world.sqlite3", "world.sqlite3-wal", "world.sqlite3-shm", "journal.jsonl"):
+        if (other / name).exists():
+            shutil.copyfile(other / name, run / name)
+        else:
+            (run / name).unlink(missing_ok=True)
+    reader.refresh()
+    assert reader.history_epoch == 1
+    after = reader.manifest()
+    assert after.run_id == states[0].run_id != before.run_id
+    assert reader.days() == (0, 1, 2)
+    assert state_hash(reader.state_at(2)) == state_hash(states[2])
 
 
 def test_a_run_whose_writer_is_still_open_reads_from_its_write_ahead_log(

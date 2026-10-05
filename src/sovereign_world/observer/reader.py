@@ -61,6 +61,8 @@ class RunReader:
         self.refresh()
 
     def _clear(self) -> None:
+        # A replaced run may have a different manifest: read it again when next asked.
+        self._manifest = None
         self._records: list[TailRecord] = []
         self._transitions: dict[int, TailRecord] = {}
         self._start: WorldState | None = None

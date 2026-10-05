@@ -222,6 +222,7 @@ from sovereign_world.sites import (
     RUIN_LORE,
     YIELD_PER_WORKER_DAY,
     SiteKind,
+    SiteSighting,
 )
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.stores import (
@@ -5186,6 +5187,16 @@ def _learn_by_sight(state: WorldState) -> list[DomainEvent]:
             intel[tile] = RuinView(ruin=ruins[tile], as_of_day=state.day)
             events.extend(_learn_fallen(state, civilization_id, ruins[tile].former_civilization_id))
         civilization.ruin_intel = tuple(intel[tile] for tile in sorted(intel))
+        # Sites seen worked or emptied, as they stand today; one never seen touched is known
+        # as it was made, so only a touched site is remembered.
+        if state.sites:
+            sightings = {item.site_id: item for item in civilization.site_sightings}
+            for site in state.sites:
+                if site.tile in seen and site.remaining < site.richness:
+                    sightings[site.site_id] = SiteSighting(
+                        site_id=site.site_id, remaining=site.remaining, as_of_day=state.day
+                    )
+            civilization.site_sightings = tuple(sightings[key] for key in sorted(sightings))
         # Those who joined a civilization on the day it died out know it is gone.
         for change in (
             change

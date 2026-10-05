@@ -128,7 +128,12 @@ def hide_unseen(state: WorldState, civilization_id: EntityId) -> WorldState:
     world.active_treaties = tuple(treaties)
     world.battles = ()
     known = set(own.known_tiles)
-    world.sites = tuple(site for site in world.sites if site.tile in known)
+    # What is left at a site is known only as last seen, so the live amount may be anything.
+    world.sites = tuple(
+        site.model_copy(update={"remaining": 0 if site.remaining else site.richness})
+        for site in world.sites
+        if site.tile in known
+    )
     world.wars = tuple(
         war
         for war in world.wars

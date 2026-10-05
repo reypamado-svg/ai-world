@@ -132,6 +132,12 @@ def test_the_committed_browser_fixture_is_a_fresh_export(run: Path, tmp_path: Pa
     )
 
 
+def test_chosen_days_are_exported_in_order_once_each(run: Path, tmp_path: Path) -> None:
+    export_run(run, tmp_path / "out", days=(OLD_DAYS, 0, OLD_DAYS))
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text())
+    assert manifest["days"] == [0, OLD_DAYS]
+
+
 def test_a_planned_town_exports_its_plan_and_walls() -> None:
     config = WorldConfig(seed=9, width=24, height=24)
     state = build_initial_state(RunManifest.new(config, "0.1.0", rules_version=3))
