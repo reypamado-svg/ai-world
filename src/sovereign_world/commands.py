@@ -158,7 +158,7 @@ from sovereign_world.tolls import (
     TollPost,
     TollView,
 )
-from sovereign_world.townplan import TownPlan
+from sovereign_world.townplan import TownPlan, TownPlanSpec, site_error
 from sovereign_world.travel import (
     NO_BRIDGES,
     Bridges,
@@ -242,6 +242,8 @@ class DirectOrderKind(StrEnum):
     STAFF_INSTITUTION = "staff_institution"
     EXTRACT = "extract"
     """Rules version 2: send workers to a deposit or quarry to work it for some days."""
+    PLAN_SETTLEMENT = "plan_settlement"
+    """Rules version 3: lay out one of this civilization's settlements to a design."""
 
 
 MESSAGE_ORDERS = frozenset(
@@ -386,14 +388,17 @@ class DirectOrder(BaseModel):
     """Rules version 2: for work at home, how many idle grown-ups at `settlement_id` to set
     to it, instead of naming them in `worker_ids`."""
     settlement_id: EntityId | None = None
-    """Rules version 2: the settlement a counted order's workers are taken from."""
+    """Rules version 2: the settlement a counted order's workers are taken from; rules
+    version 3: the settlement a plan order lays out."""
+    town_plan: TownPlanSpec | None = None
+    """Rules version 3: the design a plan order gives its settlement."""
 
     @model_serializer(mode="wrap")
     def _omit_unset_counts(self, handler: SerializerFunctionWrapHandler) -> object:
         # Orders that name their workers dump exactly as before counts existed.
         dumped = handler(self)
         if isinstance(dumped, dict):
-            for key in ("worker_count", "settlement_id"):
+            for key in ("worker_count", "settlement_id", "town_plan"):
                 if key in dumped and dumped[key] is None:
                     dumped.pop(key)
         return dumped
@@ -2637,6 +2642,33 @@ COUNTED_ORDERS = frozenset(
 """Work at home whose workers an order may count instead of naming (rules version 2)."""
 
 
+def _plan_error(
+    command: DirectOrder, civilization_id: EntityId, state: WorldState, planning: set[EntityId]
+) -> CommandError | None:
+    """Validate a design for one of this civilization's settlements, once a council."""
+
+    def error(message: str) -> CommandError:
+        return CommandError(
+            command_id=command.command_id, code="invalid_town_plan", message=message
+        )
+
+    if not rules_for(state.rules_version).town_plans:
+        return error("this world's rules have no town plans")
+    if command.town_plan is None or command.settlement_id is None:
+        return error("a plan order names its settlement and gives its design")
+    civilization = state.civilizations[civilization_id]
+    settlement = next(
+        (item for item in civilization.settlements if item.settlement_id == command.settlement_id),
+        None,
+    )
+    if settlement is None:
+        return error("only this civilization's own settlements are planned")
+    if settlement.settlement_id in planning:
+        return error("a settlement is planned once a council")
+    problem = site_error(state.world_map, settlement.tile, command.town_plan)
+    return error(problem) if problem is not None else None
+
+
 def _counted_workers(
     command: DirectOrder, civilization_id: EntityId, state: WorldState, busy: set[EntityId]
 ) -> tuple[DirectOrder, CommandError | None]:
@@ -2708,6 +2740,7 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     committed_travellers: set[EntityId] = set()
     committed_at_home: set[EntityId] = set()
     tolled: set[HexCoord] = set()
+    planning: set[EntityId] = set()
     researching: set[CapabilityId] = set()
     teaching_people = {
         person_id
@@ -2740,7 +2773,10 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
         seen.add(command.command_id)
         if isinstance(command, DirectOrder):
             command_error: CommandError | None = None
-            if command.worker_count is not None or command.settlement_id is not None:
+            if command.worker_count is not None or (
+                command.settlement_id is not None
+                and command.kind is not DirectOrderKind.PLAN_SETTLEMENT
+            ):
                 # Counted workers become named ones; every check below then sees them.
                 command, counted_error = _counted_workers(
                     command,
@@ -3249,6 +3285,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 )
             if command.kind is DirectOrderKind.SET_TOLL and command_error is None:
                 command_error = _toll_error(command, envelope.civilization_id, state, tolled)
+            if command.kind is DirectOrderKind.PLAN_SETTLEMENT and command_error is None:
+                command_error = _plan_error(command, envelope.civilization_id, state, planning)
             if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
                 assert command.capability is not None
@@ -3402,6 +3440,9 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             committed_at_home.update(home_duty)
             if command.kind is DirectOrderKind.SET_TOLL:
                 tolled.add(command.route[0])
+            if command.kind is DirectOrderKind.PLAN_SETTLEMENT:
+                assert command.settlement_id is not None
+                planning.add(command.settlement_id)
             if command.kind is DirectOrderKind.RESEARCH and command.research_topic is not None:
                 researching.add(command.research_topic)
             civilization = state.civilizations[envelope.civilization_id]

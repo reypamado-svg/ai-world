@@ -216,7 +216,7 @@ from sovereign_world.territory import (
     visible_tiles,
 )
 from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
-from sovereign_world.townplan import default_plan
+from sovereign_world.townplan import TownPlan, default_plan
 from sovereign_world.travel import crossing, travel_days, way_to
 from sovereign_world.walls import (
     WALL_GRADES,
@@ -4959,6 +4959,30 @@ def _advance_institutions(state: WorldState) -> list[DomainEvent]:
     return events
 
 
+def _plan_settlement(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> DomainEvent:
+    """Record a settlement's design; it costs nothing until something is built to it."""
+    assert command.town_plan is not None and command.settlement_id is not None
+    civilization = state.civilizations[civilization_id]
+    spec = command.town_plan
+    plan = TownPlan(**spec.model_dump(), settlement_id=command.settlement_id, planned_day=state.day)
+    civilization.town_plans = dict(
+        sorted({**civilization.town_plans, command.settlement_id: plan}.items())
+    )
+    return _event(
+        state,
+        EventPhase.COMMAND,
+        "settlement_planned",
+        str(civilization_id),
+        str(command.settlement_id),
+        style=spec.style.value,
+        keep=spec.keep.value,
+        wall_ring=spec.wall_ring,
+        gates=",".join(str(gate) for gate in spec.gates),
+    )
+
+
 def _walls_at(state: WorldState, civilization_id: EntityId, tile: HexCoord) -> Walls | None:
     civilization = state.civilizations[civilization_id]
     site = settlement_at(civilization, tile)
@@ -5707,6 +5731,10 @@ def _run_councils(
                         )
             elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.SET_TOLL:
                 events.append(_set_toll(state, civilization_id, command))
+            elif (
+                isinstance(command, DirectOrder) and command.kind is DirectOrderKind.PLAN_SETTLEMENT
+            ):
+                events.append(_plan_settlement(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.CRAFT_EQUIPMENT

@@ -1,6 +1,7 @@
 """Town plans (rules version 3): the design model, the plain plan every settlement starts
 with, and where plans are kept, moved and checked."""
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -9,10 +10,17 @@ from pydantic import ValidationError
 from test_allegiance import _colony
 from test_peace import _make_peace
 
-from sovereign_world.commands import DirectOrder, DirectOrderKind, build_council_report
+from sovereign_world.commands import (
+    CommandEnvelope,
+    DirectOrder,
+    DirectOrderKind,
+    build_council_report,
+    validate_envelope,
+)
 from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.diplomacy import PeaceTerms
 from sovereign_world.engine import advance_day
+from sovereign_world.gateway.envelope import ReplyError, parse_reply
 from sovereign_world.hexmap import Terrain
 from sovereign_world.ids import EntityId
 from sovereign_world.rng import StableRng
@@ -195,3 +203,89 @@ def test_plans_belong_to_their_own_settlements_and_suit_the_land() -> None:
     check({own.settlement_id: designed(style="river_town")}, "suit its settlement's land")
     state.civilizations[first].town_plans = {own.settlement_id: designed(market="edge")}
     validate_world(state)
+
+
+def _order(
+    settlement_id: EntityId | None, command_id: str = "plan", **update: object
+) -> DirectOrder:
+    return DirectOrder(
+        command_id=command_id,
+        kind=DirectOrderKind.PLAN_SETTLEMENT,
+        settlement_id=settlement_id,
+        town_plan=TownPlanSpec.model_validate(_plan(**update)),
+    )
+
+
+def _validate(state: WorldState, civilization_id: EntityId, *orders: DirectOrder):
+    return validate_envelope(
+        CommandEnvelope(
+            schema_version=2,
+            civilization_id=civilization_id,
+            council_day=state.day,
+            correlation_id="test",
+            commands=orders,
+        ),
+        state,
+    )
+
+
+def test_a_council_designs_its_settlement_and_the_engine_records_it() -> None:
+    state = _state(3)
+    home = sorted(state.civilizations)[0]
+    [capital] = state.civilizations[home].settlements
+    order = _order(capital.settlement_id, market="by_store", gates=[3, 0])
+    assert not _validate(state, home, order).errors
+    result = advance_day(state, StableRng(CONFIG.seed), sovereigns={home: OneShotSovereign(order)})
+    plan = result.state.civilizations[home].town_plans[capital.settlement_id]
+    assert plan.spec() == order.town_plan and plan.planned_day == 0
+    assert not is_default(plan)
+    [event] = [item for item in result.events.events if item.kind == "settlement_planned"]
+    assert event.subject_id == capital.settlement_id
+    assert event.payload == {"style": "ringed", "keep": "centre", "wall_ring": 2, "gates": "0,3"}
+    validate_world(result.state)
+    report = build_council_report(result.state, home)
+    assert report.town_plans[capital.settlement_id] == plan
+
+
+def test_each_refusal_of_a_plan_order() -> None:
+    state = _state(3)
+    home, other = sorted(state.civilizations)[:2]
+    [capital] = state.civilizations[home].settlements
+    [foreign] = state.civilizations[other].settlements
+
+    def refusal(*orders: DirectOrder) -> list[str]:
+        result = _validate(state, home, *orders)
+        return [f"{item.code}: {item.message}" for item in result.errors]
+
+    assert refusal(_order(foreign.settlement_id)) == [
+        "invalid_town_plan: only this civilization's own settlements are planned"
+    ]
+    assert refusal(_order(None)) == [
+        "invalid_town_plan: a plan order names its settlement and gives its design"
+    ]
+    assert refusal(_order(capital.settlement_id), _order(capital.settlement_id, "again")) == [
+        "invalid_town_plan: a settlement is planned once a council"
+    ]
+    assert state.world_map.tile(capital.tile).terrain not in (Terrain.HILLS, Terrain.MOUNTAIN)
+    assert refusal(_order(capital.settlement_id, style="hill_fort")) == [
+        "invalid_town_plan: a hill fort needs hills or mountains"
+    ]
+    older = _state(2)
+    [old_capital] = older.civilizations[home].settlements
+    result = _validate(older, home, _order(old_capital.settlement_id))
+    assert [item.code for item in result.errors] == ["invalid_town_plan"]
+    # A design that repeats a gate does not fit the reply schema, so the model is asked again.
+    reply = {"commands": [_order(capital.settlement_id).model_dump(mode="json")]}
+    reply["commands"][0]["town_plan"]["gates"] = [2, 2]
+    with pytest.raises(ReplyError, match="town_plan"):
+        parse_reply(json.dumps(reply))
+    assert parse_reply(
+        json.dumps({"commands": [_order(capital.settlement_id).model_dump(mode="json")]})
+    )
+
+
+def test_orders_without_a_plan_dump_as_before() -> None:
+    order = DirectOrder(command_id="x", kind=DirectOrderKind.ASSIGN_WORK)
+    assert "town_plan" not in order.model_dump(mode="json")
+    planned = _order(EntityId("settlement:0000000001-0001"))
+    assert planned.model_dump(mode="json")["town_plan"]["gates"] == [0, 3]
