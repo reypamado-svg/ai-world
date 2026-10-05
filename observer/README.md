@@ -82,6 +82,12 @@ Then open:
   yet built are a dashed line, and battered ones are tinted. The badge reads, for example,
   "ringed town, designed by the council · walls 6 of 10 sections". The committed
   `tests/fixtures/run-town` shows one: `?run=tests/fixtures/run-town&day=18`.
+  Export version 3 adds a town's defences: towers stand on the sections the engine
+  placed them on (beside the gate on a gate section), a fortified gate is drawn as a
+  gatehouse, a ditch is a dark line half a block outside the wall (a moat, blue), stakes
+  are short marks between the two, and a citadel is a wall round the keep's block with
+  its gate towards the store. A town with a standing defence order adds "· defence set"
+  to its badge. The fixture's second capital has all of these from day 0.
   Houses are drawn by recorded grade (hut, house, stone house) with building sites for
   houses under construction; a house holding more than five people carries an amber
   badge, and the inspector says "12 people, room for 5 (crowded)". People counted at no

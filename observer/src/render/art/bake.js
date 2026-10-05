@@ -33,8 +33,9 @@ export async function bakeStaticAssets(atlas, civColor, status = () => {}) {
   for (const [id, p] of Object.entries(staticAssetPainters(civColor))) {
     status(`Painting ${id}`);
     const r = p.paint();
-    // Buildings keep their full 2x art for the settlement band; the rest is stored at 1x.
-    const art = { art: p.category === 'building' ? 2 : 1 };
+    // Buildings keep their full 2x art for the settlement band; the rest is stored at 1x, as
+    // are painters that ask for it (the town walls' small modules).
+    const art = { art: p.art ?? (p.category === 'building' ? 2 : 1) };
     atlas.add(id, r.canvas, r.anchor, {}, art);
     if (r.shadow) atlas.add(`${id}#shadow`, r.shadow.canvas, r.shadow.anchor, {}, art);
     assetInfo.set(id, { footprint: r.footprint, doors: r.doors, category: p.category, height: r.height });

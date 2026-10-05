@@ -23,12 +23,13 @@ from typing import Any
 import numpy as np
 
 from sovereign_world.commands import _duties
+from sovereign_world.defence import DefenceOrder
 from sovereign_world.housing import GRADE_ORDER, HOUSEHOLD, residents_by_settlement
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import InstitutionKind
 from sovereign_world.people_store import Sex
 from sovereign_world.ranks import settlement_rank
-from sovereign_world.rings import WallRing
+from sovereign_world.rings import Citadel, WallRing, tower_positions
 from sovereign_world.state import WorldState
 from sovereign_world.townplan import TownPlan
 from sovereign_world.work import WorkKind
@@ -99,17 +100,20 @@ class SettlementRow:
     """The council's town plan (rules version 3)."""
     walls: dict[str, Any] | None = None
     """Its wall ring as built (rules version 3): each section `[grade or None, strength]`,
-    the gate sections and the towers."""
+    the gate sections and the towers; and, only where there are any, the sections the towers
+    stand on, the gatehouses, a ditch (1) or moat (2), stakes and the citadel."""
+    defence: dict[str, Any] | None = None
+    """Its standing defence order (rules version 3)."""
 
 
 def _plan_of(plan: TownPlan | None) -> dict[str, Any] | None:
     return None if plan is None else plan.model_dump(mode="json", exclude={"settlement_id"})
 
 
-def _walls_of(ring: WallRing | None) -> dict[str, Any] | None:
+def _walls_of(ring: WallRing | None, citadel: Citadel | None = None) -> dict[str, Any] | None:
     if ring is None:
         return None
-    return {
+    walls: dict[str, Any] = {
         "ring": ring.ring,
         "gates": sorted(ring.gates()),
         "sections": [
@@ -118,6 +122,23 @@ def _walls_of(ring: WallRing | None) -> dict[str, Any] | None:
         ],
         "towers": ring.towers,
     }
+    if ring.towers:
+        # Where the engine counts them standing, so the drawing matches the battles.
+        walls["tower_sections"] = sorted(tower_positions(ring))
+    gatehouses = [index for index, item in enumerate(ring.sections) if item.gatehouse]
+    if gatehouses:
+        walls["gatehouses"] = gatehouses
+    if ring.ditch:
+        walls["ditch"] = ring.ditch
+    if ring.stakes:
+        walls["stakes"] = True
+    if citadel is not None:
+        walls["citadel"] = {"grade": citadel.grade.value, "strength": citadel.strength}
+    return walls
+
+
+def _defence_of(order: DefenceOrder | None) -> dict[str, Any] | None:
+    return None if order is None else order.model_dump(mode="json", exclude={"settlement_id"})
 
 
 @dataclass
@@ -221,7 +242,11 @@ def project_day(state: WorldState) -> DayProjection:
                         if institution.settlement_id == item.settlement_id
                     ),
                     plan=_plan_of(civilization.town_plans.get(item.settlement_id)),
-                    walls=_walls_of(civilization.wall_rings.get(item.settlement_id)),
+                    walls=_walls_of(
+                        civilization.wall_rings.get(item.settlement_id),
+                        civilization.citadels.get(item.settlement_id),
+                    ),
+                    defence=_defence_of(civilization.defence_orders.get(item.settlement_id)),
                 )
             )
     people = PeopleColumns()

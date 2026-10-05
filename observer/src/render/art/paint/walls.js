@@ -141,6 +141,31 @@ export function paintGate({ id, axis = 'x', stone = true }) {
   return result(sheet, footprint, shadowOf(ext, pierH));
 }
 
+/**
+ * A fortified gatehouse (rules version 3 defence): the way through between two tower-sized
+ * piers, deeper and taller than the wall, with a guard chamber over the gate.
+ */
+export function paintGatehouse({ id, axis = 'x', stone = true }) {
+  const rng = rngFor(id);
+  const mat = stone ? STONE : TIMBER;
+  const pierH = stone ? 7.7 : 6.5;
+  const t = stone ? 4.2 : 3.2;
+  const ext = along(axis, WALL_MODULE_M, t);
+  const sheet = sheetFor(ext, pierH + 2.0);
+  const [x0, y0, x1, y1] = ext;
+  const pier = 2.6;
+  const box = (from, to, zb, zt) =>
+    axis === 'x' ? { x0: from, y0, x1: to, y1, zb, zt } : { x0, y0: from, x1, y1: to, zb, zt };
+  const lo = axis === 'x' ? x0 : y0;
+  const hi = axis === 'x' ? x1 : y1;
+  solidBox(sheet, rng, box(lo, lo + pier, 0, pierH), mat);
+  solidBox(sheet, rng, box(lo + pier, hi - pier, pierH - 2.4, pierH - 0.2), mat);
+  solidBox(sheet, rng, box(hi - pier, hi, 0, pierH), mat);
+  crenels(sheet, rng, axis, ext, pierH, mat);
+  const footprint = { minX: x0, minY: y0, maxX: x1, maxY: y1 };
+  return result(sheet, footprint, shadowOf(ext, pierH));
+}
+
 /** A tower standing on the ring: square, crenellated stone or a timber watch tower. */
 export function paintTower({ id, stone = true }) {
   const rng = rngFor(id);

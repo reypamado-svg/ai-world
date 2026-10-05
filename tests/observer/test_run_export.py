@@ -15,9 +15,10 @@ from perf.synthetic import grown_world
 from town_fixture import EXPORTED, record_town
 
 from sovereign_world.config import RunManifest, WorldConfig
+from sovereign_world.defence import DefenceOrder
 from sovereign_world.observer.projection import AWAY, project_day
 from sovereign_world.observer.run_export import PEOPLE_LAYOUT, day_record, export_run, people_bytes
-from sovereign_world.rings import empty_ring
+from sovereign_world.rings import Citadel, empty_ring
 from sovereign_world.state import build_initial_state
 from sovereign_world.walls import WallGrade
 
@@ -163,8 +164,52 @@ def test_a_planned_town_exports_its_plan_and_walls() -> None:
         "sections": [["palisade", 25]] * 3 + [[None, 0]] * 7,
         "towers": 0,
     }
+    assert "defence" not in row, "a ring with no works dumps only the four old keys"
     others = [item for item in record["settlements"] if item["id"] != capital.settlement_id]
     assert all("walls" not in item and "plan" in item for item in others)
+
+    # Export version 3: the works, where there are any, and the standing defence order.
+    full = ring.model_copy(
+        update={
+            "sections": tuple(
+                item.model_copy(
+                    update={"grade": WallGrade.PALISADE, "strength": 25, "gatehouse": item.gate}
+                )
+                for item in ring.sections
+            ),
+            "towers": 2,
+            "tower_sections": (0, 4),
+            "ditch": 2,
+            "stakes": True,
+        }
+    )
+    civilization.wall_rings = {capital.settlement_id: full}
+    civilization.citadels = {
+        capital.settlement_id: Citadel(grade=WallGrade.PALISADE, strength=20, built_day=0)
+    }
+    civilization.defence_orders = {
+        capital.settlement_id: DefenceOrder(settlement_id=capital.settlement_id, set_day=3)
+    }
+    record = day_record(project_day(state))
+    row = next(item for item in record["settlements"] if item["id"] == capital.settlement_id)
+    assert row["walls"] == {
+        "ring": 2,
+        "gates": [0],
+        "sections": [["palisade", 25]] * 10,
+        "towers": 2,
+        "tower_sections": [0, 4],
+        "gatehouses": [0],
+        "ditch": 2,
+        "stakes": True,
+        "citadel": {"grade": "palisade", "strength": 20},
+    }
+    assert row["defence"] == {
+        "posture": "everyone",
+        "reserve_bp": 0,
+        "tower_crews": "any",
+        "arms_priority": "any",
+        "set_day": 3,
+    }
     older = build_initial_state(RunManifest.new(config, "0.1.0", rules_version=2))
     assert all(
         "plan" not in item and "walls" not in item
@@ -180,10 +225,17 @@ def test_the_committed_town_fixture_is_a_fresh_export(tmp_path: Path) -> None:
     record_town(tmp_path / "town")
     export_run(tmp_path / "town", tmp_path / "fresh", days=EXPORTED)
     day = json.loads((tmp_path / "fresh" / "days" / f"d{EXPORTED[-1]:06d}.json").read_text())
-    [capital] = [item for item in day["settlements"] if item.get("walls") and item["capital"]]
-    assert capital["plan"]["style"] == "ringed"
-    built = sum(grade is not None for grade, _ in capital["walls"]["sections"])
-    assert 0 < built < 10, built
+    walled = [item for item in day["settlements"] if item.get("walls") and item["capital"]]
+    built = {
+        item["id"]: sum(grade is not None for grade, _ in item["walls"]["sections"])
+        for item in walled
+    }
+    assert sorted(built.values()) == [6, 10], built
+    assert all(item["plan"]["style"] == "ringed" for item in walled)
+    [fortified] = [item for item in walled if "citadel" in item["walls"]]
+    assert fortified["walls"]["gatehouses"] == [0, 5] and fortified["defence"]
+    manifest = json.loads((tmp_path / "fresh" / "manifest.json").read_text())
+    assert manifest["export_version"] == 3
     assert _files(TOWN) == _files(tmp_path / "fresh"), (
         "observer/tests/fixtures/run-town is stale: run tests/observer/town_fixture.py's "
         "record_town and export days 0 and 18 there"

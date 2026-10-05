@@ -243,6 +243,69 @@ test('a designed town fills its walls first and draws its ring, gates, towers an
   assert.deepEqual(ringPoint(h, 2 * h).slice(0, 2), [0, -h]);
 });
 
+test('towers stand on their sections; gatehouses, a moat, stakes and a citadel are drawn', async () => {
+  const { ringPoint } = await import('../src/world/settlement-plan.js');
+  const design = { style: 'ringed', keep: 'centre', market: 'by_store', wall_ring: 2, gates: [0, 3] };
+  const walls = {
+    ring: 2,
+    gates: [0, 5],
+    sections: Array.from({ length: 10 }, () => ['palisade', 25]),
+    towers: 2,
+    tower_sections: [0, 5],
+    gatehouses: [0, 5],
+    ditch: 2,
+    stakes: true,
+    citadel: { grade: 'palisade', strength: 25 },
+  };
+  const defence = { posture: 'everyone', reserve_bp: 1000, tower_crews: 'drilled', arms_priority: 'veterans' };
+  const plan = new SettlementPlan({ residents: 200, houses: { hut: 40 }, design, walls, defence, buildings: ['hall'] });
+  assert.equal(plan.defence, defence);
+  const h = 2.5 * BLOCK_M;
+  const length = (8 * h) / 10;
+  const on = (r) => (p) => Math.abs(Math.max(Math.abs(p.x), Math.abs(p.y)) - r) < 1e-6;
+  const of = (prefix) => plan.pieces.filter((p) => p.asset.startsWith(prefix));
+  // Both gates are fortified gatehouses; the only plain gate is the citadel's.
+  assert.equal(of('wall.gatehouse.timber.').length, 2);
+  assert.ok(of('wall.gatehouse.').every(on(h)));
+  assert.deepEqual(
+    of('wall.gate.').map((p) => p.asset.split('.').slice(0, 3).join('.')),
+    ['wall.gate.timber'],
+  );
+  // Towers in the middle of their sections, one module beside the gate.
+  const towers = of('wall.tower.');
+  assert.deepEqual(
+    towers.map((p) => [p.x, p.y]),
+    [0, 5].map((k) => ringPoint(h, k * length + length / 2 - 8).slice(0, 2)),
+  );
+  // A moat half a block out; stakes every module between it and the wall.
+  assert.equal(plan.ditch.kind, 'moat');
+  assert.ok(plan.ditch.line.every(([x, y]) => Math.max(Math.abs(x), Math.abs(y)) === h + BLOCK_M / 2));
+  assert.equal(plan.stakes.length, h + BLOCK_M / 4);
+  for (const [[ax, ay], [bx, by]] of plan.stakes) {
+    const r = Math.max(Math.abs((ax + bx) / 2), Math.abs((ay + by) / 2));
+    assert.ok(r > h && r < h + BLOCK_M / 2, `a stake at ${r}`);
+  }
+  // The citadel: a palisade round the keep's block, 32 modules, its gate to the south.
+  const citadel = plan.pieces.filter(on(BLOCK_M / 2)).filter((p) => p.asset.startsWith('wall.'));
+  assert.equal(citadel.length, 32);
+  const [gate] = citadel.filter((p) => p.asset.startsWith('wall.gate.'));
+  assert.equal(gate.y, BLOCK_M / 2, 'the citadel gate faces the store');
+  assert.equal(of('wall.palisade.').length, 10 * 16 - 2 + 31);
+
+  // One placed tower stands on its own section; without placements, the old corners.
+  const one = new SettlementPlan({
+    residents: 200,
+    houses: { hut: 40 },
+    design,
+    walls: { ...walls, towers: 1, tower_sections: [3], gatehouses: [], ditch: 0, stakes: false, citadel: null },
+  });
+  const [tower] = one.pieces.filter((p) => p.asset.startsWith('wall.tower.'));
+  assert.deepEqual([tower.x, tower.y], ringPoint(h, 3 * length + length / 2).slice(0, 2));
+  assert.equal(one.ditch, null);
+  assert.deepEqual(one.stakes, []);
+  assert.equal(one.citadel, null);
+});
+
 test('the plain plan and plans without a design keep their old layout', async () => {
   const { isPlainPlan } = await import('../src/world/settlement-plan.js');
   const plain = { style: 'open', keep: 'edge', wall_ring: 2, gates: [0] };

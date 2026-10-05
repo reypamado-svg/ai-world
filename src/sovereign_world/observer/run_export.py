@@ -36,8 +36,10 @@ from sovereign_world.observer.reader import RunReader
 from sovereign_world.observer.terrain_export import export_terrain_for
 from sovereign_world.state import build_initial_state
 
-EXPORT_VERSION = 2
-"""2: settlements of rules-3 runs carry their town `plan` and wall ring (`walls`)."""
+EXPORT_VERSION = 3
+"""2: settlements of rules-3 runs carry their town `plan` and wall ring (`walls`).
+3: walls also carry, where there are any, `tower_sections`, `gatehouses`, `ditch`, `stakes`
+and `citadel`; settlements carry their standing `defence` order."""
 PEOPLE_LAYOUT: tuple[tuple[str, str], ...] = (
     ("id", "<u4"),
     ("settlement", "<u2"),
@@ -106,6 +108,7 @@ def day_record(view: DayProjection) -> dict[str, Any]:
                 "institutions": list(row.institutions),
                 **({"plan": row.plan} if row.plan is not None else {}),
                 **({"walls": row.walls} if row.walls is not None else {}),
+                **({"defence": row.defence} if row.defence is not None else {}),
             }
             for row in view.settlements
         ],

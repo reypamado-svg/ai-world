@@ -10,8 +10,10 @@
 // plan) and its walls, section by section along the planned ring. A plan then
 // lays the wards inside the ring first, puts the keep, market, shrine and craft
 // quarter where the design says, and draws the wall line: a square of side
-// 2r+1 blocks, two block-sides a section, a gatehouse in each gate section and
-// towers where they stand.
+// 2r+1 blocks, two block-sides a section, a gate in each gate section and
+// towers where they stand. With the defensive works (export version 3) a gate may
+// be a fortified gatehouse, towers stand on the sections the engine placed them
+// on, and a ditch or moat, stakes and a citadel round the keep are drawn too.
 //
 // Everyone follows one of a few shared daily routines (by duty), sampled once
 // into tables of a phase per minute of the day. A person's position is then a
@@ -193,7 +195,9 @@ export class SettlementPlan {
    *   `houses`: the engine's houses by grade (a recorded run). Without them (or with none),
    *   there is a house for every five residents. `jobs`: houses being built, drawn as sites.
    *   `design`: the council's town plan (rules version 3); `walls`: its ring as built, each
-   *   section `[grade or null, strength]`, with `gates` (section indices) and `towers`.
+   *   section `[grade or null, strength]`, with `gates` (section indices) and `towers`; from
+   *   export version 3, where there are any, `tower_sections`, `gatehouses`, `ditch` (1, or
+   *   2 for a moat), `stakes` and `citadel`. `defence`: the standing defence order.
    *   `buildings`: the institution kinds standing there; the keep is drawn only with a hall,
    *   the craft quarter only with a workshop.
    */
@@ -203,6 +207,7 @@ export class SettlementPlan {
     jobs = [],
     design = null,
     walls = null,
+    defence = null,
     buildings = [],
     waterAngle = Math.PI / 2,
     coreRadius = 64,
@@ -212,6 +217,7 @@ export class SettlementPlan {
     this.coreRadius = coreRadius;
     this.seed = seed;
     this.design = design;
+    this.defence = defence;
     this.designed = !!design && !isPlainPlan(design);
     this.buildings = new Set(buildings);
     this.ring = design ? design.wall_ring : 0;
@@ -325,9 +331,10 @@ export class SettlementPlan {
   }
 
   /**
-   * The ring's drawable pieces: wall modules of each built section's grade, a gatehouse
-   * in the middle of each gate section, towers (corners first, then the section ends),
-   * the lines of sections not yet built, and the places' buildings.
+   * The ring's drawable pieces: wall modules of each built section's grade, a gate (or a
+   * fortified gatehouse) in the middle of each gate section, towers (on their sections, or
+   * corners first, then the section ends), a citadel round the keep, and the places'
+   * buildings; the lines of sections not yet built, and of a ditch or moat and stakes.
    */
   _wallPieces(walls) {
     this.pieces = this.places
@@ -335,11 +342,15 @@ export class SettlementPlan {
       .map((p) => ({ x: p.x, y: p.y, asset: p.asset, damaged: false }));
     this.planned = [];
     this.sections = [];
+    this.ditch = null;
+    this.stakes = [];
+    this.citadel = null;
     if (!this.design) return;
     const h = this.ringHalf;
     const n = 2 * (2 * this.ring + 1);
     const length = (8 * h) / n;
     const gates = new Set(walls?.gates ?? this.design.gates.map((g) => Math.floor((g * n) / 6)));
+    const gatehouses = new Set(walls?.gatehouses ?? []);
     for (let k = 0; k < n; k += 1) {
       const [grade, strength] = walls?.sections?.[k] ?? [null, 0];
       const section = { index: k, grade, strength, gate: gates.has(k) };
@@ -358,16 +369,23 @@ export class SettlementPlan {
       for (let m = 0; m < modules; m += 1) {
         const [x, y, axis] = ringPoint(h, s0 + (m + 0.5) * WALL_MODULE_M);
         const gateHere = section.gate && m === Math.floor(modules / 2);
-        const asset = gateHere ? `wall.gate.${stone ? 'stone' : 'timber'}.${axis}` : `wall.${grade}.${axis}`;
+        const gate = gatehouses.has(k) ? 'gatehouse' : 'gate';
+        const asset = gateHere ? `wall.${gate}.${stone ? 'stone' : 'timber'}.${axis}` : `wall.${grade}.${axis}`;
         this.pieces.push({ x, y, asset, damaged });
       }
     }
-    // Towers: the four corners first, then the ends of sections, in ring order.
+    // Towers: on the sections the engine placed them on, at the middle (beside the gate on
+    // a gate section); else the four corners first, then the ends of sections, in ring order.
     const towers = walls?.towers ?? 0;
-    const spots = [h, 3 * h, 5 * h, 7 * h];
-    for (let k = 0; k < n; k += 1) {
-      const s = k * length;
-      if (!spots.some((c) => Math.abs(c - s) < 1)) spots.push(s);
+    const spots = [];
+    if (walls?.tower_sections?.length) {
+      for (const k of walls.tower_sections) spots.push(k * length + length / 2 - (gates.has(k) ? WALL_MODULE_M : 0));
+    } else {
+      spots.push(h, 3 * h, 5 * h, 7 * h);
+      for (let k = 0; k < n; k += 1) {
+        const s = k * length;
+        if (!spots.some((c) => Math.abs(c - s) < 1)) spots.push(s);
+      }
     }
     const built = this.sections.filter((x) => x.grade);
     const weakest = built.reduce(
@@ -378,6 +396,45 @@ export class SettlementPlan {
     for (let t = 0; t < Math.min(towers, spots.length); t += 1) {
       const [x, y] = ringPoint(h, spots[t]);
       this.pieces.push({ x, y, asset: `wall.tower.${stoneTowers ? 'stone' : 'timber'}`, damaged: false });
+    }
+    // A ditch (or moat) half a block outside the wall; stakes between the two.
+    if (walls?.ditch) {
+      const d = h + BLOCK_M / 2;
+      this.ditch = {
+        kind: walls.ditch === 2 ? 'moat' : 'ditch',
+        line: [
+          [d, d],
+          [d, -d],
+          [-d, -d],
+          [-d, d],
+          [d, d],
+        ],
+      };
+    }
+    if (walls?.stakes) {
+      const hs = h + BLOCK_M / 4;
+      for (let s = WALL_MODULE_M / 2; s < 8 * hs; s += WALL_MODULE_M) {
+        const [x, y, axis] = ringPoint(hs, s);
+        const [nx, ny] = axis === 'y' ? [1.5, 0] : [0, 1.5];
+        this.stakes.push([
+          [x - nx, y - ny],
+          [x + nx, y + ny],
+        ]);
+      }
+    }
+    // A citadel: a wall round the keep's block, its gate facing the store to the south.
+    if (walls?.citadel) {
+      this.citadel = walls.citadel;
+      const { grade } = walls.citadel;
+      const hc = BLOCK_M / 2;
+      const modules = Math.round((8 * hc) / WALL_MODULE_M);
+      const gateModule = Math.floor((6 * hc) / WALL_MODULE_M);
+      const stone = WALL_GRADES.indexOf(grade) >= WALL_GRADES.indexOf('drystone_wall');
+      for (let m = 0; m < modules; m += 1) {
+        const [x, y, axis] = ringPoint(hc, (m + 0.5) * WALL_MODULE_M);
+        const asset = m === gateModule ? `wall.gate.${stone ? 'stone' : 'timber'}.${axis}` : `wall.${grade}.${axis}`;
+        this.pieces.push({ x, y, asset, damaged: false });
+      }
     }
   }
 
@@ -604,6 +661,7 @@ export function plansFor(frame, { coreRadius = 64 } = {}) {
       jobs: s.houseJobs ?? [],
       design: s.plan ?? null,
       walls: s.walls ?? null,
+      defence: s.defence ?? null,
       buildings: (s.institutions ?? []).map((item) => item.kind),
       coreRadius,
       seed: k + 1,

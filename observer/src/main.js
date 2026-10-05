@@ -918,16 +918,22 @@ function buildApi(app) {
         walls: plan.design ? plan.wallsBuilt() : null,
         planned: plan.planned?.length ?? 0,
         pieces: (plan.pieces ?? []).reduce((n, p) => {
-          const kind = p.asset.startsWith('wall.gate')
-            ? 'gates'
-            : p.asset.startsWith('wall.tower')
-              ? 'towers'
-              : p.asset.startsWith('wall.')
-                ? 'walls'
-                : 'places';
+          const kind = p.asset.startsWith('wall.gatehouse')
+            ? 'gatehouses'
+            : p.asset.startsWith('wall.gate')
+              ? 'gates'
+              : p.asset.startsWith('wall.tower')
+                ? 'towers'
+                : p.asset.startsWith('wall.')
+                  ? 'walls'
+                  : 'places';
           return { ...n, [kind]: (n[kind] ?? 0) + 1 };
         }, {}),
         places: (plan.places ?? []).map((p) => ({ name: p.name, place: p.place, x: p.x, y: p.y })),
+        ditch: plan.ditch?.kind ?? null,
+        stakes: plan.stakes?.length ?? 0,
+        citadel: !!plan.citadel,
+        defence: plan.defence ?? null,
         // Where a built wall piece stands, in world metres, to look at it.
         wallAt: (() => {
           const piece = (plan.pieces ?? []).find((p) => p.asset.startsWith('wall.'));

@@ -246,6 +246,20 @@ export class CrowdLayer {
       }
     }
     planned.stroke({ width: 3, color: 0xf2e6c8, alpha: 0.7 });
+    // Defensive works on the ground: a ditch (dark earth) or moat (water), and stakes.
+    const works = new PIXI.Graphics();
+    if (plan.ditch) {
+      const line = plan.ditch.line.map(([x, y]) => project(x, y));
+      works.moveTo(line[0].x, line[0].y);
+      for (const p of line.slice(1)) works.lineTo(p.x, p.y);
+      works.stroke({ width: 5, color: plan.ditch.kind === 'moat' ? 0x3d7ab8 : 0x3a2d1f, alpha: 0.85 });
+    }
+    for (const [[ax, ay], [bx, by]] of plan.stakes ?? []) {
+      const a = project(ax, ay);
+      const b = project(bx, by);
+      works.moveTo(a.x, a.y).lineTo(b.x, b.y);
+    }
+    if (plan.stakes?.length) works.stroke({ width: 2, color: 0x8a6a3c });
     const dots = new PIXI.ParticleContainer({
       texture: this.sheet.entries.get('dot').texture,
       dynamicProperties: { position: true, vertex: true, color: true },
@@ -260,7 +274,7 @@ export class CrowdLayer {
     });
     const badge = new PIXI.Container();
     const town = plan.design
-      ? ` · ${plan.designed ? `${plan.design.style.replace('_', ' ')} town, designed by the council` : 'plain plan'} · walls ${plan.wallsBuilt().built} of ${plan.wallsBuilt().of} sections`
+      ? ` · ${plan.designed ? `${plan.design.style.replace('_', ' ')} town, designed by the council` : 'plain plan'} · walls ${plan.wallsBuilt().built} of ${plan.wallsBuilt().of} sections${plan.defence ? ' · defence set' : ''}`
       : '';
     const label = new PIXI.Text({
       text: `${this.frame.settlements[k].label} · ${this.frame.residents(k).toLocaleString('en')} people · ${this.frame.provenance === 'recorded run' ? 'recorded' : 'synthetic'}${town}`,
@@ -272,7 +286,7 @@ export class CrowdLayer {
       .fill({ color: 0x10151a, alpha: 0.85 })
       .stroke({ width: 1.5, color: hexNum(CIV_COLORS[this.frame.settlements[k].civ]) });
     badge.addChild(g, label);
-    root.addChild(planned, far, dots, shadows, near, crowd);
+    root.addChild(works, planned, far, dots, shadows, near, crowd);
     this.container.addChild(root, badge);
     const reach = plan.fieldRing.r1 + 150;
     return {
