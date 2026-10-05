@@ -160,6 +160,8 @@ export function isPlainPlan(design) {
   );
 }
 
+/** The institution a place's building needs before it is drawn (the rest are drawn as designed). */
+const PLACE_NEEDS = { keep: 'hall', craft_quarter: 'workshop' };
 /** Buildings drawn for a design's places. */
 const PLACE_ASSETS = {
   keep: 'building.hall',
@@ -175,7 +177,7 @@ const PLACE_ASSETS = {
 export function ringPoint(halfSide, s) {
   const h = halfSide;
   const p = ((s % (8 * h)) + 8 * h) % (8 * h);
-  if (p < h) return [h, -p, 'y'];
+  if (p < h) return [h, 0 - p, 'y'];
   if (p < 3 * h) return [h - (p - h), -h, 'x'];
   if (p < 5 * h) return [-h, -h + (p - 3 * h), 'y'];
   if (p < 7 * h) return [-h + (p - 5 * h), h, 'x'];
@@ -192,6 +194,8 @@ export class SettlementPlan {
    *   there is a house for every five residents. `jobs`: houses being built, drawn as sites.
    *   `design`: the council's town plan (rules version 3); `walls`: its ring as built, each
    *   section `[grade or null, strength]`, with `gates` (section indices) and `towers`.
+   *   `buildings`: the institution kinds standing there; the keep is drawn only with a hall,
+   *   the craft quarter only with a workshop.
    */
   constructor({
     residents,
@@ -199,6 +203,7 @@ export class SettlementPlan {
     jobs = [],
     design = null,
     walls = null,
+    buildings = [],
     waterAngle = Math.PI / 2,
     coreRadius = 64,
     seed = 0,
@@ -208,6 +213,7 @@ export class SettlementPlan {
     this.seed = seed;
     this.design = design;
     this.designed = !!design && !isPlainPlan(design);
+    this.buildings = new Set(buildings);
     this.ring = design ? design.wall_ring : 0;
     this.ringHalf = design ? (this.ring + 0.5) * BLOCK_M : 0;
     // Dwellings, best first so the finest stand nearest the core; then the building sites.
@@ -324,7 +330,9 @@ export class SettlementPlan {
    * the lines of sections not yet built, and the places' buildings.
    */
   _wallPieces(walls) {
-    this.pieces = this.places.map((p) => ({ x: p.x, y: p.y, asset: p.asset, damaged: false }));
+    this.pieces = this.places
+      .filter((p) => !PLACE_NEEDS[p.name] || this.buildings.has(PLACE_NEEDS[p.name]))
+      .map((p) => ({ x: p.x, y: p.y, asset: p.asset, damaged: false }));
     this.planned = [];
     this.sections = [];
     if (!this.design) return;
@@ -596,6 +604,7 @@ export function plansFor(frame, { coreRadius = 64 } = {}) {
       jobs: s.houseJobs ?? [],
       design: s.plan ?? null,
       walls: s.walls ?? null,
+      buildings: (s.institutions ?? []).map((item) => item.kind),
       coreRadius,
       seed: k + 1,
     });

@@ -196,8 +196,12 @@ test('a designed town fills its walls first and draws its ring, gates, towers an
     houses: { hut: 150, house: 30 },
     design,
     walls: { ring: 2, gates: [0, 5], sections, towers: 2 },
+    buildings: ['hall'],
   });
   assert.equal(plan.designed, true);
+  // The keep's hall stands; the craft quarter has no workshop yet, so its block stays empty.
+  const drawn = plan.pieces.filter((p) => p.asset.startsWith('building.')).map((p) => p.asset);
+  assert.deepEqual(drawn.sort(), ['building.hall', 'building.shrine', 'building.well']);
   assert.equal(isPlainPlan(design), false);
   // 180 houses need 12 blocks: the 21 inside ring 2 (25, less the keep, the store, the market
   // and the craft quarter) come first.

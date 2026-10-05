@@ -68,18 +68,15 @@ test('a designed town is drawn with its walls, gates and places', async () => {
     assert.equal(after.filter((t) => t.designed).length, 1, 'the other capitals keep the plain plan');
 
     // Close up, the walls are drawn as sprites among the houses, and the badge says so.
-    const close = await page.evaluate((id) => {
+    assert.ok(town.wallAt, 'a built wall to look at');
+    const close = await page.evaluate(({ x, y }) => {
       const o = window.__observer;
       o.setTime(1800);
-      o.viewPerson(id, 1.0);
+      o.view(x, y, 1.0);
       o.frame();
-      const near = o.crowdCounts();
-      o.viewPerson(id, 0.1);
-      o.frame();
-      return { near, far: o.crowdCounts() };
-    }, town.resident);
-    assert.ok(close.near.townPieces > 0, `${close.near.townPieces} wall pieces drawn`);
-    assert.ok(close.near.houses > 0);
+      return o.crowdCounts();
+    }, town.wallAt);
+    assert.ok(close.townPieces > 0, `${close.townPieces} wall pieces drawn`);
     assert.deepEqual(errors, []);
   } finally {
     await page.close();

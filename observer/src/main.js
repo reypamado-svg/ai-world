@@ -928,6 +928,12 @@ function buildApi(app) {
           return { ...n, [kind]: (n[kind] ?? 0) + 1 };
         }, {}),
         places: (plan.places ?? []).map((p) => ({ name: p.name, place: p.place, x: p.x, y: p.y })),
+        // Where a built wall piece stands, in world metres, to look at it.
+        wallAt: (() => {
+          const piece = (plan.pieces ?? []).find((p) => p.asset.startsWith('wall.'));
+          const o = app.population.origins[k];
+          return piece ? { x: o.x + piece.x, y: o.y + piece.y } : null;
+        })(),
         resident: app.population.frame.rowsOf(k).length
           ? app.population.frame.idOf(app.population.frame.rowsOf(k)[0])
           : null,
