@@ -116,7 +116,17 @@ def test_engine_never_imports_the_observer_and_the_exporter_avoids_persistence()
     for path in SRC.rglob("*.py"):
         if "observer" in path.relative_to(SRC).parts:
             continue
-        assert "sovereign_world.observer" not in path.read_text(), path
+        text = path.read_text()
+        if path.name == "cli.py":
+            # The command line starts the observer's server, and only inside `observe`, so
+            # nothing else that imports the command line loads the observer (or FastAPI).
+            body = text.split("\ndef observe(", 1)
+            assert len(body) == 2 and "sovereign_world.observer" not in body[0], path
+            assert body[1].count("sovereign_world.observer") == 1
+            [line] = [ln for ln in body[1].splitlines() if "sovereign_world.observer" in ln]
+            assert line.startswith("    ") and line.strip().startswith("from "), line
+            continue
+        assert "sovereign_world.observer" not in text, path
     exporter = (SRC / "observer" / "terrain_export.py").read_text()
     assert "persistence" not in exporter
 

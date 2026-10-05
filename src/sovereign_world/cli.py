@@ -193,3 +193,20 @@ def fork(
     )
     WorldStore.create(directory, manifest, state)
     typer.echo(f"forked {parent.run_id} at day {state.day} into {manifest.run_id}")
+
+
+@app.command()
+def observe(
+    directory: Path,
+    host: str = typer.Option("127.0.0.1", help="Address to listen on."),
+    port: int = typer.Option(8766, min=1, max=65535, help="Port to listen on."),
+) -> None:
+    """Serve a run to the observer, live and read-only, behind a token (needs the
+    'observer' extra)."""
+    try:
+        from sovereign_world.observer.server import serve
+    except ImportError as error:
+        raise typer.BadParameter(
+            "the observer server needs FastAPI and uvicorn: install the 'observer' extra"
+        ) from error
+    serve(directory, host=host, port=port)
