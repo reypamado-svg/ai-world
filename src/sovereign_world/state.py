@@ -63,6 +63,7 @@ from sovereign_world.stores import (
 )
 from sovereign_world.territory import Claim, Garrison, Settlement, Territory
 from sovereign_world.tolls import TollPost, TollView
+from sovereign_world.townplan import TownPlan, default_plan, site_error
 from sovereign_world.walls import WallJob, Walls
 from sovereign_world.war import Battle, BattleReport, Drill, Occupation, Siege, War
 from sovereign_world.work import ConstructionProject, WorkOrder
@@ -133,6 +134,8 @@ class CivilizationState(BaseModel):
     ranks_reached: dict[EntityId, SettlementRank] = Field(default_factory=dict)
     """Each settlement's rank above village, by settlement id (rules version 2)."""
     realm_rank_reached: RealmRank = RealmRank.CHIEFDOM
+    town_plans: dict[EntityId, TownPlan] = Field(default_factory=dict)
+    """Each settlement's design, by settlement id (rules version 3)."""
 
 
 _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
@@ -140,8 +143,10 @@ _CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("house_jobs", []),
     ("ranks_reached", {}),
     ("realm_rank_reached", "chiefdom"),
+    ("town_plans", {}),
 )
-"""Civilization fields added by rules version 2, and the value at which each is left out."""
+"""Civilization fields added by rules versions 2 and 3, and the value at which each is left
+out."""
 
 
 class WorldState(BaseModel):
@@ -363,6 +368,9 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
                 if manifest.rules_version >= 2
                 else {}
             ),
+            town_plans=(
+                {capital_id: default_plan(capital_id, 0)} if manifest.rules_version >= 3 else {}
+            ),
         )
     return WorldState(
         run_id=manifest.run_id,
@@ -500,6 +508,15 @@ def validate_world(state: WorldState) -> None:
             rank is SettlementRank.VILLAGE for rank in civilization.ranks_reached.values()
         ):
             raise ValueError("ranks above village belong to the civilization's own settlements")
+        plans = list(civilization.town_plans)
+        if plans != sorted(plans) or not set(plans) <= settlement_ids:
+            raise ValueError("town plans belong to the civilization's own settlements, sorted")
+        settled_at = {item.settlement_id: item.tile for item in settlements}
+        for settlement_id, plan in civilization.town_plans.items():
+            if plan.settlement_id != settlement_id:
+                raise ValueError("town plan key does not match its settlement")
+            if site_error(state.world_map, settled_at[settlement_id], plan) is not None:
+                raise ValueError("a town plan must suit its settlement's land")
         builders = [person_id for job in civilization.house_jobs for person_id in job.worker_ids]
         if len(builders) != len(set(builders)):
             raise ValueError("a builder works on one house job at a time")

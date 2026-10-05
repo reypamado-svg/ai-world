@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 CURRENT_GENERATOR = 3
 """The world generator new runs use; see ``RunManifest.generator_version``."""
-CURRENT_RULES = 2
+CURRENT_RULES = 3
 """The rules new runs use; see ``RunManifest.rules_version``."""
 CURRENT_JOURNAL_FORMAT = 2
 """How new runs save their days; see ``RunManifest.journal_format``."""

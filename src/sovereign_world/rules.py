@@ -31,10 +31,14 @@ class Rules:
     worker_counts: bool
     """Orders for work at home may count their workers at a settlement instead of naming
     them."""
+    town_plans: bool
+    """Councils design their settlements (rules version 3): walls go up section by section
+    along the planned ring, and the keep, market and craft quarter count where they stand."""
 
 
 def rules_for(version: int) -> Rules:
     second = version >= 2
+    third = version >= 3
     return Rules(
         version=version,
         houses=second,
@@ -45,4 +49,5 @@ def rules_for(version: int) -> Rules:
         sites=second,
         reach_cap=second,
         worker_counts=second,
+        town_plans=third,
     )

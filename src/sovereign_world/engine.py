@@ -216,6 +216,7 @@ from sovereign_world.territory import (
     visible_tiles,
 )
 from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
+from sovereign_world.townplan import default_plan
 from sovereign_world.travel import crossing, travel_days, way_to
 from sovereign_world.walls import (
     WALL_GRADES,
@@ -397,6 +398,16 @@ def _settle_arrival(state: WorldState, journey: Journey, provisions: int) -> lis
                     {
                         **civilization.housing,
                         settlement.settlement_id: founding_housing(len(arrivals)),
+                    }.items()
+                )
+            )
+        if rules_for(state.rules_version).town_plans:
+            # A new settlement starts with the plain plan until its council designs it.
+            civilization.town_plans = dict(
+                sorted(
+                    {
+                        **civilization.town_plans,
+                        settlement.settlement_id: default_plan(settlement.settlement_id, state.day),
                     }.items()
                 )
             )
@@ -898,6 +909,10 @@ def _cede(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
     if sid in giver.housing:
         taker.housing = dict(sorted({**taker.housing, sid: giver.housing[sid]}.items()))
         giver.housing = {key: value for key, value in giver.housing.items() if key != sid}
+    if sid in giver.town_plans:
+        # The town keeps its streets and walls' line under its new owner.
+        taker.town_plans = dict(sorted({**taker.town_plans, sid: giver.town_plans[sid]}.items()))
+        giver.town_plans = {key: value for key, value in giver.town_plans.items() if key != sid}
     if sid in giver.ranks_reached:
         taker.ranks_reached = dict(
             sorted({**taker.ranks_reached, sid: giver.ranks_reached[sid]}.items())
@@ -3404,6 +3419,7 @@ def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent
     civilization.housing = {}
     civilization.house_jobs = ()
     civilization.ranks_reached = {}
+    civilization.town_plans = {}
     civilization.realm_rank_reached = RealmRank.CHIEFDOM
     civilization.stores = {}
     civilization.inventory = Inventory(capacity=0)

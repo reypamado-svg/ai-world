@@ -21,7 +21,7 @@ def _manifest(**update: object) -> RunManifest:
 
 
 def test_new_runs_use_the_current_rules() -> None:
-    assert RunManifest.new(CONFIG, "0.1.0").rules_version == CURRENT_RULES == 2
+    assert RunManifest.new(CONFIG, "0.1.0").rules_version == CURRENT_RULES == 3
     assert RunManifest.new(CONFIG, "0.1.0", rules_version=1).rules_version == 1
 
 
@@ -49,6 +49,8 @@ def test_rules_switches() -> None:
     first, second = rules_for(1), rules_for(2)
     assert not (first.houses or first.decrees_expire or first.ranks or first.civil_research)
     assert second.houses and second.decrees_expire and second.ranks and second.civil_research
+    assert not second.town_plans
+    assert rules_for(3).town_plans and rules_for(3).houses
 
 
 def test_init_makes_current_rules_and_a_fork_keeps_its_parents(tmp_path: Path) -> None:

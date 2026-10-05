@@ -158,6 +158,7 @@ from sovereign_world.tolls import (
     TollPost,
     TollView,
 )
+from sovereign_world.townplan import TownPlan
 from sovereign_world.travel import (
     NO_BRIDGES,
     Bridges,
@@ -582,6 +583,7 @@ _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("realm_rank", None),
     ("land", {}),
     ("extractions", []),
+    ("town_plans", {}),
 )
 """Report fields added since council-3, and the value at which each is left out, so reports
 from older worlds read, and so prompt, exactly as before."""
@@ -687,6 +689,8 @@ class CouncilReport(BaseModel):
     """Its people in numbers (from council-5)."""
     notable_people: tuple[PersonView, ...] = ()
     """Up to 40 of its people: those on a duty, then idle grown-ups at each settlement."""
+    town_plans: dict[EntityId, TownPlan] = Field(default_factory=dict)
+    """How each settlement is laid out (rules version 3)."""
 
     @model_serializer(mode="wrap")
     def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
@@ -1098,6 +1102,7 @@ def build_council_report(
             and journey.sender_civilization_id == civilization_id
         ),
         house_jobs=civilization.house_jobs,
+        town_plans=dict(civilization.town_plans),
         ranks=dict(civilization.ranks_reached),
         realm_rank=(
             civilization.realm_rank_reached if rules_for(state.rules_version).ranks else None
