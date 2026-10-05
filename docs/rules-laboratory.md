@@ -48,6 +48,7 @@ Each world records the rules it runs under in its manifest.
   - walls defend in proportion to the share of the ring built and of the houses inside it; catapults batter the weakest section; houses beyond the ring burn first in a storm;
   - moving the ring or its gates pulls the old ring down for half its cost;
   - a keep at the centre with its hall open, a hill fort, a craft quarter by the water and a market by the store each change one number (defence, ground, the workshop's day, store room); the shrine is drawn only.
+  - the scripted baseline designs its capital as a ringed town on day 30 and walls it from day 60: earthwork, or a palisade where its people know timbercraft.
 - **Rules 2:** worlds made with `init` before rules 3. They add:
   - houses: every five people need one, and births need room;
   - settlement ranks (village to city) and realm ranks (chiefdom to empire), and what they unlock;

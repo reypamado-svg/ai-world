@@ -99,7 +99,14 @@ When a settlement is stormed, the houses beyond the wall line are the first to b
 
 - `PROMPT_VERSION = "council-6"`. `town_plan_rule()` is written from the tables and told only to rules-3 worlds. Council-5 manifests get the usual "fork the run" refusal.
 - `town_plans` and `wall_rings` are in the council report and kept in the state summary until last.
-- The baseline, under rules 3, designs its capital while it still has the plain plan: ringed, keep at the centre, market by the store, the craft quarter by the water (else by the store), ring 2, gates east and west. The order goes last, so it lands at the first council with an order to spare, day 30. The baseline builds no walls, as before.
+- The baseline, under rules 3, designs its capital while it still has the plain plan: ringed, keep at the centre, market by the store, the craft quarter by the water (else by the store), ring 2, gates east and west. The order goes last, so it lands at the first council with an order to spare, day 30.
+- **Baseline walls (T1b).** From the council after the design, the baseline walls its capital along the ring:
+  - **Crew:** two idle people not named by its other orders, timbercraft knowers first.
+  - **Grade:** a palisade when one of them knows timbercraft, otherwise earthwork. The whole ring goes in one order.
+  - **Reserve:** it keeps 150 timber (half its materials target) after paying.
+  - **Repairs:** it mends damaged sections first, when the crew can.
+  - **Upgrades:** an earthwork ring is raised to palisade once a timbercraft knower is idle.
+  - No towers. The wall order goes last too, so it never displaces houses, storage or the hall.
 
 ### Observer
 
@@ -131,11 +138,15 @@ The user can change any of these:
 
 **The designs:** all four capitals keep the plain plan until day 30, when the baseline's design lands: ringed, keep at the centre, market by the store, gates east and west. Three of them put their craft quarter by the water, and one, with no water beside it, by the store.
 
-**Growth:** the year ends at 141 people, as the rules-2 year did. Designing costs the baseline nothing, and it builds no walls.
+**Walls (T1b):**
+- All four capitals start their walls on day 60.
+- The two without timbercraft have complete earthwork rings by day 76; the two with it, complete palisade rings by day 105.
+
+**Growth:** the year ends at 141 people, as the rules-2 year did. The designs and walls cost the baseline nothing in food or growth; timber ends at 400 and 380 at the palisade capitals instead of 440 and 420.
 
 **In the observer:**
-- The capital shows its hall at the centre and the market's well by the store, with its houses in the first ward block inside the dashed planned ring.
-- The badge reads "ringed town, designed by the council · walls 0 of 10 sections".
+- A capital shows its hall at the centre, the market's well by the store and its houses in the first ward block, all inside its finished wall: earthwork, or a palisade with gatehouses east and west.
+- The badge reads, for example, "ringed town, designed by the council · walls 10 of 10 sections".
 - `?run=tests/fixtures/run-town&day=18` shows a walled one: six palisade sections with both gatehouses, the four still to build dashed, and the shrine outside.
 
 **Validation:**
@@ -164,6 +175,13 @@ The user can change any of these:
   - a ceded ring and a ruin's walls;
   - storms;
   - determinism.
+- `tests/test_baseline_walls.py` covers the baseline's walls:
+  - none before the design, or under older rules;
+  - a crew of two idle hands outside the reserved ones;
+  - palisade or earthwork by skill;
+  - waiting for an open job, the reserve and a crew;
+  - raising an earthwork ring, leaving a palisade one, mending a battered section;
+  - every capital walled within four months with nobody hungry.
 - `tests/test_town_plan_councils.py` covers the council-6 rule, the baseline's design landing on day 30, and a model's design rederiving to the same hash.
 - `tests/observer/test_run_export.py` covers export version 2 and both committed fixtures.
 - `observer/tests/settlement-plan.test.mjs` and `observer/tests/town.test.mjs` cover the layout and the town in the browser.
