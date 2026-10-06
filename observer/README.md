@@ -128,7 +128,35 @@ runs/baseline-21 --days 30`): new days appear within about two seconds.
   (food eaten, orders accepted, single tiles changing hands) is hidden unless **Routine**
   is ticked.
 - Click a traveller dot on the map to see the parties on that tile (war parties,
-  expeditions, settlers…), their people, and their route drawn on the map.
+  expeditions, settlers…), their people, and their route drawn on the map. **Follow
+  party** keeps the camera on that party from day to day until its journey ends; a drag or
+  any other move of the camera stops it.
+- **Playing a recorded run** (live or an export): the display clock runs at the chosen speed,
+  and each time it passes a whole day (14.4 minutes at 100×) the next recorded day is shown.
+  At the last recorded day it waits. The slider skips to any recorded day. The day label's
+  tooltip gives the state hash the run saved for that day; `sovereign-world replay RUN
+--day N` prints the same hash.
+
+### Running the world from the observer (`observe --run-days`, O4)
+
+```sh
+.venv/bin/sovereign-world observe runs/baseline-21 --run-days 30
+```
+
+starts the run as well, as its only writer, for up to 30 more days. The run goes on only
+while the page plays, and only up to a few days ahead of the day shown (**Ahead**, 3 by
+default, 1 to 30). The page opens paused, since playing may cost AI calls; ▶ starts it.
+The **RUNNER** chip says whether it is running, paused, how far it has got and how many
+days ahead of the page it is.
+
+- Pausing takes effect between days: the day under way finishes, its councils included.
+- What the run saves is exactly what `sovereign-world run` saves for the same days; pausing
+  and the lookahead change nothing in it. A run started this way can be carried on later
+  with `run` or another `observe --run-days`.
+- Closing the observer stops the run after the day under way, with a checkpoint saved.
+- One runner per run: do not run `sovereign-world run` on the same run at the same time.
+- The run is started with the observer's environment (so AI keys set there are used) but
+  without the observer's token; the observer tells it only "pause" and "resume".
 
 - `http://127.0.0.1:8765/proof.html` — the O1a close-zoom art proof.
 - `http://127.0.0.1:8765/proof.html?scene=depth` — the pinned depth test scene.
@@ -230,6 +258,7 @@ node tests/capture-geography.mjs captures              # terrain stills: world, 
 | `server.test.mjs`          | Live server: wrong token, newest day, Follow latest, later day in 5 s, run unchanged, Go/Follow, travellers, cut-back restart                                     |
 | `chronicle.test.mjs`       | Chronicle sentences with observer-assigned names, how each place was found, routine events hidden, the person an event names                                      |
 | `server-source.test.mjs`   | Live source: answers from another history refused (also a record and people from two), the token dropped from the address                                         |
+| `timeline.test.mjs`        | Replay timeline: days stepped with the time carried over, holding at the last day, the slider, each day's recorded hash                                           |
 
 ## Layout
 

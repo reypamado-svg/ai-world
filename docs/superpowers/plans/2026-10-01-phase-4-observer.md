@@ -128,7 +128,9 @@ except advancing or restoring already committed history."
   localhost by default.
 - **Token.** A random token is required by every endpoint and is never given to the runner or
   the sovereigns.
-- **Control channel.** It accepts only pause, resume and speed, and carries no data.
+- **Control channel.** It accepts only pause, resume and lookahead, and carries no data; speed
+  is a presentation clock in the page (as built in O4: only `pause` and `resume` reach the
+  runner).
 - **Typed serializer.** The civilization serializer accepts a `CouncilReport`, never a
   `WorldState`.
 - **Tests:**
@@ -629,3 +631,86 @@ In a recorded war:
 - Explorers on a survey are counted at home by the engine's own rule (`residents_by_settlement`), which O2's projection follows. They are drawn in their settlement, not as dots on the road, although `/routes` lists their expedition. Only journeys' people are traveller dots.
 - The id table at 100,000 people is 3 MB, fetched whole when the page opens; later refreshes ask only for new ids.
 - The walk numbers people in day order and keeps the table in memory. At 100,000 people a long run takes about 0.34 s a day to walk once after the server starts.
+
+## O4 as built: running the world from the observer, and replaying it
+
+Planned with Fable 5.1 after O3 and its review. The user said "Start O4". Built in five commits: C0 484b3cb, C1 d5b4316, C2 09984fb, C3 d59c77b (with 816f79d) and C4 ca34d58, plus these docs. The engine is unchanged: golden hashes and parity hold.
+
+**The runner** (`runner.py`, `sovereign-world run --controlled`):
+- `run_days` is the loop `run` always had, moved as it was: replay the latest verified state, advance a day, save it and its councils, and save a checkpoint at the end.
+- A `RunControl` may hold the loop between days. Nothing about a pause reaches the world, its random streams or its journal.
+- With `--controlled`, the run starts paused and reads `pause` and `resume` lines on standard input. It reports `start`, `paused`, `running`, `day N` and `done N` on standard output. The end of its input stops it after the day under way.
+
+**The observer holds it** (`observe --run-days N`, `observer/runner_link.py`):
+- **The link.** The observer starts the runner as its child, with its own environment minus its token, and writes only `pause` and `resume` to it.
+- **The gate** (`RunService._gate`). The runner may go on only while:
+  - the page plays;
+  - a day is shown;
+  - the newest saved day is fewer than `lookahead` days (default 3) ahead of it.
+
+  Only changes are sent to the runner. A new history pauses it.
+- **Routes.** `GET` and `POST /api/control` (paused, lookahead 1–30, the day shown) sit behind the token, like every `/api` route. The token test now checks every method.
+- **One writer.** The runner is the only writer. The observer still never builds a store, and the runner never sees the observer or its token (a source check).
+
+**The day records carry the run's own hash** (export version 4, C2):
+- Each day record carries the `state_hash` the run saved for it: the journal record's, or the verified checkpoint's for the first day.
+- A test checks that every day served (the format-1 fixture, the designed town, and days saved while it is followed) is byte for byte `day_record(project_day(replay_run(store, D)))` with that hash.
+- In the page, the day label's tooltip shows the hash, and the browser test checks it against `sovereign-world replay --day D`.
+
+**The replay timeline** (C3):
+- **Playing.** When the display clock passes a whole day (86,400 display seconds; 14.4 minutes at 100×), the next recorded day is shown and the extra time is carried over. At the last day it holds: "waiting for day N" live, the end of the recording for an export.
+- **Moving around.** A slider skips to any recorded day. Follow latest keeps jumping to the newest.
+- **Labels.**
+  - The clock: "Engine day 12 (recorded) · display 14:05 (presentation)".
+  - The live chip: "playing at 100×", "following newest", "waiting for day N" or "paused".
+  - The runner chip: "RUNNER · running · day 15 of 365 · 3 ahead", "finished at day N" or "exited (code)".
+- **Opening.** With a runner attached, the page opens paused.
+
+**Following a party** (C4):
+- **Follow party** in the inspector's party list. The camera eases to where the party stands each day (its first traveller's tile, else how far its route had come), and its route stays drawn.
+- When the party is no longer on the road, the follow ends with "The journey ended before day N (last seen on day M)".
+- Moving the camera by hand, or selecting a person, stops it.
+
+**Tests:**
+- **`tests/test_runner.py`:**
+  - a run held twice across a council day saves the same journal (prompt hashes included) and checkpoints as `run --days 31`;
+  - a stopped run saves nothing;
+  - the controlled runner waits, reports each day, stops after the day under way at the end of its input, and verifies.
+- **`tests/observer/test_runner_link.py`:**
+  - the gate table;
+  - a new history pauses the runner;
+  - the control route's checks;
+  - the runner's environment without the token;
+  - a real runner started and finished;
+  - **a run driven from a scripted page** through `observe --run-days 31`, with a pause at day 10 and lookahead 5 from day 20: it saves the same journal bytes, prompt hashes, checkpoints and files as `run --days 31`, and the token is in no output.
+- **`tests/observer/test_replay_timeline.py`:** day records equal their replay.
+- **`observer/tests/timeline.test.mjs`:** stepping days with time carried over, holding at the end, the slider, the hash.
+- **`observer/tests/server.test.mjs`:**
+  - **`observe --run-days 6`:**
+    - it opens paused;
+    - it runs up to the lookahead and waits;
+    - one more day comes when the page moves on;
+    - lookahead 1;
+    - it finishes;
+    - the shown hash equals `replay --day`;
+    - `verify` passes;
+    - the records equal a plain `run`.
+  - **Following the war party:** the camera is on its tile each day until it comes home.
+
+**Found on the way.** A format-1 journal gzips each saved day with the time of saving, so two format-1 runs of the same days are equal in content (days, states, hashes, events, councils) but not byte for byte. Format-2 journals, which new runs use, are equal byte for byte. The format-1 browser test therefore compares content. The old format is left as it is.
+
+**Defaults taken** (the user can change any of these):
+- the lookahead is 3 days;
+- `--run-days` is required, and the runner stops at it with a checkpoint;
+- pausing takes effect between days;
+- a runner that crashes is shown as exited, with no restart;
+- closing the observer stops the run after the day under way;
+- pause stops both the display and the runner;
+- speed stays a presentation clock;
+- a page with a runner opens paused;
+- the runner's stderr goes to the observer's terminal.
+
+**Known**
+- Pausing can leave the run one day further ahead than the lookahead, while it finishes the day under way.
+- Nothing stops a second `sovereign-world run` on the same run while a runner is attached; the README says so.
+- A journal cut back under a live runner pauses it and restarts the page, but the runner's own copy of the world is then stale: restart `observe --run-days`.
