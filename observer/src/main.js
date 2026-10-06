@@ -54,6 +54,8 @@ const RUN = params.get('run');
 const LIVE = RUN === 'live';
 const RUN_BASE = RUN && !LIVE && (RUN.includes('/') ? RUN : `data/runs/${RUN}`);
 const LIVE_POLL_MS = 1000;
+// A recorded day lasts this many display seconds when played (14.4 real minutes at 100×).
+const DAY_S = 86400;
 // The live server's token: read from the fragment once and dropped from the address at once,
 // so only this page's memory holds it.
 const LIVE_TOKEN = LIVE ? takeTokenFromLocation() : null;
@@ -288,6 +290,15 @@ class ObserverApp {
     $('live-chip').textContent = 'Names: observer-assigned';
     $('day-group').hidden = false;
     if (run.live) this.setUpChronicle(run);
+    // The replay timeline: playing steps through the recorded days, one per display day.
+    this.timeline = { dayStartT: this.t, waiting: false, end: false, busy: false };
+    const slider = $('day-slider');
+    slider.addEventListener('input', () => {
+      const day = run.days[Number(slider.value)];
+      if (day === undefined) return;
+      if (run.live) this.setFollowLatest(day === run.latest);
+      this.loadDay(day);
+    });
     this.showDay(population);
     const step = async (dir) => {
       const days = run.days;
@@ -300,6 +311,81 @@ class ObserverApp {
     $('btn-day-prev').addEventListener('click', () => step(-1));
     $('btn-day-next').addEventListener('click', () => step(1));
     if (run.live) this.followLive(run);
+    if (run.hasRunner) this.setUpRunner(run);
+  }
+
+  /** The observer started a runner for this live run (O4): the page opens paused, says which
+   * day it shows, and sets how far ahead the run may go. */
+  setUpRunner(run) {
+    $('lookahead-group').hidden = false;
+    $('runner-chip').hidden = false;
+    const control = run.lastStatus?.control;
+    if (control) $('lookahead').value = String(control.lookahead);
+    $('lookahead').addEventListener('change', () => this.setLookahead(Number($('lookahead').value)));
+    this.setPaused(true);
+    run.control({ shown: this.population.day }).catch((err) => this.liveError(err));
+    this.showRunnerChip();
+  }
+
+  setLookahead(days) {
+    const n = Math.max(1, Math.min(30, Math.round(days) || 1));
+    $('lookahead').value = String(n);
+    return this.runSource
+      ?.control({ lookahead: n })
+      .then(() => this.showRunnerChip())
+      .catch((err) => this.liveError(err));
+  }
+
+  showRunnerChip() {
+    const run = this.runSource;
+    const status = run?.lastStatus;
+    if (!run?.hasRunner || !status) return;
+    const chip = $('runner-chip');
+    const { phase, day, last_day: last, exit_code: code } = status.runner;
+    const ahead = status.control?.shown != null && day != null ? day - status.control.shown : null;
+    chip.textContent =
+      phase === 'done'
+        ? `RUNNER · finished at day ${day}`
+        : phase === 'exited'
+          ? `RUNNER · exited (code ${code ?? '?'}) at day ${day}`
+          : `RUNNER · ${phase} · day ${day ?? '…'} of ${last ?? '…'}${ahead != null ? ` · ${ahead} ahead` : ''}`;
+    chip.title =
+      'The run goes on only while the page plays, and at most the set number of days ahead of the day shown.';
+  }
+
+  /** Played time reached the end of the shown day: show the next recorded day, if there is one. */
+  tickTimeline() {
+    const tl = this.timeline;
+    const run = this.runSource;
+    if (!tl || !run || tl.busy) return;
+    if (run.live && this.followLatest) {
+      tl.dayStartT = this.t;
+      return;
+    }
+    if (this.t - tl.dayStartT < DAY_S) return;
+    this.advanceDay();
+  }
+
+  /** Step to the next recorded day, carrying the played time over; hold at the last one. */
+  async advanceDay() {
+    const tl = this.timeline;
+    const run = this.runSource;
+    if (!tl || !run || tl.busy) return null;
+    const next = run.days[run.days.indexOf(this.population.day) + 1];
+    if (next === undefined) {
+      tl.waiting = true;
+      tl.end = !run.live;
+      return null;
+    }
+    tl.busy = true;
+    try {
+      tl.waiting = false;
+      tl.end = false;
+      const shown = await this.loadDay(next, { carry: true });
+      return shown;
+    } finally {
+      tl.busy = false;
+    }
   }
 
   /** A live run: look for new days every second; follow the newest, or start again when the
@@ -327,6 +413,7 @@ class ObserverApp {
           await this.loadDay(run.latest);
         }
         this.showLiveChip();
+        this.showRunnerChip();
       } catch (err) {
         if (err instanceof HistoryChanged) return this.startAgain();
         this.liveState.error = String(err.message ?? err);
@@ -400,12 +487,20 @@ class ObserverApp {
     const error = this.liveState?.error;
     chip.textContent = error
       ? 'LIVE RUN · server not answering'
-      : `LIVE RUN · ${this.followLatest ? 'following' : 'paused'} · ${run.days.length} days`;
+      : `LIVE RUN · ${
+          this.paused
+            ? 'paused'
+            : this.followLatest
+              ? 'following newest'
+              : this.timeline?.waiting
+                ? `waiting for day ${this.population.day + 1}`
+                : `playing at ${this.speed}×`
+        } · day ${this.population?.day ?? '…'} (${run.days.length} recorded)`;
     chip.title = error ?? 'Days appear here as the run saves them. Names are observer-assigned.';
   }
 
   /** Load another exported day; the camera stays where it is. */
-  async loadDay(day) {
+  async loadDay(day, { carry = false } = {}) {
     let loaded;
     try {
       loaded = await this.runSource.day(this.runSource.nearestDay(day));
@@ -415,6 +510,11 @@ class ObserverApp {
       return null;
     }
     this.showDay(populationOf(loaded, this.R));
+    if (this.timeline) {
+      const tl = this.timeline;
+      tl.dayStartT = carry && this.t - tl.dayStartT >= DAY_S ? tl.dayStartT + DAY_S : this.t;
+    }
+    if (this.runSource.hasRunner) this.runSource.control({ shown: loaded.day }).catch((err) => this.liveError(err));
     const url = new URL(location.href);
     url.searchParams.set('day', String(loaded.day));
     history.replaceState(null, '', url);
@@ -432,7 +532,16 @@ class ObserverApp {
         label: population.frame.settlements[k].label,
       })),
     });
-    $('day-label').textContent = `Engine day ${population.day}`;
+    const hash = population.record.state_hash;
+    $('day-label').textContent = `Engine day ${population.day} (recorded)`;
+    $('day-label').title = hash
+      ? `The run saved this day with state hash ${hash}; a replay of the run gives the same day.`
+      : 'Recorded by the engine.';
+    const slider = $('day-slider');
+    if (slider && this.runSource) {
+      slider.max = String(Math.max(0, this.runSource.days.length - 1));
+      slider.value = String(Math.max(0, this.runSource.days.indexOf(population.day)));
+    }
     this.inspector?.render();
     this.loadChronicle?.(population.day).catch((err) => this.liveError(err));
     if (this.runSource?.routes) {
@@ -488,6 +597,9 @@ class ObserverApp {
     this.paused = v;
     const b = $('btn-pause');
     if (b) b.textContent = v ? '▶ Resume' : '❚❚ Pause';
+    // A runner this observer started plays and pauses with the page.
+    if (this.runSource?.hasRunner) this.runSource.control({ paused: v }).catch((err) => this.liveError(err));
+    this.showLiveChip?.();
   }
 
   select(id) {
@@ -514,7 +626,10 @@ class ObserverApp {
 
   frame(deltaMS, advance = !this.paused) {
     const t0 = performance.now();
-    if (advance) this.t += (deltaMS / 1000) * this.speed;
+    if (advance) {
+      this.t += (deltaMS / 1000) * this.speed;
+      this.tickTimeline();
+    }
     // During the measurement tour the camera is held: anything that moved it is undone, and noted.
     const lock = this.tourLock;
     if (lock && (this.camera.x !== lock.x || this.camera.y !== lock.y || this.camera.zoom !== lock.zoom)) {
@@ -874,7 +989,7 @@ class ObserverApp {
           const minutes = 8 * 60 + Math.floor(this.t / 60);
           const hhmm = `${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
           clock.textContent = this.runSource
-            ? `Engine day ${this.population.day} · display time ${hhmm}`
+            ? `Engine day ${this.population.day} (recorded) · display ${hhmm} (presentation)`
             : `Engine day 0 · sample time ${hhmm}`;
         }
         const people = this.village
@@ -1057,6 +1172,7 @@ function buildApi(app) {
       return {
         days: app.runSource.days,
         day: pop.day,
+        hash: pop.record.state_hash ?? null,
         counts: pop.record.counts,
         residents: pop.record.settlements.map((s) => s.residents),
         drawnResidents: pop.frame.settlements.map((_, k) => pop.frame.residents(k)),
@@ -1064,6 +1180,35 @@ function buildApi(app) {
       };
     },
     loadDay: (day) => app.loadDay(day),
+    /** The replay timeline: the day shown, the recorded days, whether it waits or has ended,
+     * and how far into the shown day the display clock is (seconds). */
+    timelineInfo: () =>
+      app.timeline
+        ? {
+            day: app.population.day,
+            days: app.runSource.days,
+            waiting: app.timeline.waiting,
+            end: app.timeline.end,
+            dayT: app.t - app.timeline.dayStartT,
+            slider: { value: Number($('day-slider').value), max: Number($('day-slider').max) },
+          }
+        : null,
+    /** Play the display clock forward by `seconds` of display time (as frames would). */
+    play: (seconds) => {
+      app.t += seconds;
+      app.tickTimeline();
+    },
+    advanceDay: () => app.advanceDay(),
+    setLookahead: (n) => app.setLookahead(n),
+    /** The runner and its control, as the server last said (null without a runner). */
+    runnerInfo: () =>
+      app.runSource?.hasRunner
+        ? {
+            ...app.runSource.lastStatus.runner,
+            control: app.runSource.lastStatus.control,
+            chip: $('runner-chip').textContent,
+          }
+        : null,
     /** The day shown's travellers: [q, r, civilization, count] per tile. */
     runTravellers: () => app.population?.record.travellers ?? [],
     /** Canvas point of the k-th traveller dot of the day shown, or null. */
@@ -1380,7 +1525,8 @@ async function main() {
       : ' No river borders the capital tile.';
   }
   app.bindInput();
-  app.setPaused(false);
+  // With a runner the page opens paused: playing runs the world (and may cost AI calls).
+  app.setPaused(Boolean(extras.run?.hasRunner));
   app.run();
   window.__observer = buildApi(app);
   $('loading').hidden = true;

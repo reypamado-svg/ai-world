@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { gunzipSync } from 'node:zlib';
 import { chromium } from 'playwright';
 
 const run = promisify(execFile);
@@ -52,6 +53,17 @@ async function until(check, ms, what) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}\n${logs}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+}
+
+/** A journal's records with every gzipped state unpacked (format-1 gzip stamps the time). */
+async function journalContent(root) {
+  const lines = (await readFile(join(root, 'journal.jsonl'), 'utf8')).trim().split('\n');
+  return lines.map((line) => {
+    const { type, payload } = JSON.parse(line);
+    if (typeof payload?.state_gzip_base64 !== 'string') return { type, payload };
+    const { state_gzip_base64: blob, ...rest } = payload;
+    return { type, payload: rest, state: gunzipSync(Buffer.from(blob, 'base64')).toString('utf8') };
+  });
 }
 
 async function files(root) {
@@ -146,7 +158,11 @@ test('a live run opens on its newest day, steps, and follows days saved later', 
     live = await page.evaluate(() => window.__observer.liveInfo());
     assert.equal(live.latest, DAYS + 1);
     assert.equal(live.error, null);
-    assert.match(await page.locator('#live-chip').textContent(), new RegExp(`following · ${DAYS + 2} days`));
+    // The page is paused (the test holds the display clock), on the newest of the recorded days.
+    assert.match(
+      await page.locator('#live-chip').textContent(),
+      new RegExp(`day ${DAYS + 1} \\(${DAYS + 2} recorded\\)`),
+    );
     assert.deepEqual(errors, []);
   } finally {
     await page.close();
@@ -309,5 +325,99 @@ test('a run cut back while the page is open starts the page again, with its toke
     assert.match(await page.locator('#loading-status').textContent(), /needs its token/);
   } finally {
     await page.close();
+  }
+});
+
+test('a runner started by the observer plays with the page, stays a few days ahead, and finishes', async () => {
+  const root = join(dir, 'runner');
+  const plain = join(dir, 'plain');
+  await cp(fixture, root, { recursive: true });
+  await cp(fixture, plain, { recursive: true });
+  const runnerPort = await freePort();
+  const observerProcess = spawn(cli, ['observe', root, '--port', String(runnerPort), '--run-days', '6'], {
+    env: { ...process.env, SOVEREIGN_WORLD_OBSERVER_TOKEN: TOKEN },
+  });
+  let output = '';
+  observerProcess.stdout.on('data', (d) => (output += d));
+  observerProcess.stderr.on('data', (d) => (output += d));
+  const status = async () => {
+    try {
+      const res = await fetch(`http://127.0.0.1:${runnerPort}/api/status`, {
+        headers: { Authorization: `Bearer ${TOKEN}` },
+      });
+      return res.ok ? res.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  const page = await browser.newPage({ viewport: { width: 1024, height: 640 }, deviceScaleFactor: 1 });
+  try {
+    await until(async () => (await status())?.runner?.phase === 'paused', 60000, 'the runner to wait');
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.goto(`http://127.0.0.1:${runnerPort}/?run=live#token=${TOKEN}`);
+    await page.waitForFunction(() => window.__observer?.ready || window.__observerError, null, { timeout: 600000 });
+    assert.equal(await page.evaluate(() => window.__observerError ?? null), null);
+    // It opens paused, on the newest day, with the runner waiting.
+    await page.waitForFunction((d) => window.__observer.runnerInfo()?.control?.shown === d, DAYS);
+    let info = await page.evaluate(() => window.__observer.runnerInfo());
+    assert.equal(info.phase, 'paused');
+    assert.equal(info.control.paused, true);
+    assert.equal(info.control.shown, DAYS);
+    assert.match(info.chip, /^RUNNER · paused · day 5 of 11/);
+    assert.equal(await page.locator('#lookahead-group').isHidden(), false);
+    // Look at day 5 without following, then play: the run goes 3 days ahead, then waits.
+    await page.click('#btn-day-follow');
+    assert.equal((await page.evaluate(() => window.__observer.liveInfo())).following, false);
+    await page.evaluate(() => window.__observer.setPaused(false));
+    await until(
+      async () => {
+        const s = await status();
+        return s?.saved_days[1] >= DAYS + 3 && s.runner.phase === 'paused' && s;
+      },
+      60000,
+      'the runner to reach the lookahead',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    let s = await status();
+    assert.ok(s.saved_days[1] - s.control.shown <= s.control.lookahead + 1, JSON.stringify(s));
+    // The display reaches the next day: the run may save one more.
+    const shown = await page.evaluate(async () => {
+      await window.__observer.advanceDay();
+      return window.__observer.timelineInfo().day;
+    });
+    assert.equal(shown, DAYS + 1);
+    await until(async () => (await status())?.saved_days[1] >= DAYS + 4, 60000, 'one more day');
+    // The shown day's hash is the replay's.
+    const hash = await page.evaluate(() => window.__observer.runInfo().hash);
+    // Lookahead 1: already far enough ahead, so it waits.
+    await page.evaluate(() => window.__observer.setLookahead(1));
+    s = await status();
+    assert.equal(s.control.lookahead, 1);
+    // Follow the newest day again: the run goes on, a day at a time, to its last day.
+    await page.click('#btn-day-follow');
+    await until(async () => (await status())?.runner?.phase === 'done', 120000, 'the runner to finish');
+    await page.waitForFunction(
+      () => window.__observer.runnerInfo()?.chip.startsWith('RUNNER · finished at day 11'),
+      null,
+      {
+        timeout: 30000,
+      },
+    );
+    assert.deepEqual(errors, []);
+    observerProcess.kill();
+    await new Promise((resolve) => observerProcess.on('exit', resolve));
+    assert.ok(!output.includes(TOKEN));
+    // What the observer's runner saved is what `run` saves, and replays to the hash shown.
+    const replayed = await run(cli, ['replay', root, '--day', String(DAYS + 1)]);
+    assert.ok(replayed.stdout.includes(`(${hash})`), replayed.stdout);
+    await run(cli, ['verify', root]);
+    await run(cli, ['run', plain, '--days', '6']);
+    // The fixture is a format-1 run, whose saved days are gzipped with the time of saving, so
+    // records are compared by what they hold: the same days, states, hashes, events and councils.
+    assert.deepEqual(await journalContent(root), await journalContent(plain));
+  } finally {
+    await page.close();
+    observerProcess.kill();
   }
 });

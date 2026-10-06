@@ -114,9 +114,34 @@ export class ServerSource extends RunSource {
     return res.json();
   }
 
-  /** The server's status: days saved and ready, the history epoch, the people seen. */
+  /** The server's status: days saved and ready, the history epoch, the people seen, and the
+   * runner and its control when the observer started one. */
   async status() {
-    return this._json(`${this.api}/status`);
+    this.lastStatus = await this._json(`${this.api}/status`);
+    return this.lastStatus;
+  }
+
+  /** Whether the observer started a runner for this run (O4). */
+  get hasRunner() {
+    return Boolean(this.lastStatus?.runner);
+  }
+
+  /**
+   * Ask the runner to play or pause, change its lookahead, or say which day is shown.
+   * @param {{ paused?: boolean, lookahead?: number, shown?: number }} body
+   * @returns {Promise<object|null>} the runner and control state, or null without a runner
+   */
+  async control(body) {
+    const res = await this._checked(`${this.api}/control`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 409) return null;
+    if (!res.ok) throw new Error(`control: HTTP ${res.status}`);
+    const state = await res.json();
+    if (this.lastStatus) Object.assign(this.lastStatus, state);
+    return state;
   }
 
   /**
