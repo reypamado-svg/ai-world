@@ -84,6 +84,21 @@ export class RunSource {
     return best;
   }
 
+  /** Whether the export holds each civilization's perspective (O5, `--perspectives`). */
+  get hasPerspectives() {
+    return Boolean(this.manifest.perspectives);
+  }
+
+  /** What civilization number `civ` knows on a day: its council's report, as the server's
+   * perspective record (O5). */
+  async perspective(day, civ) {
+    if (!this.hasPerspectives) {
+      throw new Error('this export has no perspectives: export it with --perspectives');
+    }
+    const path = this._path('perspective', day).replace('{civ}', String(civ));
+    return JSON.parse(new TextDecoder().decode(await this.load(`${this.base}/${path}`)));
+  }
+
   /** A day's record: settlements, travellers, owners and counts. */
   async record(day) {
     return JSON.parse(new TextDecoder().decode(await this.load(`${this.base}/${this._path('day', day)}`)));

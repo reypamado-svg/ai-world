@@ -83,6 +83,16 @@ export class ServerSource extends RunSource {
     return record;
   }
 
+  /** The server serves every civilization's perspective (O5). */
+  get hasPerspectives() {
+    return true;
+  }
+
+  /** What civilization number `civ` knows on a day (O5), checked against the history. */
+  async perspective(day, civ) {
+    return this._json(`${this.base}/days/${day}/perspective/${civ}`);
+  }
+
   /** The day's parties on the road, with their routes. */
   async routes(day) {
     return this._json(`${this.base}/days/${day}/routes`);

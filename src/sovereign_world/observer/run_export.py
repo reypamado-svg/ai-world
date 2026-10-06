@@ -13,7 +13,9 @@ reads a run with `RunReader` (which never writes to it) and writes, under `--out
 - for each exported day, `days/dNNNNNN.json` (settlements with their houses, house work,
   institutions and residents; travellers by tile; tile owners; counts) and
   `days/dNNNNNN.people.bin.gz` (every living person as little-endian columns, one column
-  after another, in the order `people_layout` gives).
+  after another, in the order `people_layout` gives);
+- with `--perspectives`, also `days/dNNNNNN.perspective.K.json` for each civilization K: what
+  its council knows that day (O5), the same bytes the O3 server serves.
 
 The same run and options always write the same bytes. This is a stopgap until the O3 server
 serves the same data over HTTP.
@@ -31,7 +33,10 @@ from typing import Any
 
 import numpy as np
 
+from sovereign_world.commands import build_council_report
 from sovereign_world.config import RunManifest
+from sovereign_world.ids import EntityId
+from sovereign_world.observer.perspective import perspective_record
 from sovereign_world.observer.projection import AWAY, DUTIES, DayProjection, project_day
 from sovereign_world.observer.reader import RunReader
 from sovereign_world.observer.terrain_export import export_terrain_for
@@ -42,7 +47,8 @@ EXPORT_VERSION = 4
 3: walls also carry, where there are any, `tower_sections`, `gatehouses`, `ditch`, `stakes`
 and `citadel`; settlements carry their standing `defence` order.
 4: each day carries the `state_hash` the run saved for it, so a shown day can be checked
-against a replay of the run."""
+against a replay of the run. An export made with `perspectives` also has each civilization's
+perspective per day (O5), and says so in its manifest; without it, nothing changes."""
 PEOPLE_LAYOUT: tuple[tuple[str, str], ...] = (
     ("id", "<u4"),
     ("settlement", "<u2"),
@@ -134,9 +140,10 @@ def manifest_record(
     civilizations: tuple[str, ...],
     days: tuple[int, ...],
     saved: tuple[int, ...],
+    perspectives: bool = False,
 ) -> dict[str, Any]:
     """The export's manifest.json for these days of a run (the O3 server serves the same)."""
-    return {
+    record: dict[str, Any] = {
         "export_version": EXPORT_VERSION,
         "kind": "recorded run",
         "run_id": str(manifest.run_id),
@@ -165,6 +172,10 @@ def manifest_record(
             " stand inside a settlement, and their movement, are presentation."
         ),
     }
+    if perspectives:
+        record["perspectives"] = True
+        record["files"]["perspective"] = "days/d{day:06d}.perspective.{civ}.json"
+    return record
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -179,6 +190,7 @@ def export_run(
     days: tuple[int, ...] | None = None,
     replace: bool = False,
     chunk_tiles: int = 8,
+    perspectives: bool = False,
 ) -> RunExportSummary:
     """Export a recorded run's days for the observer; writes only under `out_dir`."""
     if stride < 1:
@@ -223,6 +235,12 @@ def export_run(
         blob = people_bytes(view, ids)
         (out_dir / "days" / f"d{day:06d}.people.bin.gz").write_bytes(blob)
         total += len(blob)
+        if perspectives:
+            state = reader.state_at(day)
+            for number, civilization_id in enumerate(view.civilizations):
+                report = build_council_report(state, EntityId(civilization_id))
+                path = out_dir / "days" / f"d{day:06d}.perspective.{number}.json"
+                total += _dump(path, perspective_record(report))
     ordered = sorted(numbers, key=numbers.__getitem__)
     total += _dump(out_dir / "ids.json", ordered)
     total += _dump(
@@ -234,6 +252,7 @@ def export_run(
             civilizations=civilizations,
             days=chosen,
             saved=saved,
+            perspectives=perspectives,
         ),
     )
     return RunExportSummary(out_dir=out_dir, days=chosen, people=len(ordered), bytes=total)
@@ -246,9 +265,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--days", type=str, default=None, help="comma-separated days")
     parser.add_argument("--replace", action="store_true")
+    parser.add_argument(
+        "--perspectives", action="store_true", help="also each civilization's view (O5)"
+    )
     args = parser.parse_args(argv)
     days = tuple(int(item) for item in args.days.split(",")) if args.days else None
-    summary = export_run(args.run, args.out, stride=args.stride, days=days, replace=args.replace)
+    summary = export_run(
+        args.run,
+        args.out,
+        stride=args.stride,
+        days=days,
+        replace=args.replace,
+        perspectives=args.perspectives,
+    )
     print(
         f"wrote {len(summary.days)} days, {summary.people} people,"
         f" {summary.bytes / 1e6:.1f} MB to {summary.out_dir}"

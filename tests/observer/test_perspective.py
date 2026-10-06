@@ -4,6 +4,7 @@ report says and nothing the civilization could not know."""
 from __future__ import annotations
 
 import inspect
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ from sovereign_world.ids import EntityId
 from sovereign_world.observer import perspective
 from sovereign_world.observer.perspective import perspective_record
 from sovereign_world.observer.reader import RunReader
-from sovereign_world.observer.run_export import encode_json
+from sovereign_world.observer.run_export import encode_json, export_run
 from sovereign_world.persistence import WorldStore
 from sovereign_world.replay import replay_run
 from sovereign_world.resources import Inventory
@@ -297,3 +298,27 @@ def test_the_service_builds_the_report_in_one_place() -> None:
     service = (SOURCE.parent / "service.py").read_text()
     assert service.count("build_council_report(") == 1
     assert "build_council_report" not in (SOURCE.parent / "server.py").read_text()
+
+
+# ------------------------------------------------------------------ the export (C2)
+def test_an_export_with_perspectives_has_the_servers_bytes(tmp_path: Path) -> None:
+    run = tmp_path / "old"
+    shutil.copytree(FIXTURE, run)
+    out = tmp_path / "export"
+    export_run(run, out, days=(0, 5), perspectives=True)
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["perspectives"] is True
+    pattern = manifest["files"]["perspective"]
+    assert pattern == "days/d{day:06d}.perspective.{civ}.json"
+    _, client = _served(run)
+    for day in (0, 5):
+        for number in range(len(manifest["civilizations"])):
+            written = (out / pattern.format(day=day, civ=number)).read_bytes()
+            served = client.get(f"/api/run/days/{day}/perspective/{number}", headers=AUTH)
+            assert written == served.content, (day, number)
+    # Without the flag the export is exactly as before.
+    plain = tmp_path / "plain"
+    export_run(run, plain, days=(0, 5))
+    manifest = json.loads((plain / "manifest.json").read_text())
+    assert "perspectives" not in manifest and "perspective" not in manifest["files"]
+    assert not list((plain / "days").glob("*.perspective.*"))
