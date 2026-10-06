@@ -219,3 +219,34 @@ def test_the_format_one_chronicle_matches_its_events(tmp_path: Path) -> None:
     assert [entry["kind"] for entry in entries] == [event.kind for event in events]
     assert [entry["sequence"] for entry in entries] == [event.sequence for event in events]
     assert all(entry["place"] is not None for entry in entries if not entry["routine"])
+
+
+def test_an_arrival_and_a_return_are_placed_where_the_party_stands_that_day() -> None:
+    """A finished journey stays in the record with its people where it ended, so arriving and
+    returning are placed from that day: the day before would be a tile short."""
+    from logistics_helpers import OneShotSovereign, clear_journey_id, treaty_world
+    from test_logistics import _shipment
+
+    from sovereign_world.engine import advance_day
+    from sovereign_world.rng import StableRng
+
+    state, sender, recipient, route = treaty_world()
+    order = _shipment(state, sender, recipient, route, journey_id=clear_journey_id("goods"))
+    sovereigns = {sender: OneShotSovereign(order)}
+    rng = StableRng(state.config.seed)
+    expected = {"shipment_arrived": route[-1], "shipment_returned": route[0]}
+    seen: dict[str, HexCoord] = {}
+    for _ in range(12):
+        before = state
+        result = advance_day(state, rng, sovereigns=sovereigns)
+        state = result.state
+        for event in result.events.events:
+            if event.kind not in expected:
+                continue
+            spot = place(event, PlaceIndex(state), PlaceIndex(before))
+            assert spot is not None and spot.as_of == TODAY, event.kind
+            seen[event.kind] = HexCoord(spot.q, spot.r)
+            # Without the rule, the day before puts the party a tile short.
+            earlier = PlaceIndex(before).find(str(event.subject_id))
+            assert earlier is not None and earlier[0] != expected[event.kind]
+    assert seen == expected

@@ -4,7 +4,9 @@
 // RunSource that asks the server instead of reading files: the manifest, the id table, each
 // day's record and people, and the run's terrain, all with the token. `refresh` asks what
 // is new: more days (and the ids they brought), or a new history when the run was cut back
-// or replaced, after which the page starts again.
+// or replaced, after which the page starts again. Every answer is checked against the
+// history epoch the source was opened under: a payload from another history (whose person
+// numbers mean other people) is refused with `HistoryChanged`, never shown.
 
 import { RunSource } from './run-source.js';
 import { TerrainSource } from './terrain-source.js';
@@ -31,6 +33,14 @@ export function applyChanges(before, changes) {
   };
 }
 
+/** An answer came from another history of the run than the one being shown. */
+export class HistoryChanged extends Error {
+  constructor() {
+    super('the run was cut back or replaced');
+    this.name = 'HistoryChanged';
+  }
+}
+
 export class ServerSource extends RunSource {
   /**
    * @param {string} api the server's API root, e.g. 'api'
@@ -39,22 +49,18 @@ export class ServerSource extends RunSource {
   static async open(api, { token, fetch: get } = {}) {
     const authed = authorisedFetch(token, get);
     const base = `${api}/run`;
-    const load = async (url) => {
-      const res = await authed(url);
-      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-      return new Uint8Array(await res.arrayBuffer());
-    };
     const res = await authed(`${base}/manifest`);
     if (!res.ok) throw new Error(`${base}/manifest: HTTP ${res.status}`);
     const manifest = await res.json();
     if (manifest.kind !== 'recorded run') throw new Error('the server is not serving a recorded run');
-    const source = new ServerSource(base, manifest, [], load);
+    // Day records and people files are read through the checked loader.
+    const source = new ServerSource(base, manifest, [], (url) => source._bytes(url));
     source.api = api;
     source.authed = authed;
     source.epoch = Number(res.headers.get(EPOCH) ?? manifest.history_epoch);
     source.label = `live run ${manifest.run_id.slice(0, 8)}`;
     source.live = true;
-    await source.refresh();
+    if ((await source.refresh()).reset) throw new HistoryChanged();
     return source;
   }
 
@@ -67,9 +73,7 @@ export class ServerSource extends RunSource {
     const held = this.held;
     let record;
     if (held && held.day !== day) {
-      const { body, epoch } = await this._json(`${this.base}/days/${day}/changes?from=${held.day}`);
-      if (epoch !== this.epoch) throw new Error('the run was cut back or replaced');
-      record = applyChanges(held, body);
+      record = applyChanges(held, await this._json(`${this.base}/days/${day}/changes?from=${held.day}`));
       this.byChanges = (this.byChanges ?? 0) + 1;
     } else {
       record = await super.record(day);
@@ -80,23 +84,38 @@ export class ServerSource extends RunSource {
 
   /** The day's parties on the road, with their routes. */
   async routes(day) {
-    return (await this._json(`${this.base}/days/${day}/routes`)).body;
+    return this._json(`${this.base}/days/${day}/routes`);
   }
 
   /** The run's own terrain, asked of the server with the token. */
   terrain() {
-    return TerrainSource.open(`${this.base}/terrain`, { fetch: this.authed });
+    return TerrainSource.open(`${this.base}/terrain`, { fetch: (url, init) => this._checked(url, init) });
+  }
+
+  /** A fetch with the token whose answer must belong to the history being shown. An answer
+   * without the header (a refusal or an error) is left to the caller's status check. */
+  async _checked(url, init) {
+    const res = await this.authed(url, init);
+    const seen = res.headers.get(EPOCH);
+    if (seen !== null && Number(seen) !== this.epoch) throw new HistoryChanged();
+    return res;
+  }
+
+  async _bytes(url) {
+    const res = await this._checked(url);
+    if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+    return new Uint8Array(await res.arrayBuffer());
   }
 
   async _json(path) {
-    const res = await this.authed(path);
+    const res = await this._checked(path);
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
-    return { body: await res.json(), epoch: Number(res.headers.get(EPOCH)) };
+    return res.json();
   }
 
   /** The server's status: days saved and ready, the history epoch, the people seen. */
   async status() {
-    return (await this._json(`${this.api}/status`)).body;
+    return this._json(`${this.api}/status`);
   }
 
   /**
@@ -105,21 +124,25 @@ export class ServerSource extends RunSource {
    *   run's history changed: the page must start again.
    */
   async refresh() {
-    const status = await this.status();
-    if (status.history_epoch !== this.epoch) return { reset: true, added: [], status };
-    if (status.ready === this.days.length && status.people === this.ids.length) {
-      return { reset: false, added: [], status };
+    try {
+      const status = await this.status();
+      if (status.history_epoch !== this.epoch) return { reset: true, added: [], status };
+      if (status.ready === this.days.length && status.people === this.ids.length) {
+        return { reset: false, added: [], status };
+      }
+      const days = await this._json(`${this.base}/days`);
+      // Ids only grow while the history stays the same: ask for the ones not yet held.
+      const ids = await this._json(`${this.base}/ids?from=${this.ids.length}`);
+      this.ids.push(...ids);
+      const known = new Set(this.days);
+      const added = days.filter((day) => !known.has(day));
+      this.days = days;
+      this.manifest.days = days;
+      return { reset: false, added, status };
+    } catch (err) {
+      if (err instanceof HistoryChanged) return { reset: true, added: [], status: null };
+      throw err;
     }
-    const days = await this._json(`${this.base}/days`);
-    // Ids only grow while the history stays the same: ask for the ones not yet held.
-    const ids = await this._json(`${this.base}/ids?from=${this.ids.length}`);
-    if (days.epoch !== this.epoch || ids.epoch !== this.epoch) return { reset: true, added: [], status };
-    this.ids.push(...ids.body);
-    const known = new Set(this.days);
-    const added = days.body.filter((day) => !known.has(day));
-    this.days = days.body;
-    this.manifest.days = days.body;
-    return { reset: false, added, status };
   }
 
   /** The newest ready day, or null before the first is ready. */
@@ -129,6 +152,6 @@ export class ServerSource extends RunSource {
 
   /** A saved day's events, each with its place on the map (or none). */
   async chronicle(day) {
-    return (await this._json(`${this.base}/chronicle?day=${day}`)).body;
+    return this._json(`${this.base}/chronicle?day=${day}`);
   }
 }

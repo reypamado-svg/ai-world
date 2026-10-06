@@ -38,8 +38,8 @@ import { syntheticPopulation } from './data/synthetic/people.js';
 import { CrowdLayout, plansFor } from './world/settlement-plan.js';
 import { VILLAGE_RADIUS_M } from './data/sample/village.js';
 import { RunSource } from './data/run-source.js';
-import { ServerSource } from './data/server-source.js';
-import { tokenFromLocation } from './data/auth.js';
+import { HistoryChanged, ServerSource } from './data/server-source.js';
+import { takeTokenFromLocation } from './data/auth.js';
 import { ChroniclePanel } from './ui/chronicle.js';
 import { APPEARANCE_COUNT } from './render/art/paint/people.js';
 
@@ -54,6 +54,21 @@ const RUN = params.get('run');
 const LIVE = RUN === 'live';
 const RUN_BASE = RUN && !LIVE && (RUN.includes('/') ? RUN : `data/runs/${RUN}`);
 const LIVE_POLL_MS = 1000;
+// The live server's token: read from the fragment once and dropped from the address at once,
+// so only this page's memory holds it.
+const LIVE_TOKEN = LIVE ? takeTokenFromLocation() : null;
+
+/** Open the live run afresh after its history changed: the newest day, with the token in
+ * the fragment again. The entry is replaced in place, not added, and the reloaded page
+ * drops the token from it at once. (Navigating to an address that differs only in its
+ * fragment would not reload, hence `replaceState` and `reload`.) */
+function reopenLive() {
+  const url = new URL(location.href);
+  url.searchParams.delete('day');
+  url.hash = LIVE_TOKEN ? `token=${LIVE_TOKEN}` : '';
+  history.replaceState(null, '', url);
+  location.reload();
+}
 // ?measure=auto: after loading, tour each band for TOUR_S seconds and show a copyable table (S7).
 const AUTO_MEASURE = params.get('measure') === 'auto';
 const TOUR_S = Math.max(1, Number(params.get('tourSeconds') ?? 10) || 10);
@@ -307,19 +322,13 @@ class ObserverApp {
         const news = await run.refresh();
         this.liveState.polls += 1;
         this.liveState.error = null;
-        if (news.reset) {
-          this.liveState.reset = true;
-          setStatus('The run was cut back or replaced: starting again');
-          $('loading').hidden = false;
-          clearInterval(this.livePoll);
-          location.reload();
-          return;
-        }
+        if (news.reset) return this.startAgain();
         if (news.added.length && this.followLatest && run.latest !== this.population.day) {
           await this.loadDay(run.latest);
         }
         this.showLiveChip();
       } catch (err) {
+        if (err instanceof HistoryChanged) return this.startAgain();
         this.liveState.error = String(err.message ?? err);
         this.showLiveChip();
       } finally {
@@ -327,6 +336,21 @@ class ObserverApp {
       }
     };
     this.livePoll = setInterval(poll, LIVE_POLL_MS);
+  }
+
+  /** The run was cut back or replaced: what is shown belongs to another history. */
+  startAgain() {
+    if (this.liveState) this.liveState.reset = true;
+    clearInterval(this.livePoll);
+    setStatus('The run was cut back or replaced: starting again');
+    $('loading').hidden = false;
+    reopenLive();
+  }
+
+  /** A live answer failed: a new history starts the page again; anything else is shown. */
+  liveError(err) {
+    if (err instanceof HistoryChanged) return this.startAgain();
+    if (this.liveState) this.liveState.error = String(err.message ?? err);
   }
 
   /** The chronicle panel (live runs: the server places each event on the map). */
@@ -382,7 +406,14 @@ class ObserverApp {
 
   /** Load another exported day; the camera stays where it is. */
   async loadDay(day) {
-    const loaded = await this.runSource.day(this.runSource.nearestDay(day));
+    let loaded;
+    try {
+      loaded = await this.runSource.day(this.runSource.nearestDay(day));
+    } catch (err) {
+      if (!(err instanceof HistoryChanged)) throw err;
+      this.startAgain();
+      return null;
+    }
     this.showDay(populationOf(loaded, this.R));
     const url = new URL(location.href);
     url.searchParams.set('day', String(loaded.day));
@@ -403,9 +434,7 @@ class ObserverApp {
     });
     $('day-label').textContent = `Engine day ${population.day}`;
     this.inspector?.render();
-    this.loadChronicle?.(population.day).catch((err) => {
-      if (this.liveState) this.liveState.error = String(err.message ?? err);
-    });
+    this.loadChronicle?.(population.day).catch((err) => this.liveError(err));
     if (this.runSource?.routes) {
       const day = population.day;
       this.runSource
@@ -413,9 +442,7 @@ class ObserverApp {
         .then((routes) => {
           if (this.population.day === day) this.runOverlays.setRoutes(routes);
         })
-        .catch((err) => {
-          if (this.liveState) this.liveState.error = String(err.message ?? err);
-        });
+        .catch((err) => this.liveError(err));
     }
   }
 
@@ -1288,11 +1315,11 @@ async function main() {
     let run;
     if (LIVE) {
       setStatus('Connecting to the observer server');
-      run = await ServerSource.open('api', { token: tokenFromLocation() });
+      run = await ServerSource.open('api', { token: LIVE_TOKEN });
       while (run.latest === null) {
         setStatus('Waiting for the run’s first day');
         await new Promise((resolve) => setTimeout(resolve, LIVE_POLL_MS));
-        if ((await run.refresh()).reset) location.reload();
+        if ((await run.refresh()).reset) throw new HistoryChanged();
       }
     } else {
       setStatus('Loading the recorded run');
@@ -1362,6 +1389,8 @@ async function main() {
 }
 
 main().catch((err) => {
+  // The run changed history while the page was opening: open it again.
+  if (err instanceof HistoryChanged) return reopenLive();
   console.error(err);
   setStatus(`Failed: ${err.message}`);
   window.__observerError = String(err && err.stack ? err.stack : err);

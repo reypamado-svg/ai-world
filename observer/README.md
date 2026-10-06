@@ -106,9 +106,12 @@ uv pip install --python .venv/bin/python -e ".[observer]"     # FastAPI and uvic
 It prints an address such as `http://127.0.0.1:8766/?run=live#token=…`; open it. The
 token is made fresh each time the server starts (or taken from
 `SOVEREIGN_WORLD_OBSERVER_TOKEN` in the server's own environment, in which case add
-`#token=…` to the address yourself). The part after `#` never leaves the browser; the page
-sends the token only in an `Authorization` header, and no file or log holds it. Every
-`/api` address needs it; the page's own code does not. Recorded exports under
+`#token=…` to the address yourself). The part after `#` is never sent to the server, and
+the page reads the token from it once and then removes it from the address, so neither the
+address bar, the history nor a restored session keeps it: it is held in the page's memory and
+sent only in an `Authorization` header, and no file or log holds it. Reloading the page (F5)
+therefore asks for the token again: open the printed address once more. Every `/api` address
+needs the token; the page's own code does not. Recorded exports under
 `data/runs/` and the browser tests are not served.
 
 - The server only reads the run, exactly as the export does, and its answers are byte for
@@ -116,7 +119,8 @@ sends the token only in an `Authorization` header, and no file or log holds it. 
 runs/baseline-21 --days 30`): new days appear within about two seconds.
 - **LIVE RUN · following** shows the newest day as it is saved; stepping back with **‹**
   pauses following, and **Follow latest** resumes it. If the run is cut back or replaced,
-  the page starts again.
+  the page starts again with its token; an answer from the run's other history is never
+  shown.
 - **Chronicle** lists the shown day's events in plain sentences, each with where the
   record puts it (the event's own tile, or the tile of the person, settlement, party or
   battle it names, that day or the day before; a civilization's events at its capital).
@@ -223,8 +227,9 @@ node tests/capture-geography.mjs captures              # terrain stills: world, 
 | `crowd.test.mjs`           | At 5,000 and 50,000 people: counts in every band, the crowd budget, 200 people picked exactly, following, cell lists, heap and update time                        |
 | `budgets.test.mjs`         | Caps from the screen size; the observer at 3840 × 2160 and 1280 × 720 stays within them and recomputes them on resize                                             |
 | `tour.test.mjs`            | The measurement tour holds the camera against wheel, drag and buttons, labels each row with the band it measured, records evictions, heap and load times          |
-| `server.test.mjs`          | Live server: wrong token refused, newest day, Follow latest, a later day within 5 s, run unchanged, chronicle Go/Follow, travellers                               |
+| `server.test.mjs`          | Live server: wrong token, newest day, Follow latest, later day in 5 s, run unchanged, Go/Follow, travellers, cut-back restart                                     |
 | `chronicle.test.mjs`       | Chronicle sentences with observer-assigned names, how each place was found, routine events hidden, the person an event names                                      |
+| `server-source.test.mjs`   | Live source: answers from another history refused (also a record and people from two), the token dropped from the address                                         |
 
 ## Layout
 

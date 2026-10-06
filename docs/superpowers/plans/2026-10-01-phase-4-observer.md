@@ -537,7 +537,7 @@ Planned with Fable 5.1 after the base defence slices. The user asked to "Start O
   - When the history epoch changes, every cache is dropped and the walk starts again.
 - **The token** is checked by one router-level dependency on `/api`, so no API route can be added without it.
   - It is made fresh per process with `secrets.token_urlsafe(32)`, or taken from `SOVEREIGN_WORLD_OBSERVER_TOKEN`.
-  - It is printed once, in the address's fragment (`#token=…`), which browsers never send.
+  - It is printed once, in the address's fragment (`#token=…`), which browsers never send. The page reads it once and drops it from the address (after Codex's fourth review), so it lives only in the page's memory; a reload asks for the printed address again.
   - It travels only as `Authorization: Bearer`.
   - It is never written to a file. When it comes from the environment, it is not printed at all.
 - **Static files.** The page and its code are served without the token. `data/runs/` and `tests/` are refused.
@@ -567,7 +567,7 @@ A day not yet walked answers 409.
    - A journey or expedition is placed where its first traveller stood, or else where its route had reached.
    - A storehouse, institution or piece of work is placed at its settlement or site.
    - A civilization is placed at its capital, and tagged so.
-3. **The day before.** Events that end something (a death, a return, a fall) look first in the world as saved the day before.
+3. **The day before.** Events that end something (a death, a fall, an elimination) look first in the world as saved the day before. A party that arrives, returns or leaves a site still stands in the day's record (finished journeys stay in it), so it is placed from that day.
 4. **The other day.** When the first day looked at lacks the id, the other day is tried, and the place says which day it came from.
 5. Otherwise the event is not placed.
 
@@ -586,7 +586,7 @@ In a recorded war:
 - **Live chip.** It reads LIVE RUN · following (or paused) · N days.
   - Every second the page asks for new days and follows the newest.
   - Stepping back pauses following; **Follow latest** resumes it.
-  - A new history reloads the page.
+  - A new history, or any answer from another history, starts the page again with its token: every answer's `X-History-Epoch` is checked.
   - A wrong token stops loading with "The observer server refused the token (401)".
 - **Chronicle panel.** The shown day's events in plain sentences, with observer-assigned names and how each was placed.
   - **Go** moves the camera to the event's tile.

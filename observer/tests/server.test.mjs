@@ -4,7 +4,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
-import { cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -114,6 +114,8 @@ test('a live run opens on its newest day, steps, and follows days saved later', 
     assert.equal(await page.evaluate(() => window.__observer.runInfo().day), DAYS);
     // The token stays in the fragment: never in the query, which the server would see.
     assert.ok(!(await page.evaluate(() => location.search)).includes(TOKEN));
+    // Read once, the token leaves the address: not in the bar, the history or a restored session.
+    assert.equal(await page.evaluate(() => location.hash), '');
     // Step back: following stops; the day is the engine's.
     const info = await page.evaluate(async () => {
       const o = window.__observer;
@@ -249,16 +251,18 @@ test('travellers on the road can be picked, and their route is drawn', async () 
     assert.match(shown.title, new RegExp(`travelling on tile ${shown.tile[0]},${shown.tile[1]}`));
     assert.ok(shown.overlays.routesShown >= 1, JSON.stringify(shown.overlays));
     // Stepping a day rebuilds its record from the changes since the day shown.
-    const stepped = await page.evaluate(async (d) => {
-      const o = window.__observer;
-      await o.loadDay(d + 1);
-      const token = new URLSearchParams(location.hash.slice(1)).get('token');
-      const full = await (
-        await fetch(`/api/run/days/${d + 1}`, { headers: { Authorization: `Bearer ${token}` } })
-      ).json();
-      const info = o.runInfo();
-      return { byChanges: o.recordsByChanges(), counts: info.counts, residents: info.residents, full };
-    }, day);
+    const stepped = await page.evaluate(
+      async ({ d, token }) => {
+        const o = window.__observer;
+        await o.loadDay(d + 1);
+        const full = await (
+          await fetch(`/api/run/days/${d + 1}`, { headers: { Authorization: `Bearer ${token}` } })
+        ).json();
+        const info = o.runInfo();
+        return { byChanges: o.recordsByChanges(), counts: info.counts, residents: info.residents, full };
+      },
+      { d: day, token: TOKEN },
+    );
     assert.ok(stepped.byChanges >= 1);
     assert.deepEqual(stepped.counts, stepped.full.counts);
     assert.deepEqual(
@@ -269,5 +273,41 @@ test('travellers on the road can be picked, and their route is drawn', async () 
   } finally {
     await page.close();
     second.kill();
+  }
+});
+
+test('a run cut back while the page is open starts the page again, with its token', async () => {
+  const page = await browser.newPage({ viewport: { width: 1024, height: 640 }, deviceScaleFactor: 1 });
+  try {
+    const errors = await open(page, TOKEN);
+    assert.equal(await page.evaluate(() => window.__observerError ?? null), null);
+    const before = await page.evaluate(() => window.__observer.liveInfo().latest);
+    assert.ok(before > 2);
+    // Cut the run's journal back to day 2: a new history, whose people may be numbered anew.
+    const journal = join(dir, 'run', 'journal.jsonl');
+    const lines = (await readFile(journal, 'utf8')).split(/(?<=\n)/);
+    const keep = lines.findIndex((line) => line.includes('"type":"transition"') && line.includes('"day":2,'));
+    assert.ok(keep > 0);
+    await writeFile(journal, lines.slice(0, keep + 1).join(''));
+    await page.waitForFunction(() => window.__observer?.ready && window.__observer.liveInfo()?.latest === 2, null, {
+      timeout: 60000,
+    });
+    const after = await page.evaluate(() => ({
+      hash: location.hash,
+      search: location.search,
+      day: window.__observer.runInfo().day,
+      live: window.__observer.liveInfo(),
+    }));
+    assert.equal(after.hash, '');
+    assert.ok(!after.search.includes('day='), after.search);
+    assert.equal(after.day, 2);
+    assert.equal(after.live.following, true);
+    assert.deepEqual(errors, []);
+    // A reload has no token left: the page says to open the printed address again.
+    await page.reload();
+    await page.waitForFunction(() => window.__observerError, null, { timeout: 60000 });
+    assert.match(await page.locator('#loading-status').textContent(), /needs its token/);
+  } finally {
+    await page.close();
   }
 });

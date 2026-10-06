@@ -5,8 +5,9 @@
 Every `/api` route sits behind one router-level check of `Authorization: Bearer <token>`,
 so no route can be added without it. The token comes from the observer's own environment
 (`SOVEREIGN_WORLD_OBSERVER_TOKEN`) or is made fresh for each process; it is never written to
-a file, and it travels only in that header (the browser keeps it in the page address's
-fragment, which is never sent). The runner and the sovereigns never see it.
+a file, and it travels only in that header (the browser reads it once from the page
+address's fragment, which is never sent, and drops it from the address). The runner and
+the sovereigns never see it.
 
 The observer's own page and code are served without the token, but not the static run
 exports under `data/runs` or the browser tests.

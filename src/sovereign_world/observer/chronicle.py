@@ -10,7 +10,8 @@ An event is placed by the first of these that finds a tile:
    a storehouse, institution or piece of work at its settlement or work site; a civilization
    at its capital (tagged so);
 3. the same, in the world as saved the day before, for events that end something (a death,
-   a return, a fall), whose subject may be gone by the evening;
+   a fall, an elimination), whose subject may be gone by the evening; a party that arrives
+   or returns still stands in the day's record, so it is placed from that day;
 4. otherwise the event is not placed.
 
 When the world of the day a rule first looks at lacks the id, the other day is tried, and
@@ -48,8 +49,6 @@ ROUTINE = frozenset(
 """Bookkeeping, hidden by default: true and recorded, but not news."""
 ENDING_SUFFIXES = (
     "_died",
-    "_returned",
-    "_arrived",
     "_ended",
     "_lifted",
     "_fell",
@@ -59,10 +58,10 @@ ENDING_SUFFIXES = (
     "_eliminated",
     "_destroyed",
     "_spent",
-    "_exhausted",
-    "_left_site",
 )
-"""Kinds that end something: placed first from the world of the day before."""
+"""Kinds that end something: placed first from the world of the day before. A party that
+arrives, returns, leaves a site or runs out of provisions is not among them: journeys and
+expeditions stay in the record when they finish, standing where they ended that day."""
 PAYLOAD_IDS = ("settlement", "battle")
 
 TODAY = "that day"
