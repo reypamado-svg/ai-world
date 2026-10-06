@@ -277,7 +277,12 @@ def perspective_record(report: CouncilReport) -> dict[str, Any]:
     settlements = _settlements(report)
     parties = _parties(report)
     at_home = sum(row["residents"] for row in settlements)
-    away = sum(party["people"] for party in parties if party["civilization"] == str(own))
+    # Its people the council knows of, wherever they are; those at no settlement are away (the
+    # report lists only some of its journeys, so they are not counted party by party). The
+    # residents include captives held there, as the council counts them, so with captives at
+    # home at_home + away exceeds living by that many: the report cannot tell them apart.
+    living = at_home if population is None else population.living
+    away = max(0, living - at_home)
     return {
         "perspective_version": PERSPECTIVE_VERSION,
         "day": report.day,
@@ -414,5 +419,5 @@ def perspective_record(report: CouncilReport) -> dict[str, Any]:
         ),
         "travellers": _travellers(parties),
         "news": _news(report),
-        "counts": {"living": at_home + away, "at_home": at_home, "away": away},
+        "counts": {"living": living, "at_home": at_home, "away": away},
     }

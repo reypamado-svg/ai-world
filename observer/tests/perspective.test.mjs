@@ -13,7 +13,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
-import { councilDay, describeNews, perspectiveDay } from '../src/data/perspective-source.js';
+import { councilDay, describeNews, perspectiveDay, perspectiveDayFor } from '../src/data/perspective-source.js';
+import { FOG_ALPHA, PerspectiveLayer, fogCorners, veilAlpha } from '../src/render/perspective-layer.js';
+import { hexCentre, hexCorners } from '../src/world/hex.js';
 import { DUTIES } from '../src/data/population.js';
 import { RunSource } from '../src/data/run-source.js';
 
@@ -148,6 +150,95 @@ test('council news reads as plain sentences', () => {
   );
   assert.equal(describeNews({ kind: 'crisis', text: 'War was declared.' }), 'War was declared.');
   assert.match(describeNews({ kind: 'treaty', treaty: 'trade', counterparty: CIVS[0] }), /trade treaty with/);
+});
+
+test('at its last council loads the council day only when the export holds it', () => {
+  // A stride-7 export: day 35's council (day 30) is not in it, so day 35 stands in, not day 28.
+  assert.deepEqual(perspectiveDayFor(35, [0, 7, 14, 21, 28, 35], 'council'), { day: 35, councilMissing: true });
+  assert.deepEqual(perspectiveDayFor(45, [0, 30, 45], 'council'), { day: 30, councilMissing: false });
+  assert.deepEqual(perspectiveDayFor(30, [0, 30], 'council'), { day: 30, councilMissing: false });
+  assert.deepEqual(perspectiveDayFor(45, [0, 30, 45], 'shown'), { day: 45, councilMissing: false });
+});
+
+test('fog is opaque and its hexes overlap their neighbours', () => {
+  assert.equal(FOG_ALPHA, 1);
+  const R = 10;
+  const c = hexCentre(3, 2, R);
+  const plain = hexCorners(3, 2, R);
+  fogCorners(3, 2, R).forEach((p, k) => {
+    const ratio = Math.hypot(p.x - c.x, p.y - c.y) / Math.hypot(plain[k].x - c.x, plain[k].y - c.y);
+    assert.ok(Math.abs(ratio - 1.03) < 1e-9, String(ratio));
+  });
+});
+
+test('the perspective layer covers unknown tiles opaquely and veils old sightings', () => {
+  // A stand-in for PIXI that records what is filled.
+  const fills = [];
+  class Container {
+    constructor() {
+      this.children = [];
+      this.visible = true;
+      this.position = { set() {} };
+      this.scale = { set() {} };
+    }
+    addChild(...items) {
+      this.children.push(...items);
+    }
+    removeChildren() {
+      const out = this.children;
+      this.children = [];
+      return out;
+    }
+    destroy() {}
+  }
+  class Graphics extends Container {
+    poly() {
+      return this;
+    }
+    rect() {
+      return this;
+    }
+    circle() {
+      return this;
+    }
+    moveTo() {
+      return this;
+    }
+    lineTo() {
+      return this;
+    }
+    stroke() {
+      return this;
+    }
+    fill(style) {
+      fills.push(style);
+      return this;
+    }
+  }
+  class Text extends Container {}
+  const layer = new PerspectiveLayer({ Container, Graphics, Text }, 10, {
+    width: 3,
+    height: 3,
+    chunkTiles: 8,
+    labelZoom: 1,
+  });
+  const empty = { foreign_settlements: [], ruins: [], sites: [], roads: [], bridges: [], tolls: [], garrisons: [] };
+  layer.setDay(
+    { ...empty, known_tiles: [[0, 0]], tile_dates: [[1, 1, 0, null]] },
+    { shownDay: 5, civilizations: ['c'] },
+  );
+  const fog = fills.filter((f) => f.color === 0x0b0d10);
+  assert.equal(fog.length, 7);
+  assert.ok(fog.every((f) => f.alpha === 1));
+  const veils = fills.filter((f) => f.color !== 0x0b0d10);
+  // The known tile with no date gets the fixed veil; the one seen on day 0 is veiled by age.
+  assert.deepEqual(veils, [
+    { color: 0x8a8f96, alpha: veilAlpha(null, 5) },
+    { color: 0x8a8f96, alpha: veilAlpha(0, 5) },
+  ]);
+  assert.equal(layer.counts().fogTiles, 7);
+  assert.equal(layer.counts().staleTiles, 2);
+  assert.equal(layer.counts().known, 2);
 });
 
 test('an export made without perspectives says so', async () => {
@@ -311,6 +402,33 @@ test('the page sees the world as one civilization, and back', async () => {
     assert.equal(info.councilButton, false);
     assert.equal(back.residents.length, world.run.residents.length);
     assert.deepEqual(back.drawnResidents, back.residents);
+
+    // A world answer still in flight when the day is seen as a civilization is dropped: day 1's
+    // world routes (with the first civilization's war party) and chronicle answer late.
+    const dayOne = await ask('/api/run/days/1/routes');
+    assert.ok(dayOne.parties.some((party) => party.civilization === 0));
+    const late = (url) => /\/days\/1\/routes$|chronicle\?day=1$/.test(url.href);
+    await page.route(late, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await route.continue();
+    });
+    await page.evaluate(async () => {
+      const o = window.__observer;
+      o.setPerspectiveAsOf('shown');
+      await o.loadDay(1);
+      await o.setPerspective(1);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    info = await page.evaluate(() => window.__observer.perspectiveInfo());
+    assert.equal(info.perspectiveDay, 1);
+    assert.ok(
+      info.overlayParties.every((civ) => civ === 1),
+      'only its own parties survive the late world answer',
+    );
+    assert.equal(info.overlayParties.length, info.parties);
+    assert.notEqual((await page.evaluate(() => window.__observer.chronicleInfo()))?.day, 1);
+    await page.unroute(late);
+    await page.evaluate(() => window.__observer.setPerspective(null));
     assert.deepEqual(errors, []);
     // Nothing was written to the run.
     assert.deepEqual(await files(war), pristine);

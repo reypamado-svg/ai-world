@@ -22,13 +22,14 @@ from sovereign_world.endings import Ruin
 from sovereign_world.engine import _end_treaty
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
+from sovereign_world.logistics import Journey, JourneyKind
 from sovereign_world.observer import perspective
 from sovereign_world.observer.perspective import perspective_record
 from sovereign_world.observer.reader import RunReader
 from sovereign_world.observer.run_export import encode_json, export_run
 from sovereign_world.persistence import WorldStore
 from sovereign_world.replay import replay_run
-from sovereign_world.resources import Inventory
+from sovereign_world.resources import Inventory, Resource
 from sovereign_world.state import WorldState
 from sovereign_world.war import Siege
 
@@ -94,6 +95,10 @@ def test_the_record_says_what_the_report_says(war: Path) -> None:
         for row in record["settlements"]:
             assert row["residents"] == report.population.residents.get(EntityId(row["id"]), 0)
         assert record["counts"]["at_home"] == sum(report.population.residents.values())
+        assert record["counts"]["living"] == report.population.living
+        assert record["counts"]["away"] == max(
+            0, report.population.living - record["counts"]["at_home"]
+        )
         assert len(record["foreign_settlements"]) == len(report.contacts)
         assert {(c["q"], c["r"]) for c in record["foreign_settlements"]} == {
             (c.settlement.q, c.settlement.r) for c in report.contacts
@@ -141,6 +146,36 @@ def test_an_old_rules_report_serializes(tmp_path: Path) -> None:
         for row in record["settlements"]:
             assert row["houses"] == {} and row["rank"] == "village"
             assert "plan" not in row and "walls" not in row
+
+
+def test_counts_follow_the_summary_with_a_party_the_report_does_not_list() -> None:
+    """People on a journey the report does not list (a shipment) are still among its living,
+    and away."""
+    state, home, rival, route = treaty_world(distance=4)
+    carriers = state.civilizations[home].population.living_ids[:2]
+    state.journeys = (
+        Journey(
+            journey_id=EntityId("journey:stone"),
+            kind=JourneyKind.SHIPMENT,
+            treaty_id=EntityId("treaty:trade"),
+            sender_civilization_id=home,
+            recipient_civilization_id=rival,
+            traveller_ids=tuple(carriers),
+            route=route,
+            cargo={Resource.STONE: 20},
+            departed_day=0,
+            route_index=1,
+        ),
+    )
+    report = build_council_report(state, home)
+    record = perspective_record(report)
+    assert report.population is not None
+    assert record["parties"] == []  # a shipment is not among the parties the report lists
+    assert record["counts"] == {
+        "living": report.population.living,
+        "at_home": sum(report.population.residents.values()),
+        "away": 2,
+    }
 
 
 def test_the_record_follows_the_reports_own_knowledge(war: Path) -> None:

@@ -171,7 +171,8 @@ on the server from that civilization's council report alone, the same report its
 reads (rebuilt for any saved day with the engine's own call), so it holds nothing that
 civilization could not know. The camera stays where it is.
 
-- **Fog** covers every tile it has never seen; tiles it has not seen lately are veiled,
+- **Fog** covers every tile it has never seen, opaque: nothing of the ground, trees or rivers
+  there shows through. Tiles it has not seen lately are veiled,
   darker the longer ago. The minimap is fogged the same way.
 - Its own settlements are drawn with their houses, plans and walls, and its people as its
   council counts them: the notable people its report names (with their duty and skills), the
@@ -183,7 +184,9 @@ civilization could not know. The camera stays where it is.
   know); **Council news** lists its council's own records instead: its battles, notices,
   caught spies, spy reports, delivered messages, treaties and what struck it.
 - **on the day shown / at its last council**: what the council knows on the shown day, or as
-  of its last council (day 0 and every 30th day), which is what its council actually read.
+  of its last council (day 0 and every 30th day), which is what its council actually read. In
+  a static export that does not hold that council day (one made with `--stride`), the shown
+  day stands in and the chip says so.
 - `?civ=K` opens the page seen as civilization number K.
 - A static export has perspectives only when made with
   `python -m sovereign_world.observer.run_export RUN --out … --perspectives` (one small

@@ -19,6 +19,15 @@ export function councilDay(day) {
   return day - (day % COUNCIL_DAYS);
 }
 
+/** Which day's perspective to show for `day`: the day itself, or with asOf 'council' its last
+ * council day when the export holds that day. `councilMissing` says it does not, so the shown
+ * day stands in (a static export made with a stride may skip council days). */
+export function perspectiveDayFor(day, days, asOf) {
+  if (asOf !== 'council') return { day, councilMissing: false };
+  const council = councilDay(day);
+  return days.includes(council) ? { day: council, councilMissing: false } : { day, councilMissing: true };
+}
+
 /** A PeopleFrame whose rows are the council's count of its people: the named ones carry what
  * the report says of them; the others say they are counted, not identified. */
 class CouncilFrame extends PeopleFrame {

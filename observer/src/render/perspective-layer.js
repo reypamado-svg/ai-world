@@ -13,7 +13,11 @@ import { civilizationLabel } from '../data/naming.js';
 import { CIV_COLORS } from './art/registry.js';
 
 const FOG = 0x0b0d10;
-const FOG_ALPHA = 0.94;
+/** Unknown tiles are covered completely: nothing of the ground, trees or rivers there shows. */
+export const FOG_ALPHA = 1;
+/** Fog hexes are drawn this fraction of R larger, so antialiased seams between neighbouring
+ * fog tiles cannot show the ground. */
+const FOG_BLEED = 0.03;
 const VEIL = 0x8a8f96;
 const UNDATED_ALPHA = 0.3;
 const SITE_STYLE = {
@@ -22,6 +26,17 @@ const SITE_STYLE = {
   ancient_ruin: { label: 'ancient ruin', color: 0xb08a5a },
   trove: { label: 'trove', color: 0xe9b44c },
 };
+
+/** A fog tile's corners, pushed FOG_BLEED of R out from its centre on the ground plane:
+ * opaque neighbours overlap, so no antialiased seam shows the ground. Veils stay exact
+ * (overlapping veils would darken twice). */
+export function fogCorners(q, r, R) {
+  const c = hexCentre(q, r, R);
+  return hexCorners(q, r, R).map((p) => ({
+    x: c.x + (p.x - c.x) * (1 + FOG_BLEED),
+    y: c.y + (p.y - c.y) * (1 + FOG_BLEED),
+  }));
+}
 
 /** How strongly a known tile is veiled: not at all when seen today, more the older the
  * sighting (0.12 a day ago to 0.45 a year or more ago); a fixed veil when undated. */
@@ -91,7 +106,7 @@ export class PerspectiveLayer {
         const { cq, cr } = chunkOf(q, r, this.chunkTiles);
         const id = `${cq},${cr}`;
         if (!groups.has(id)) groups.set(id, []);
-        groups.get(id).push([q, r, alpha]);
+        groups.get(id).push([q, r, alpha, !known.has(key)]);
       }
     }
     for (const tiles of groups.values()) {
@@ -99,12 +114,12 @@ export class PerspectiveLayer {
       const a = hexCentre(tiles[0][0], tiles[0][1], R);
       const anchor = project(a.x, a.y);
       g.position.set(anchor.x, anchor.y);
-      for (const [q, r, alpha] of tiles) {
-        const points = hexCorners(q, r, R).flatMap((c) => {
+      for (const [q, r, alpha, fog] of tiles) {
+        const points = (fog ? fogCorners(q, r, R) : hexCorners(q, r, R)).flatMap((c) => {
           const p = project(c.x, c.y);
           return [p.x - anchor.x, p.y - anchor.y];
         });
-        g.poly(points).fill({ color: alpha === FOG_ALPHA ? FOG : VEIL, alpha });
+        g.poly(points).fill({ color: fog ? FOG : VEIL, alpha });
       }
       this.ground.addChild(g);
     }

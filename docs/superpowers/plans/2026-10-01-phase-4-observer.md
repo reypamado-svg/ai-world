@@ -729,6 +729,7 @@ Planned with Fable 5.1 after O4. The user asked "What's next?" and chose "Start 
 - its people: the population summary and the notable people (at most 40) with age, sex, health, duty and skills;
 - the foreign settlements it has met (its contacts, with first and last seen days), ruins, sites (what is left as last seen), roads, bridges, toll posts and garrisons it knows of, each with its as-of day;
 - the borders it knows, its own parties out (spies, couriers, extraction parties, and petitioners at its gates), sieges and wars it knows of;
+- its count of its people: living from the population summary, at home the sum of residents (captives held there included, as the council counts them), away the difference (review fix: the per-party sum missed journeys the report does not list);
 - its council's news, newest first, at most 60: battles it fought, notices, caught spies, spy reports, delivered messages, treaties, and what struck it.
 
 Not included: stores, research, drills and decrees (council economics, not drawn), rivers (the terrain draws them; fog hides unknown ones), and what a ruin still holds.
@@ -739,12 +740,12 @@ Not included: stores, research, drills and decrees (council economics, not drawn
 
 **The page.**
 - **See as.** A small bar under the top bar holds the perspective chip and the picker: World (observer) or one civilization, on the day shown or at its last council. `?civ=K` opens in a perspective. Switching keeps the camera.
-- **Chip.** "PERSPECTIVE: Elmford realm · what its council knows as of day 180", or "… as of its council on day 30 (shown day 31)".
-- **Fog** covers every tile it has never seen (opacity 0.94), also on the minimap. Tiles it has not seen lately get a grey veil, from 0.12 a day ago to 0.45 a year or more ago (0.3 when undated). The fog lies above the ground and trees and below its own people and the overlays.
+- **Chip.** "PERSPECTIVE: Elmford realm · what its council knows as of day 180", or "… as of its council on day 30 (shown day 31)", or, in a static export without that council day, "… what its council knows as of day 35 (its council day 30 is not in this export)" (the shown day stands in; review fix).
+- **Fog** covers every tile it has never seen, opaque, also on the minimap; each fog hex is drawn 3% larger so no antialiased seam shows the ground (review fix: it was 0.94). Tiles it has not seen lately get a grey veil, from 0.12 a day ago to 0.45 a year or more ago (0.3 when undated). The fog lies above the ground and trees and below its own people and the overlays.
 - **Glyphs** mark the foreign settlements, ruins, sites, roads, bridges, toll posts and garrisons its report has, each labelled with the day last seen. The world's site markers and minimap dots are hidden.
 - **Its people** are drawn in its own settlements as its council counts them: the notable people its report names, with their duty and skills, and the rest as "counted, not named" rows (placeholders for age, sex and duty, said so in the inspector). The settlement badge reads "as its council counts them".
 - **Chronicle.** The world chronicle is hidden in a perspective, since an event can carry a fact the civilization does not know. A **Council news** panel lists the report's own records in plain sentences, with Go for those that name a tile.
-- Own parties on the road are drawn and can be picked and followed as before; other peoples' parties are not.
+- Own parties on the road are drawn and can be picked and followed as before; other peoples' parties are not. A world answer still in flight when the day is seen as a civilization (its parties, its chronicle) is dropped, not shown (review fix).
 
 **Access boundary tests** (`tests/observer/test_perspective.py`):
 - the serializer's fence (one parameter, no state, reader or store);
@@ -765,11 +766,11 @@ Not included: stores, research, drills and decrees (council economics, not drawn
 | Size | 12 KB | 12 KB |
 
 **Defaults taken** (the user can change any of these):
-1. Rebuilt from the shown day's saved state, with an "at its last council" choice.
+1. Rebuilt from the shown day's saved state, with an "at its last council" choice; when a static export lacks the council day, the shown day stands in and the chip says so.
 2. Civilizations addressed by their number in the manifest.
 3. The export carries perspectives only when asked (`--perspectives`).
 4. Its people drawn in its own settlements only: the notable named, the rest counted.
-5. Nearly opaque fog; known tiles veiled by how long ago they were seen.
+5. Opaque fog; known tiles veiled by how long ago they were seen.
 6. The world chronicle hidden in a perspective; Council news instead.
 7. Foreign settlements from its contacts only; spy estimates in news, not on the map.
 8. Council economics (stores, research, decrees) not shown.
@@ -779,5 +780,6 @@ Not included: stores, research, drills and decrees (council economics, not drawn
 
 **Known**
 - A small people's report names everyone (up to 40), so in small runs nobody is merely counted.
+- The report cannot tell captives held at home from those marching with its war parties, so with captives at home `counts.at_home + away` exceeds `living` by that many.
 - The first ask at 100,000 people takes most of a second (building the report); later asks are cached.
 - The top bar is one row: at 1440 px wide the day stepper and runner controls run off its right edge (the perspective controls have their own bar for this reason).

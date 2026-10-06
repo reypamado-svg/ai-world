@@ -43,7 +43,7 @@ import { takeTokenFromLocation } from './data/auth.js';
 import { ChroniclePanel } from './ui/chronicle.js';
 import { CouncilPanel } from './ui/council-panel.js';
 import { PerspectiveLayer } from './render/perspective-layer.js';
-import { councilDay, perspectiveDay } from './data/perspective-source.js';
+import { councilDay, perspectiveDay, perspectiveDayFor } from './data/perspective-source.js';
 import { civilizationLabel } from './data/naming.js';
 import { APPEARANCE_COUNT } from './render/art/paint/people.js';
 
@@ -109,6 +109,8 @@ function populationOf(loaded, R) {
     record: loaded.record,
     // O5: what one civilization's council knows, when the day is seen as that civilization.
     perspective: loaded.perspective ?? null,
+    // The council day asked for is not in this export: the shown day stands in.
+    councilMissing: loaded.councilMissing ?? false,
   };
 }
 
@@ -402,14 +404,14 @@ class ObserverApp {
     const civ = this.perspective?.civ ?? null;
     const run = this.runSource;
     if (civ === null) return run.day(day);
-    const asked = this.perspective.asOf === 'council' ? run.nearestDay(councilDay(day)) : day;
+    const { day: asked, councilMissing } = perspectiveDayFor(day, run.days, this.perspective.asOf);
     const view = perspectiveDay(await run.perspective(asked, civ), run.manifest.civilizations);
-    return { ...view, day };
+    return { ...view, day, councilMissing };
   }
 
   /** Show or clear a perspective: fog, veils and glyphs; the world's sites and chronicle hidden
    * (they can tell what the civilization does not know); its council news instead. */
-  showPerspective(p, shownDay) {
+  showPerspective(p, shownDay, { councilMissing = false } = {}) {
     this.perspectiveLayer?.setDay(p, {
       shownDay: p?.day ?? shownDay,
       civilizations: this.runSource.manifest.civilizations,
@@ -432,9 +434,11 @@ class ObserverApp {
     }
     const name = civilizationLabel(p.civilization);
     chip.textContent =
-      p.day === shownDay
-        ? `PERSPECTIVE: ${name} · what its council knows as of day ${p.day}`
-        : `PERSPECTIVE: ${name} · as of its council on day ${p.day} (shown day ${shownDay})`;
+      p.day !== shownDay
+        ? `PERSPECTIVE: ${name} · as of its council on day ${p.day} (shown day ${shownDay})`
+        : councilMissing
+          ? `PERSPECTIVE: ${name} · what its council knows as of day ${p.day} (its council day ${councilDay(shownDay)} is not in this export)`
+          : `PERSPECTIVE: ${name} · what its council knows as of day ${p.day}`;
     chip.title =
       "Built from this civilization's council report alone: the tiles it knows, when it last saw them, the foreign settlements, ruins, sites and roads it knows of, and its own people as its council counts them.";
   }
@@ -602,12 +606,10 @@ class ObserverApp {
     button.addEventListener('click', () => {
       panel.hidden = !panel.hidden;
     });
-    this.chronicleDay = null;
-    this.loadChronicle = async (day) => {
-      this.chronicleDay = day;
-      const record = await run.chronicle(day);
-      // A later day may have been asked for meanwhile: show only the newest ask.
-      if (this.chronicleDay === day) this.chronicle.setRecord(record);
+    this.loadChronicle = async (population) => {
+      const record = await run.chronicle(population.day);
+      // A later ask (another day, or this day seen as a civilization) took over meanwhile.
+      if (this.population === population) this.chronicle.setRecord(record);
     };
   }
 
@@ -721,7 +723,7 @@ class ObserverApp {
     });
     const hash = population.record.state_hash;
     const p = population.perspective;
-    if (this.perspective) this.showPerspective(p, population.day);
+    if (this.perspective) this.showPerspective(p, population.day, { councilMissing: population.councilMissing });
     $('day-label').textContent = `Engine day ${population.day} (recorded)`;
     $('day-label').title = hash
       ? `The run saved this day with state hash ${hash}; a replay of the run gives the same day.`
@@ -740,13 +742,13 @@ class ObserverApp {
       this.followPartyOn();
       return;
     }
-    this.loadChronicle?.(population.day).catch((err) => this.liveError(err));
+    this.loadChronicle?.(population).catch((err) => this.liveError(err));
     if (this.runSource?.routes) {
-      const day = population.day;
       this.runSource
-        .routes(day)
+        .routes(population.day)
         .then((routes) => {
-          if (this.population.day !== day) return;
+          // Another day, or this day seen as a civilization, took over meanwhile: not its parties.
+          if (this.population !== population) return;
           this.runOverlays.setRoutes(routes);
           this.followPartyOn();
         })
@@ -1542,6 +1544,7 @@ function buildApi(app) {
         worldChronicleHidden: $('btn-chronicle').hidden,
         councilButton: !$('btn-council').hidden,
         councilItems: document.querySelectorAll('#council-list li').length,
+        overlayParties: app.runOverlays?.parties.map((party) => party.civilization) ?? [],
       };
     },
     /** The inspector's text, as shown. */
