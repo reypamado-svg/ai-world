@@ -79,6 +79,18 @@ export class RunOverlays {
     }
   }
 
+  /** The day's party with this id, or null (it is not on the road this day). */
+  partyById(id) {
+    return this.parties.find((party) => party.id === id) ?? null;
+  }
+
+  /** Where a party stands: its first traveller's tile, else how far its route had come. */
+  static partyTile(party) {
+    if (party.tile) return party.tile;
+    if (!party.route.length) return null;
+    return party.route[Math.min(party.at, party.route.length - 1)];
+  }
+
   /** The traveller dot under a world point, at this zoom: its tile, count and parties. */
   pickTraveller(wx, wy, zoom) {
     if (!this.record || !this.travellers.visible) return null;

@@ -206,7 +206,7 @@ class ObserverApp {
       R: this.R,
       overview: extras.overview,
       onJump: (p) => {
-        this.follow = false;
+        this.stopFollowing();
         this.camera.x = p.x;
         this.camera.y = p.y;
       },
@@ -234,6 +234,7 @@ class ObserverApp {
           this.inspector.render();
         },
         onSelect: (id) => this.select(id),
+        onFollowParty: (id) => this.startFollowingParty(id),
       });
     }
   }
@@ -445,7 +446,7 @@ class ObserverApp {
     const panel = $('chronicle');
     this.chronicle = new ChroniclePanel(panel, {
       onGo: (q, r) => {
-        this.follow = false;
+        this.stopFollowing();
         const c = hexCentre(q, r, this.R);
         const p = project(c.x, c.y);
         this.camera.x = p.x;
@@ -471,6 +472,52 @@ class ObserverApp {
       // A later day may have been asked for meanwhile: show only the newest ask.
       if (this.chronicleDay === day) this.chronicle.setRecord(record);
     };
+  }
+
+  /** Stop the camera following anyone: a person or a party. */
+  stopFollowing() {
+    this.follow = false;
+    this.followParty = null;
+  }
+
+  /** Follow a party on the road from day to day: the camera goes where it stands each day,
+   * and its route stays drawn, until its journey ends. */
+  startFollowingParty(id) {
+    const party = this.runOverlays?.partyById(id);
+    if (!party) return false;
+    this.selected = null;
+    this.follow = false;
+    const zoom = zoomForTilePx(400, this.R);
+    if (this.camera.zoom > zoom * 4 || this.camera.zoom < zoom / 4) this.camera.setZoom(zoom);
+    this.followParty = { id, kind: party.kind, lastSeenDay: this.population.day, target: null, party };
+    this.aimAtParty(party);
+    return true;
+  }
+
+  aimAtParty(party) {
+    const fp = this.followParty;
+    const tile = RunOverlays.partyTile(party);
+    fp.party = party;
+    fp.lastSeenDay = this.population.day;
+    if (tile) {
+      const c = hexCentre(tile[0], tile[1], this.R);
+      fp.target = project(c.x, c.y);
+    } else fp.target = null;
+    this.runOverlays.showRoutes([party]);
+    this.inspector?.showPartyFollowed(party, this.population.day);
+  }
+
+  /** A new day's parties are in: follow the party on, or say its journey has ended. */
+  followPartyOn() {
+    const fp = this.followParty;
+    if (!fp) return;
+    const party = this.runOverlays.partyById(fp.id);
+    if (party) {
+      this.aimAtParty(party);
+      return;
+    }
+    this.inspector?.showPartyEnded(fp.party, fp.lastSeenDay, this.population.day);
+    this.followParty = null;
   }
 
   setFollowLatest(on) {
@@ -549,7 +596,9 @@ class ObserverApp {
       this.runSource
         .routes(day)
         .then((routes) => {
-          if (this.population.day === day) this.runOverlays.setRoutes(routes);
+          if (this.population.day !== day) return;
+          this.runOverlays.setRoutes(routes);
+          this.followPartyOn();
         })
         .catch((err) => this.liveError(err));
     }
@@ -605,6 +654,8 @@ class ObserverApp {
   select(id) {
     this.selected = id;
     if (!id) this.follow = false;
+    // Looking at a person ends following a party.
+    if (id) this.followParty = null;
     this.inspector?.show(id);
   }
 
@@ -636,6 +687,7 @@ class ObserverApp {
       lock.touched = true;
       Object.assign(this.camera, { x: lock.x, y: lock.y, zoom: lock.zoom });
     }
+    if (!lock && this.followParty?.target) this.camera.followTowards(this.followParty.target, deltaMS);
     if (!lock && this.follow && this.selected) {
       this.village?.renderer.update(this.animT);
       const target = this.village?.worldPosition(this.selected) ?? this.crowd?.worldPosition(this.selected);
@@ -748,7 +800,7 @@ class ObserverApp {
     }
     if (hit?.list) {
       this.selected = null;
-      this.follow = false;
+      this.stopFollowing();
       this.inspector?.showList(hit.list, `${hit.count} people here (${hit.cell} m cell)`);
       return;
     }
@@ -768,7 +820,7 @@ class ObserverApp {
       const dy = e.clientY - drag.y;
       drag.moved = Math.max(drag.moved, Math.hypot(dx, dy));
       if (drag.moved > 4) {
-        this.follow = false;
+        this.stopFollowing();
         this.camera.x = drag.cx - dx / this.camera.zoom;
         this.camera.y = drag.cy - dy / this.camera.zoom;
       }
@@ -808,11 +860,11 @@ class ObserverApp {
     $('btn-zoom-in').addEventListener('click', () => this.camera.setZoom(this.camera.zoom * 2));
     $('btn-zoom-out').addEventListener('click', () => this.camera.setZoom(this.camera.zoom / 2));
     $('btn-world').addEventListener('click', () => {
-      this.follow = false;
+      this.stopFollowing();
       Object.assign(this.camera, this.home);
     });
     $('btn-village')?.addEventListener('click', () => {
-      this.follow = false;
+      this.stopFollowing();
       this.goToVillage(1);
     });
     $('btn-pause')?.addEventListener('click', () => this.setPaused(!this.paused));
@@ -851,7 +903,7 @@ class ObserverApp {
 
   /** Point the camera for a tour stop: the crowd's busiest ward (or the village) at a zoom, or the whole world. */
   tourView(zoom) {
-    this.follow = false;
+    this.stopFollowing();
     if (zoom === 'home') {
       Object.assign(this.camera, this.home);
       return;
@@ -1248,7 +1300,16 @@ function buildApi(app) {
       zoom: app.camera.zoom,
       follow: app.follow,
       selected: app.selected,
+      party: app.followParty ? { id: app.followParty.id, lastSeenDay: app.followParty.lastSeenDay } : null,
     }),
+    /** Follow a party of the day shown, by id (as its Follow party button does). */
+    followParty: (id) => app.startFollowingParty(id),
+    /** Drag the map by some pixels, as a hand would (it stops any follow). */
+    dragBy: (dx, dy) => {
+      app.stopFollowing();
+      app.camera.x -= dx / app.camera.zoom;
+      app.camera.y -= dy / app.camera.zoom;
+    },
     /** The camera position a tile's centre has. */
     hexCamera: (q, r) => {
       const c = hexCentre(q, r, app.R);

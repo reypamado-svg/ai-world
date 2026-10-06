@@ -229,7 +229,7 @@ test('the chronicle lists the day, and Go and Follow move the camera', async () 
 test('travellers on the road can be picked, and their route is drawn', async () => {
   // A short recorded war: a raiding party is on the road from day 1.
   const war = join(dir, 'war');
-  await run(join(repo, '.venv', 'bin', 'python'), [join(repo, 'tests', 'observer', 'war_run.py'), war, '6'], {
+  await run(join(repo, '.venv', 'bin', 'python'), [join(repo, 'tests', 'observer', 'war_run.py'), war, '12'], {
     cwd: repo,
     env: { ...process.env, PYTHONPATH: `${join(repo, 'src')}:${join(repo, 'tests')}` },
   });
@@ -247,9 +247,9 @@ test('travellers on the road can be picked, and their route is drawn', async () 
   };
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
   try {
-    await until(async () => (await ask('/api/status'))?.ready === 7, 60000, 'the war run to be walked');
+    await until(async () => (await ask('/api/status'))?.ready === 13, 60000, 'the war run to be walked');
     let day = null;
-    for (let d = 1; d <= 6 && day === null; d += 1) {
+    for (let d = 1; d <= 12 && day === null; d += 1) {
       const routes = await ask(`/api/run/days/${d}/routes`);
       const record = await ask(`/api/run/days/${d}`);
       const dots = new Set(record.travellers.map(([q, r]) => `${q},${r}`));
@@ -294,6 +294,50 @@ test('travellers on the road can be picked, and their route is drawn', async () 
       stepped.residents,
       stepped.full.settlements.map((s) => s.residents),
     );
+
+    // Follow the war party from day to day: the camera goes where it stands each day, until
+    // its journey ends; dragging the map stops following.
+    await page.evaluate((d) => window.__observer.loadDay(d), day);
+    await page.waitForFunction(() => window.__observer.runInfo().overlays.parties > 0);
+    const warParty = (await ask(`/api/run/days/${day}/routes`)).parties.find((p) => p.kind === 'campaign');
+    assert.equal(await page.evaluate((id) => window.__observer.followParty(id), warParty.id), true);
+    let seen = 0;
+    let ended = null;
+    for (let d = day + 1; d <= 12; d += 1) {
+      const routes = await ask(`/api/run/days/${d}/routes`);
+      const party = routes.parties.find((p) => p.id === warParty.id);
+      await page.evaluate((n) => window.__observer.loadDay(n), d);
+      await page.waitForFunction(
+        ({ n, onRoad }) => {
+          const party = window.__observer.cameraInfo().party;
+          return onRoad ? party?.lastSeenDay === n : party === null;
+        },
+        { n: d, onRoad: Boolean(party) },
+      );
+      if (!party) {
+        ended = d;
+        break;
+      }
+      const tile = party.tile ?? party.route[Math.min(party.at, party.route.length - 1)];
+      const placed = await page.evaluate(([q, r]) => {
+        window.__observer.step(10);
+        return { camera: window.__observer.cameraInfo(), target: window.__observer.hexCamera(q, r) };
+      }, tile);
+      assert.ok(
+        Math.hypot(placed.camera.x - placed.target.x, placed.camera.y - placed.target.y) < 1e-3,
+        `day ${d}: ${JSON.stringify(placed)}`,
+      );
+      seen += 1;
+    }
+    assert.ok(seen >= 2, `followed for ${seen} days`);
+    assert.notEqual(ended, null, 'the war party came home within the run');
+    assert.match(await page.locator('#inspector h2').textContent(), /journey ended/);
+    // Following again from an earlier day; a drag stops it.
+    await page.evaluate((d) => window.__observer.loadDay(d), day);
+    await page.waitForFunction(() => window.__observer.runInfo().overlays.parties > 0);
+    assert.equal(await page.evaluate((id) => window.__observer.followParty(id), warParty.id), true);
+    await page.evaluate(() => window.__observer.dragBy(40, 0));
+    assert.equal(await page.evaluate(() => window.__observer.cameraInfo().party), null);
     assert.deepEqual(errors, []);
   } finally {
     await page.close();

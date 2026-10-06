@@ -10,6 +10,16 @@ const CIV_NAMES = [
   'civilization:0000000004',
 ];
 
+const PARTY_KINDS = {
+  campaign: 'war party',
+  expedition: 'expedition',
+  migration: 'migrants',
+  settlement: 'settlers',
+  shipment: 'shipment',
+  haul: 'carriers',
+  roadwork: 'road crew',
+};
+
 export class Inspector {
   /**
    * @param {HTMLElement} el
@@ -25,6 +35,8 @@ export class Inspector {
       const pid = ev.target.closest('[data-person]')?.dataset.person;
       if (act === 'close') hooks.onClose();
       if (act === 'follow') hooks.onFollow();
+      const party = ev.target.closest('[data-party]')?.dataset.party;
+      if (act === 'follow-party' && party) hooks.onFollowParty?.(party);
       if (pid) {
         ev.preventDefault();
         hooks.onSelect(pid);
@@ -62,15 +74,7 @@ export class Inspector {
     this.selected = null;
     this.list = { parties };
     this.el.hidden = false;
-    const kinds = {
-      campaign: 'war party',
-      expedition: 'expedition',
-      migration: 'migrants',
-      settlement: 'settlers',
-      shipment: 'shipment',
-      haul: 'carriers',
-      roadwork: 'road crew',
-    };
+    const kinds = PARTY_KINDS;
     const civName = (k) => (civilizations[k] ? civilizationLabel(civilizations[k]) : `civilization ${k + 1}`);
     const rows = parties.length
       ? parties
@@ -81,7 +85,8 @@ export class Inspector {
                 .slice(0, 12)
                 .map((id) => `${personLabel(id)} <code>${id}</code>`)
                 .join(', ')}${p.people.length > 12 ? ` and ${p.people.length - 12} more` : ''}</div>
-              <div class="muted"><code>${p.id}</code></div></li>`,
+              <div class="muted"><code>${p.id}</code></div>
+              <button data-act="follow-party" data-party="${p.id}">Follow party</button></li>`,
           )
           .join('')
       : `<li class="muted">The engine counts them here; which parties they belong to is not loaded for this day.</li>`;
@@ -89,6 +94,32 @@ export class Inspector {
       <header><div><h2>${count} travelling on tile ${q},${r}</h2><span class="tag">${civName(civ)} · recorded</span></div>
       <button class="x" data-act="close" aria-label="Close">×</button></header>
       <ul class="parties">${rows}</ul>`;
+  }
+
+  /** A party being followed from day to day: where it is on its route this day. */
+  showPartyFollowed(party, day) {
+    this.selected = null;
+    this.list = { party };
+    this.el.hidden = false;
+    const kind = PARTY_KINDS[party.kind] ?? party.kind.replaceAll('_', ' ');
+    const step = Math.min(party.at + 1, party.route.length);
+    this.el.innerHTML = `
+      <header><div><h2>Following ${kind}</h2><span class="tag">recorded · day ${day}</span></div>
+      <button class="x" data-act="close" aria-label="Close">×</button></header>
+      <p class="following">Day ${day} · step ${step} of ${party.route.length} · ${party.people.length} people</p>
+      <p class="muted"><code>${party.id}</code></p>`;
+  }
+
+  /** The followed party is no longer on the road on this day. */
+  showPartyEnded(party, lastSeen, day) {
+    this.list = { party };
+    this.el.hidden = false;
+    const kind = PARTY_KINDS[party.kind] ?? party.kind.replaceAll('_', ' ');
+    this.el.innerHTML = `
+      <header><div><h2>The ${kind}'s journey ended</h2><span class="tag">recorded</span></div>
+      <button class="x" data-act="close" aria-label="Close">×</button></header>
+      <p class="ended">The journey ended before day ${day} (last seen on the road on day ${lastSeen}).</p>
+      <p class="muted"><code>${party.id}</code></p>`;
   }
 
   render() {
