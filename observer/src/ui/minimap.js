@@ -44,6 +44,9 @@ export class Minimap {
       );
     }
     this.markers = [];
+    this.R = R;
+    this.fog = null;
+    this.showMarkers = true;
     canvas.addEventListener('click', (e) => {
       const r = canvas.getBoundingClientRect();
       const mx = ((e.clientX - r.left) / r.width) * canvas.width;
@@ -56,10 +59,36 @@ export class Minimap {
     this.markers.push({ p: worldPoint, color, size });
   }
 
+  /** In a civilization's perspective (O5): only the tiles it knows show; null shows all. */
+  setFog(tiles) {
+    if (!tiles) {
+      this.fog = null;
+      return;
+    }
+    const fog = document.createElement('canvas');
+    fog.width = this.canvas.width;
+    fog.height = this.canvas.height;
+    const c = fog.getContext('2d');
+    c.fillStyle = '#0b0d10';
+    c.fillRect(0, 0, fog.width, fog.height);
+    const cell = Math.max(2, this.R * Math.sqrt(3) * Math.SQRT2 * this.scale * 1.2);
+    c.save();
+    c.beginPath();
+    for (const [q, r] of tiles) {
+      const h = hexCentre(q, r, this.R);
+      const p = project(h.x, h.y);
+      c.rect(p.x * this.scale + this.ox - cell / 2, p.y * this.scale + this.oy - cell / 4, cell, cell / 2);
+    }
+    c.clip();
+    c.drawImage(this.base, 0, 0);
+    c.restore();
+    this.fog = fog;
+  }
+
   draw(view) {
     const ctx = this.ctx;
-    ctx.drawImage(this.base, 0, 0);
-    for (const m of this.markers) {
+    ctx.drawImage(this.fog ?? this.base, 0, 0);
+    for (const m of this.showMarkers ? this.markers : []) {
       ctx.fillStyle = m.color;
       ctx.strokeStyle = '#000';
       ctx.beginPath();

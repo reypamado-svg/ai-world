@@ -277,7 +277,7 @@ export class CrowdLayer {
       ? ` · ${plan.designed ? `${plan.design.style.replace('_', ' ')} town, designed by the council` : 'plain plan'} · walls ${plan.wallsBuilt().built} of ${plan.wallsBuilt().of} sections${plan.defence ? ' · defence set' : ''}`
       : '';
     const label = new PIXI.Text({
-      text: `${this.frame.settlements[k].label} · ${this.frame.residents(k).toLocaleString('en')} people · ${this.frame.provenance === 'recorded run' ? 'recorded' : 'synthetic'}${town}`,
+      text: `${this.frame.settlements[k].label} · ${this.frame.residents(k).toLocaleString('en')} people · ${{ 'recorded run': 'recorded', 'council report': 'as its council counts them' }[this.frame.provenance] ?? 'synthetic'}${town}`,
       style: { fontFamily: 'system-ui, sans-serif', fontSize: 12, fontWeight: '700', fill: 0xffffff },
     });
     label.position.set(2, -33);

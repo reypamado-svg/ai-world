@@ -45,8 +45,18 @@
       <span class="chip" id="live-chip" title="This prototype is not connected to a live run."
         >Prototype · no live run</span
       >
-      <span class="chip persp" title="Only the observer perspective exists in this prototype."
+      <span class="chip persp" id="perspective-chip" title="Only the observer perspective exists in this prototype."
         >Perspective: Observer</span
+      >
+      <label class="toggle" id="perspective-group" hidden title="See the world as one civilization's council knows it"
+        >See as
+        <select id="perspective">
+          <option value="">World (observer)</option>
+        </select>
+        <select id="perspective-asof" title="Its council's knowledge on the day shown, or at its last council">
+          <option value="shown">on the day shown</option>
+          <option value="council">at its last council</option>
+        </select></label
       >
       <div class="spacer"></div>
       <label class="toggle"
@@ -75,6 +85,9 @@
       <button id="btn-chronicle" hidden title="The shown day's events, placed where the record puts them">
         Chronicle
       </button>
+      <button id="btn-council" hidden title="What this civilization's council has heard, from its report">
+        Council news
+      </button>
       <span id="pick-note"></span>
       <span class="note" id="provenance"
         >Terrain, land cover and sites: engine worldgen (generator 3, day 0); their painting is a presentation. 25 km
@@ -90,6 +103,13 @@
         <button id="btn-chronicle-close" title="Close">×</button>
       </header>
       <ol id="chronicle-list"></ol>
+    </aside>
+    <aside id="council" hidden>
+      <header>
+        <strong>Council news</strong> <span id="council-day"></span>
+        <button id="btn-council-close" title="Close">×</button>
+      </header>
+      <ol id="council-list"></ol>
     </aside>
     <aside id="measure" hidden>
       <header><strong>Performance measurements</strong> <button id="btn-copy">Copy</button></header>

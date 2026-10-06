@@ -41,6 +41,10 @@ import { RunSource } from './data/run-source.js';
 import { HistoryChanged, ServerSource } from './data/server-source.js';
 import { takeTokenFromLocation } from './data/auth.js';
 import { ChroniclePanel } from './ui/chronicle.js';
+import { CouncilPanel } from './ui/council-panel.js';
+import { PerspectiveLayer } from './render/perspective-layer.js';
+import { councilDay, perspectiveDay } from './data/perspective-source.js';
+import { civilizationLabel } from './data/naming.js';
 import { APPEARANCE_COUNT } from './render/art/paint/people.js';
 
 const params = new URLSearchParams(location.search);
@@ -96,7 +100,16 @@ function populationOf(loaded, R) {
   const { frame } = loaded;
   const plans = plansFor(frame, { coreRadius: 32 });
   const origins = frame.settlements.map((s) => hexCentre(s.q, s.r, R));
-  return { frame, plans, layout: new CrowdLayout(frame, plans), origins, day: loaded.day, record: loaded.record };
+  return {
+    frame,
+    plans,
+    layout: new CrowdLayout(frame, plans),
+    origins,
+    day: loaded.day,
+    record: loaded.record,
+    // O5: what one civilization's council knows, when the day is seen as that civilization.
+    perspective: loaded.perspective ?? null,
+  };
 }
 
 /** Smallest zoom at which the visible chunk count stays within budget. */
@@ -157,6 +170,16 @@ class ObserverApp {
       if (extras.population) this.setPopulation(extras.population);
       else this._applyGround();
     }
+    // O5: fog, veils and what one civilization knows, above the ground and below the overlays.
+    this.perspectiveLayer = extras.run
+      ? new PerspectiveLayer(PIXI, this.R, {
+          width: source.width,
+          height: source.height,
+          chunkTiles: source.manifest.presentation.chunk_tiles,
+          labelZoom: zoomForTilePx(600, this.R),
+        })
+      : null;
+    if (this.perspectiveLayer) this.world.addChild(this.perspectiveLayer.container);
     this.runOverlays = extras.run ? new RunOverlays(PIXI, this.R) : null;
     if (this.runOverlays) this.world.addChild(this.runOverlays.container);
     this.markers = extras.day0 ? new CapitalMarkers(PIXI, extras.day0, this.R) : null;
@@ -313,6 +336,111 @@ class ObserverApp {
     $('btn-day-next').addEventListener('click', () => step(1));
     if (run.live) this.followLive(run);
     if (run.hasRunner) this.setUpRunner(run);
+    this.setUpPerspective(run);
+  }
+
+  /** The perspective picker (O5): the world as the observer sees it, or as one civilization's
+   * council knows it, on the day shown or at its last council. */
+  setUpPerspective(run) {
+    this.perspective = { civ: null, asOf: 'shown' };
+    const group = $('perspective-group');
+    group.hidden = false;
+    const select = $('perspective');
+    run.manifest.civilizations.forEach((id, k) => {
+      const option = document.createElement('option');
+      option.value = String(k);
+      option.textContent = civilizationLabel(id);
+      select.append(option);
+    });
+    if (!run.hasPerspectives) {
+      select.disabled = true;
+      $('perspective-asof').disabled = true;
+      group.title = 'This export has no perspectives: export it with --perspectives';
+    }
+    select.addEventListener('change', () =>
+      this.setPerspective(select.value === '' ? null : Number(select.value)).catch((err) => this.liveError(err)),
+    );
+    $('perspective-asof').addEventListener('change', () =>
+      this.setPerspectiveAsOf($('perspective-asof').value)?.catch((err) => this.liveError(err)),
+    );
+    this.council = new CouncilPanel($('council'), { onGo: (q, r) => this.goToTile(q, r) });
+    $('btn-council').addEventListener('click', () => {
+      $('council').hidden = !$('council').hidden;
+    });
+    $('btn-council-close').addEventListener('click', () => {
+      $('council').hidden = true;
+    });
+    this.showPerspective(null, this.population.day);
+  }
+
+  /** See the world as civilization number `civ` (null: as the observer); the camera stays. */
+  setPerspective(civ) {
+    this.perspective.civ = civ;
+    $('perspective').value = civ === null ? '' : String(civ);
+    const url = new URL(location.href);
+    if (civ === null) url.searchParams.delete('civ');
+    else url.searchParams.set('civ', String(civ));
+    history.replaceState(null, '', url);
+    return this.loadDay(this.population.day);
+  }
+
+  /** 'shown': what the council knows on the day shown; 'council': at its last council. */
+  setPerspectiveAsOf(asOf) {
+    this.perspective.asOf = asOf;
+    $('perspective-asof').value = asOf;
+    return this.perspective.civ === null ? null : this.loadDay(this.population.day);
+  }
+
+  /** A day's view: the recorded world, or the chosen civilization's perspective of it. */
+  async loadView(day) {
+    const civ = this.perspective?.civ ?? null;
+    const run = this.runSource;
+    if (civ === null) return run.day(day);
+    const asked = this.perspective.asOf === 'council' ? run.nearestDay(councilDay(day)) : day;
+    const view = perspectiveDay(await run.perspective(asked, civ), run.manifest.civilizations);
+    return { ...view, day };
+  }
+
+  /** Show or clear a perspective: fog, veils and glyphs; the world's sites and chronicle hidden
+   * (they can tell what the civilization does not know); its council news instead. */
+  showPerspective(p, shownDay) {
+    this.perspectiveLayer?.setDay(p, {
+      shownDay: p?.day ?? shownDay,
+      civilizations: this.runSource.manifest.civilizations,
+    });
+    if (this.sites) this.sites.container.visible = !p;
+    this.minimap.showMarkers = !p;
+    this.minimap.setFog(p ? [...p.known_tiles, ...p.tile_dates.map(([q, r]) => [q, r])] : null);
+    if (this.runSource.live) $('btn-chronicle').hidden = Boolean(p);
+    if (p) $('chronicle').hidden = true;
+    $('btn-council').hidden = !p;
+    if (!p) $('council').hidden = true;
+    this.council?.setPerspective(p);
+    const chip = $('perspective-chip');
+    chip.classList.toggle('on', Boolean(p));
+    if (!p) {
+      chip.textContent = 'Perspective: Observer (everything recorded)';
+      chip.title =
+        'Everything the engine recorded, as no civilization sees it. Choose a civilization to see what its council knows.';
+      return;
+    }
+    const name = civilizationLabel(p.civilization);
+    chip.textContent =
+      p.day === shownDay
+        ? `PERSPECTIVE: ${name} · what its council knows as of day ${p.day}`
+        : `PERSPECTIVE: ${name} · as of its council on day ${p.day} (shown day ${shownDay})`;
+    chip.title =
+      "Built from this civilization's council report alone: the tiles it knows, when it last saw them, the foreign settlements, ruins, sites and roads it knows of, and its own people as its council counts them.";
+  }
+
+  /** Move the camera to a tile, close enough to see it. */
+  goToTile(q, r) {
+    this.stopFollowing();
+    const c = hexCentre(q, r, this.R);
+    const p = project(c.x, c.y);
+    this.camera.x = p.x;
+    this.camera.y = p.y;
+    this.camera.setZoom(Math.max(this.camera.zoom, 0.6));
   }
 
   /** The observer started a runner for this live run (O4): the page opens paused, says which
@@ -554,7 +682,7 @@ class ObserverApp {
     const asked = (this.dayLoads = (this.dayLoads ?? 0) + 1);
     let loaded;
     try {
-      loaded = await this.runSource.day(this.runSource.nearestDay(day));
+      loaded = await this.loadView(this.runSource.nearestDay(day));
     } catch (err) {
       if (!(err instanceof HistoryChanged)) throw err;
       this.startAgain();
@@ -586,6 +714,8 @@ class ObserverApp {
       })),
     });
     const hash = population.record.state_hash;
+    const p = population.perspective;
+    if (this.perspective) this.showPerspective(p, population.day);
     $('day-label').textContent = `Engine day ${population.day} (recorded)`;
     $('day-label').title = hash
       ? `The run saved this day with state hash ${hash}; a replay of the run gives the same day.`
@@ -596,6 +726,14 @@ class ObserverApp {
       slider.value = String(Math.max(0, this.runSource.days.indexOf(population.day)));
     }
     this.inspector?.render();
+    if (p) {
+      // Only the parties its council knows of: its own, out on the road.
+      const civs = this.runSource.manifest.civilizations;
+      const parties = p.parties.map((party) => ({ ...party, civilization: civs.indexOf(party.civilization) }));
+      this.runOverlays.setRoutes({ day: population.record.day, parties });
+      this.followPartyOn();
+      return;
+    }
     this.loadChronicle?.(population.day).catch((err) => this.liveError(err));
     if (this.runSource?.routes) {
       const day = population.day;
@@ -718,6 +856,7 @@ class ObserverApp {
       selected: this.selected,
       crowdBudget: this.crowdBudgetOverride ?? this.settings?.crowdBudget ?? Infinity,
     });
+    this.perspectiveLayer?.update(this.camera.zoom);
     this.runOverlays?.update(this.camera.zoom);
     this.markers?.update(this.camera.zoom);
     this.sites?.update(this.camera.zoom);
@@ -1361,6 +1500,46 @@ function buildApi(app) {
           ? app.population.frame.idOf(app.population.frame.rowsOf(k)[0])
           : null,
       })),
+    // ---- a civilization's perspective (O5)
+    setPerspective: (k) => app.setPerspective(k),
+    setPerspectiveAsOf: (asOf) => app.setPerspectiveAsOf(asOf),
+    /** The perspective shown: whose, as of which day, what is drawn, and what is hidden. */
+    perspectiveInfo: () => {
+      const pop = app.population;
+      const p = pop?.perspective ?? null;
+      const frame = pop?.frame;
+      let named = null;
+      let counted = null;
+      if (p && frame) {
+        for (let i = 0; i < frame.length && (named === null || counted === null); i += 1) {
+          const id = frame.idOf(i);
+          if (id.startsWith('council:')) counted ??= id;
+          else named ??= id;
+        }
+      }
+      return {
+        civ: app.perspective?.civ ?? null,
+        asOf: app.perspective?.asOf ?? null,
+        day: pop?.day ?? null,
+        perspectiveDay: p?.day ?? null,
+        civilization: p?.civilization ?? null,
+        chip: $('perspective-chip').textContent,
+        enabled: !$('perspective').disabled,
+        ...(app.perspectiveLayer?.counts() ?? {}),
+        residents: p ? p.settlements.map((s) => s.residents) : null,
+        drawnResidents: frame ? frame.settlements.map((_, k) => frame.residents(k)) : null,
+        parties: p?.parties.length ?? null,
+        news: p?.news.length ?? null,
+        named,
+        counted,
+        sitesHidden: app.sites ? !app.sites.container.visible : true,
+        worldChronicleHidden: $('btn-chronicle').hidden,
+        councilButton: !$('btn-council').hidden,
+        councilItems: document.querySelectorAll('#council-list li').length,
+      };
+    },
+    /** The inspector's text, as shown. */
+    inspectorText: () => $('inspector').textContent,
     // ---- the crowd (?people=N)
     crowdCounts: () => ({ ...app.crowd.counts(), ...app.crowd.stat }),
     crowdBudget: () => app.crowdBudgetOverride ?? app.settings?.crowdBudget ?? Infinity,
@@ -1583,6 +1762,9 @@ async function main() {
     : `Engine world · seed ${source.manifest.engine.seed} · ${source.width}×${source.height} tiles`;
   const app = new ObserverApp(pixi, source, extras);
   if (extras.run) app.showRun(extras.run, extras.population);
+  // ?civ=K: open seen as civilization number K (O5).
+  const civ = params.get('civ');
+  if (extras.run?.hasPerspectives && civ !== null && civ !== '') await app.setPerspective(Number(civ));
   const note = $('provenance');
   if (note && extras.village) {
     const [q, r] = extras.village.tile;

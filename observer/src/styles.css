@@ -404,7 +404,8 @@ button.on {
   display: none;
 }
 
-#chronicle {
+#chronicle,
+#council {
   position: fixed;
   right: 12px;
   top: 56px;
@@ -418,31 +419,46 @@ button.on {
   padding: 10px 12px;
   font-size: 12px;
 }
-#chronicle header {
+#chronicle header,
+#council header {
   display: flex;
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
 }
-#chronicle-day {
+#chronicle-day,
+#council-day {
   color: var(--muted);
   flex: 1;
 }
-#chronicle-list {
+#chronicle-list,
+#council-list {
   list-style: none;
   margin: 8px 0 0;
   padding: 0;
 }
-#chronicle-list li {
+#chronicle-list li,
+#council-list li {
   border-top: 1px solid var(--line);
   padding: 6px 0;
 }
-#chronicle-list .where {
+#chronicle-list .where,
+#council-list .where {
   color: var(--muted);
   font-size: 11px;
 }
-#chronicle-list .actions {
+#chronicle-list .actions,
+#council-list .actions {
   display: flex;
   gap: 6px;
   margin-top: 4px;
+}
+
+.chip.persp.on {
+  background: #3a2f12;
+  border-color: #e9b44c;
+  color: #f6dfa4;
+}
+#council-list li.empty {
+  color: var(--muted);
 }
