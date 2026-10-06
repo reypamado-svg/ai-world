@@ -27,10 +27,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel, ConfigDict, Field
 
-from sovereign_world.observer.service import NotReady, RunService, Served
+from sovereign_world.observer import TOKEN_ENV
+from sovereign_world.observer.runner_link import RunnerLink
+from sovereign_world.observer.service import MAX_LOOKAHEAD, NoRunner, NotReady, RunService, Served
 
-TOKEN_ENV = "SOVEREIGN_WORLD_OBSERVER_TOKEN"
 DEFAULT_PORT = 8766
 REFUSED_PREFIXES = ("data/runs", "tests")
 """Static paths never served: run exports (the API serves runs) and the browser tests."""
@@ -64,6 +66,17 @@ def _json(served: Served) -> Response:
     return _answer(served, "application/json")
 
 
+class ControlRequest(BaseModel):
+    """What the page may ask of a runner the observer started: play or pause, how many days
+    ahead it may run, and the day the page shows."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    paused: bool | None = None
+    lookahead: int | None = Field(default=None, ge=1, le=MAX_LOOKAHEAD)
+    shown: int | None = Field(default=None, ge=0)
+
+
 def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT) -> FastAPI:
     if not token:
         raise ValueError("the observer needs a token")
@@ -84,6 +97,8 @@ def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT
     def day_or_error(read: Callable[[], Served]) -> Served:
         try:
             return read()
+        except NoRunner as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         except NotReady as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except KeyError as error:
@@ -91,6 +106,20 @@ def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT
         except RuntimeError as error:
             # The run cannot be shown this way (a map edited away from its seed's).
             raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @api.get("/control")
+    def control() -> Response:
+        return _json(day_or_error(service.control))
+
+    @api.post("/control")
+    def set_control(request: ControlRequest) -> Response:
+        return _json(
+            day_or_error(
+                lambda: service.set_control(
+                    paused=request.paused, lookahead=request.lookahead, shown=request.shown
+                )
+            )
+        )
 
     @api.get("/status")
     def status() -> Response:
@@ -167,13 +196,22 @@ def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT
     return app
 
 
-def serve(root: Path, *, host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> None:
-    """Serve a run until interrupted (the `observe` command)."""
+def serve(
+    root: Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = DEFAULT_PORT,
+    run_days: int | None = None,
+) -> None:
+    """Serve a run until interrupted (the `observe` command); with `run_days`, also run it
+    that many days further, as the page plays."""
     import uvicorn
 
     from_env = bool(os.environ.get(TOKEN_ENV))
     token = make_token()
     service = RunService(root)
+    if run_days is not None:
+        service.attach(RunnerLink.spawn(root, run_days, on_change=service.runner_changed))
     service.start()
     about = service.describe()
     shown = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
@@ -182,6 +220,8 @@ def serve(root: Path, *, host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> N
         f"Observing run {about['run_id']} (seed {about['seed']}, {about['size']},"
         f" days {about['days']})"
     )
+    if run_days is not None:
+        print(f"The run goes on for up to {run_days} days, but only while the page plays.")
     if from_env:
         print(f"Open {address} and give the token from {TOKEN_ENV}.")
     else:

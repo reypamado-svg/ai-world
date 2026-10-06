@@ -201,6 +201,15 @@ def observe(
     directory: Path,
     host: str = typer.Option("127.0.0.1", help="Address to listen on."),
     port: int = typer.Option(8766, min=1, max=65535, help="Port to listen on."),
+    run_days: int | None = typer.Option(
+        None,
+        "--run-days",
+        min=1,
+        help=(
+            "Also run the world up to this many days further, as its only writer, while the"
+            " page plays; it waits, paused, until then."
+        ),
+    ),
 ) -> None:
     """Serve a run to the observer, live and read-only, behind a token (needs the
     'observer' extra)."""
@@ -210,7 +219,7 @@ def observe(
         raise typer.BadParameter(
             "the observer server needs FastAPI and uvicorn: install the 'observer' extra"
         ) from error
-    serve(directory, host=host, port=port)
+    serve(directory, host=host, port=port, run_days=run_days)
 
 
 if __name__ == "__main__":

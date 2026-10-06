@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +34,13 @@ from sovereign_world.observer.run_export import (
     manifest_record,
     people_bytes,
 )
+from sovereign_world.observer.runner_link import Runner
 from sovereign_world.observer.terrain_export import TerrainBundle, terrain_bundle
 from sovereign_world.state import build_initial_state
 
+LOOKAHEAD_DAYS = 3
+"""How many days a runner may save beyond the day the page shows."""
+MAX_LOOKAHEAD = 30
 POLL_SECONDS = 0.5
 CACHE_DAYS = 64
 """Days whose bytes are kept, most recently used first."""
@@ -54,6 +58,29 @@ class Served:
     body: bytes
 
 
+class NoRunner(LookupError):
+    """The run is being followed, not run: there is no runner to hold."""
+
+
+@dataclass(slots=True)
+class Control:
+    """What the page asked of the runner: paused or playing, how far ahead it may run, and
+    the day the page shows. Only pause and resume ever reach the runner."""
+
+    paused: bool = True
+    lookahead: int = LOOKAHEAD_DAYS
+    shown: int | None = None
+
+    def record(self) -> dict[str, object]:
+        return {"paused": self.paused, "lookahead": self.lookahead, "shown": self.shown}
+
+
+@dataclass(slots=True)
+class _Runner:
+    link: Runner | None = None
+    control: Control = field(default_factory=Control)
+
+
 class RunService:
     def __init__(
         self,
@@ -62,6 +89,7 @@ class RunService:
         poll_seconds: float = POLL_SECONDS,
         cache_days: int = CACHE_DAYS,
         chunk_tiles: int = 8,
+        lookahead: int = LOOKAHEAD_DAYS,
     ) -> None:
         self.root = root
         self.poll_seconds = poll_seconds
@@ -70,6 +98,7 @@ class RunService:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._runner = _Runner(control=Control(lookahead=lookahead))
         self._reader = RunReader(root)
         self._reset()
 
@@ -84,6 +113,9 @@ class RunService:
         self._chronicles: OrderedDict[int, bytes] = OrderedDict()
         self._routes: OrderedDict[int, bytes] = OrderedDict()
         self._terrain: TerrainBundle | None = None
+        # A new history: the page starts again, so the runner waits for it.
+        self._runner.control.shown = None
+        self._gate()
 
     # ------------------------------------------------------------ following the run
     def start(self) -> None:
@@ -97,6 +129,77 @@ class RunService:
         if self._thread is not None:
             self._thread.join(timeout=10)
             self._thread = None
+        link = self._runner.link
+        if link is not None:
+            link.close()
+
+    # ------------------------------------------------------------ the runner
+    def attach(self, link: Runner) -> None:
+        """Hold a runner from now on (it starts paused and stays so until the page plays)."""
+        with self._lock:
+            self._runner.link = link
+            self._gate()
+
+    def runner_changed(self) -> None:
+        """The runner reported something (a saved day, a phase): look again and re-gate."""
+        with self._lock:
+            self.poll()
+            self._gate()
+
+    def _gate(self) -> None:
+        """Let the runner go on only while the page plays and is close enough behind it."""
+        link = self._runner.link
+        if link is None:
+            return
+        control = self._runner.control
+        latest = self._reader.days()[-1]
+        may_run = (
+            not control.paused
+            and control.shown is not None
+            and latest - control.shown < control.lookahead
+        )
+        if may_run:
+            link.resume()
+        else:
+            link.pause()
+
+    def set_control(
+        self,
+        *,
+        paused: bool | None = None,
+        lookahead: int | None = None,
+        shown: int | None = None,
+    ) -> Served:
+        """The page plays or pauses, changes the lookahead, or shows another day."""
+        with self._lock:
+            if self._runner.link is None:
+                raise NoRunner("this run is followed, not run, by this observer")
+            if lookahead is not None and not 1 <= lookahead <= MAX_LOOKAHEAD:
+                raise ValueError(f"lookahead must be 1 to {MAX_LOOKAHEAD} days")
+            if shown is not None and shown not in self._reader.days():
+                raise KeyError(f"day {shown} is not saved in this run")
+            control = self._runner.control
+            if paused is not None:
+                control.paused = paused
+            if lookahead is not None:
+                control.lookahead = lookahead
+            if shown is not None:
+                control.shown = shown
+            self._gate()
+            return Served(self.epoch, encode_json(self._control_record()))
+
+    def control(self) -> Served:
+        with self._lock:
+            if self._runner.link is None:
+                raise NoRunner("this run is followed, not run, by this observer")
+            return Served(self.epoch, encode_json(self._control_record()))
+
+    def _control_record(self) -> dict[str, object]:
+        link = self._runner.link
+        return {
+            "runner": None if link is None else link.state().record(),
+            "control": self._runner.control.record() if link is not None else None,
+        }
 
     def _follow(self) -> None:
         while not self._stop.is_set():
@@ -123,6 +226,7 @@ class RunService:
             if not pending:
                 return False
             self._walk(pending[0])
+            self._gate()
             return True
 
     def walk_all(self) -> None:
@@ -174,6 +278,7 @@ class RunService:
                 "ready_through": self._walked[-1] if self._walked else None,
                 "people": len(self._ordered),
                 "following": self._thread is not None,
+                **self._control_record(),
             }
             return Served(self.epoch, encode_json(body))
 

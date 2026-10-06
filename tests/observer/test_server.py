@@ -79,12 +79,13 @@ def _served(client: TestClient, export: Path) -> dict[str, bytes]:
     return files
 
 
-def _paths(routes: list[Any]) -> list[str]:
-    """Every route's path, also inside included routers (however this FastAPI keeps them)."""
-    found: list[str] = []
+def _paths(routes: list[Any]) -> list[tuple[str, str]]:
+    """Every route's (method, path), also inside included routers (however this FastAPI keeps
+    them)."""
+    found: list[tuple[str, str]] = []
     for route in routes:
         if isinstance(route, APIRoute):
-            found.append(route.path)
+            found += [(method, route.path) for method in sorted(route.methods)]
         inner = getattr(route, "original_router", None) or getattr(route, "routes", None)
         if inner is not None:
             found += _paths(list(getattr(inner, "routes", inner)))
@@ -105,9 +106,9 @@ def test_every_api_route_needs_the_token(old_run: Path) -> None:
     client = TestClient(app)
     fill = {"day": "1", "path": "manifest.json", "rest": "anything"}
     paths = _paths(app.routes)
-    api = [path for path in paths if path.startswith("/api")]
-    assert len(api) >= 8
-    for path in api:
+    api = [(method, path) for method, path in paths if path.startswith("/api")]
+    assert len(api) >= 10 and ("POST", "/api/control") in api
+    for method, path in api:
         url = path.replace(":path", "")
         for name, value in fill.items():
             url = url.replace("{" + name + "}", value)
@@ -117,11 +118,11 @@ def test_every_api_route_needs_the_token(old_run: Path) -> None:
             {"Authorization": TOKEN},
             {"Authorization": f"Bearer {TOKEN}x"},
         ):
-            answer = client.get(url, headers=headers)
-            assert answer.status_code == 401, (url, headers)
+            answer = client.request(method, url, headers=headers, json={})
+            assert answer.status_code == 401, (method, url, headers)
             assert answer.headers["www-authenticate"] == "Bearer"
             assert "x-history-epoch" not in answer.headers
-        assert client.get(url, headers=AUTH).status_code != 401, url
+        assert client.request(method, url, headers=AUTH, json={}).status_code != 401, url
     # A token passed in the address is not a token.
     assert client.get(f"/api/status?token={TOKEN}").status_code == 401
     with pytest.raises(ValueError):
