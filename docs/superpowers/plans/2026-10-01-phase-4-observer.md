@@ -524,3 +524,108 @@ It grows from 128 founders to 141 people. The baseline councils grow slowly; tha
 - People on the road are counted dots at their tiles. They cannot be picked or followed until O3/O4 give them routes.
 - People standing behind a row of houses are hidden by the roofs, which is correct depth.
 - Exports are static files, refreshed by exporting again; the O3 server will serve the same data live.
+
+## O3 as built: a run served live, with a chronicle
+
+Planned with Fable 5.1 after the base defence slices. The user asked to "Start O3". Built in four commits: C0 9a9bb6b, C1–C5 2ffbf2c, 7d40809 and 63934aa. The engine is unchanged: golden hashes and parity hold.
+
+**The server** (`sovereign-world observe RUN_DIR`, FastAPI and uvicorn as the optional `observer` extra):
+- **One reader.** `observer/service.py` holds a single `RunReader` and never constructs `WorldStore`.
+  - A follower thread polls the journal every half second and walks new days in order.
+  - Walking in order means each person's number in the id table is the one the static export gives.
+  - Day bytes are kept in a cache, the 64 most recent.
+  - When the history epoch changes, every cache is dropped and the walk starts again.
+- **The token** is checked by one router-level dependency on `/api`, so no API route can be added without it.
+  - It is made fresh per process with `secrets.token_urlsafe(32)`, or taken from `SOVEREIGN_WORLD_OBSERVER_TOKEN`.
+  - It is printed once, in the address's fragment (`#token=…`), which browsers never send.
+  - It travels only as `Authorization: Bearer`.
+  - It is never written to a file. When it comes from the environment, it is not printed at all.
+- **Static files.** The page and its code are served without the token. `data/runs/` and `tests/` are refused.
+
+**Routes.** Every answer carries `X-History-Epoch`.
+
+| Route | Answer |
+|---|---|
+| `/api/status` | days saved and ready, the epoch, the people seen |
+| `/api/run/manifest`, `/ids?from=N`, `/days` | the export's manifest and id table (or the ids from a place on), the ready days |
+| `/api/run/days/{d}`, `/days/{d}/people` | the export's day record and people file, byte for byte |
+| `/api/run/days/{d}/changes?from=N` | what turns day N's record into day d's: changed and removed settlements, owner changes, counts and travellers |
+| `/api/run/days/{d}/routes` | active journeys and expeditions: kind, civilization, people, route, position, where the first traveller stands |
+| `/api/run/chronicle?day=d` | the day's events, each with its place |
+| `/api/run/terrain/...` | the terrain export's files for the run's own world |
+
+A day not yet walked answers 409.
+
+**Terrain for an edited map.** A run whose map was edited by a scenario is shown from its own recorded map, and the terrain manifest says so. Any other run's terrain is the export's.
+
+**The chronicle** (`observer/chronicle.py`). The rules in "Chronicle locations" above are applied in this order:
+1. **The event's own tile:** `q`/`r` or `tile_q`/`tile_r` in its payload.
+2. **The ids it names**, looked up in the world as saved that day. The order is the payload's `settlement`, then `battle`, then the subject, then the actor.
+   - A person is placed where they stood.
+   - A settlement, ruin, site, battle, garrison, toll post or occupation is placed on its tile.
+   - A siege is placed at its camp.
+   - A journey or expedition is placed where its first traveller stood, or else where its route had reached.
+   - A storehouse, institution or piece of work is placed at its settlement or site.
+   - A civilization is placed at its capital, and tagged so.
+3. **The day before.** Events that end something (a death, a return, a fall) look first in the world as saved the day before.
+4. **The other day.** When the first day looked at lacks the id, the other day is tried, and the place says which day it came from.
+5. Otherwise the event is not placed.
+
+Routine bookkeeping is marked, so the page can hide it: food eaten, orders accepted, single tiles gained or lost, tiles observed, councils held, gathering.
+
+In a recorded war:
+- battles are placed at the battle tile;
+- a ceded colony is placed at its own tile;
+- the dead are placed where they stood the day before;
+- treaty breaches and wars learned of are placed at the capital.
+
+**The browser** (`?run=live#token=…`):
+- `ServerSource` is a `RunSource` that asks the server, with the token.
+  - Stepping a day rebuilds its record from `/changes` since the day shown.
+  - `TerrainSource` gets the run's terrain through an injected fetch.
+- **Live chip.** It reads LIVE RUN · following (or paused) · N days.
+  - Every second the page asks for new days and follows the newest.
+  - Stepping back pauses following; **Follow latest** resumes it.
+  - A new history reloads the page.
+  - A wrong token stops loading with "The observer server refused the token (401)".
+- **Chronicle panel.** The shown day's events in plain sentences, with observer-assigned names and how each was placed.
+  - **Go** moves the camera to the event's tile.
+  - **Follow** follows the person named, when they are at a settlement that day.
+  - **Routine** shows the hidden bookkeeping.
+- **Travellers.** A traveller dot can be clicked. The inspector lists the parties on that tile, with their kind, civilization, people and position on the route, and their routes are drawn on the map.
+
+**Access boundary tests:**
+- every `/api` route answers 401 without the token, with a wrong one, with no `Bearer`, or with the token in the address;
+- day, people and terrain answers equal the export's bytes, for the format-1 fixture and the designed-town fixture;
+- serving every day writes nothing to the run;
+- `service.py` and `server.py` never build a store;
+- days saved later are picked up, both by the follower thread and in the browser (within 5 s);
+- a journal cut back is a new history, with the same bytes as a fresh export of the shorter run;
+- **one subprocess test:** a 31-day `run` with the observer process attached and polling, and the same run without it, give identical journal bytes (councils and their prompt hashes included), identical checkpoints and the same files.
+
+**Timings.** Measured here, through FastAPI's test client. A cached answer is the median of four repeats.
+
+| | Baseline year (seed 21, 48×48, 141 people, 366 days) | 100,000 people (48×48, rules 2, 11 days) |
+|---|---|---|
+| Walk (projecting each day in order) | 5 ms a day; 2.0 s for the year | 0.34 s a day |
+| Status, manifest, a day's record, changes | about 3–4 ms | about 3 ms |
+| A day's people file | 3 ms (0.5 KB) | 3 ms (310 KB) |
+| The id table | 3 ms (3 KB) | 14 ms (3.1 MB) |
+| Routes or chronicle, first ask / cached | 40–85 ms / 3 ms | 0.4 s / 3 ms |
+| A day dropped from the cache, asked again | 11 ms | 0.26 s |
+| Terrain, first file / then | 1.0 s / 3 ms | 1.2 s / 3 ms |
+
+**Defaults taken** (the user can change any of these):
+- FastAPI.
+- Polling, not server-sent events (those would put the token in an address).
+- Record-level changes only; the people file is sent whole.
+- Civilization events placed at their capital.
+- Routine events hidden behind a toggle.
+- Routes shown but not followed across days (O4).
+- No level-of-detail pyramid (a 100×100 world already fits).
+- Port 8766.
+
+**Known**
+- Explorers on a survey are counted at home by the engine's own rule (`residents_by_settlement`), which O2's projection follows. They are drawn in their settlement, not as dots on the road, although `/routes` lists their expedition. Only journeys' people are traveller dots.
+- The id table at 100,000 people is 3 MB, fetched whole when the page opens; later refreshes ask only for new ids.
+- The walk numbers people in day order and keeps the table in memory. At 100,000 people a long run takes about 0.34 s a day to walk once after the server starts.

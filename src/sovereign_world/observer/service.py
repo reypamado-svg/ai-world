@@ -82,6 +82,7 @@ class RunService:
         self._civilizations: tuple[str, ...] = ()
         self._cache: OrderedDict[int, tuple[bytes, bytes]] = OrderedDict()
         self._chronicles: OrderedDict[int, bytes] = OrderedDict()
+        self._routes: OrderedDict[int, bytes] = OrderedDict()
         self._terrain: TerrainBundle | None = None
 
     # ------------------------------------------------------------ following the run
@@ -148,6 +149,12 @@ class RunService:
                 self._ordered.append(person_id)
             numbers.append(number)
         return encode_json(day_record(view)), people_bytes(view, numbers)
+
+    def _keep(self, cache: OrderedDict[int, bytes], day: int, body: bytes) -> None:
+        cache[day] = body
+        cache.move_to_end(day)
+        while len(cache) > self.cache_days:
+            cache.popitem(last=False)
 
     def _remember(self, day: int, files: tuple[bytes, bytes]) -> None:
         self._cache[day] = files
@@ -224,7 +231,11 @@ class RunService:
         """The day's parties on the road and their routes."""
         with self._lock:
             self._day_files(day)
-            return Served(self.epoch, encode_json(routes(self._reader.state_at(day))))
+            body = self._routes.get(day)
+            if body is None:
+                body = encode_json(routes(self._reader.state_at(day)))
+            self._keep(self._routes, day, body)
+            return Served(self.epoch, body)
 
     def chronicle(self, day: int) -> Served:
         """A saved day's events, each placed where the record puts it (see `chronicle`)."""
@@ -239,10 +250,7 @@ class RunService:
                 today = self._reader.state_at(day)
                 entries = chronicle_entries(self._reader.events_at(day), today, before)
                 body = encode_json({"day": day, "events": entries})
-            self._chronicles[day] = body
-            self._chronicles.move_to_end(day)
-            while len(self._chronicles) > self.cache_days:
-                self._chronicles.popitem(last=False)
+            self._keep(self._chronicles, day, body)
             return Served(self.epoch, body)
 
     def terrain(self, path: str) -> Served:
