@@ -170,7 +170,8 @@ class ObserverApp {
       if (extras.population) this.setPopulation(extras.population);
       else this._applyGround();
     }
-    // O5: fog, veils and what one civilization knows, above the ground and below the overlays.
+    // O5: fog, veils and what one civilization knows: above the ground and trees, below its
+    // own people and their badges, and below the overlays.
     this.perspectiveLayer = extras.run
       ? new PerspectiveLayer(PIXI, this.R, {
           width: source.width,
@@ -179,7 +180,10 @@ class ObserverApp {
           labelZoom: zoomForTilePx(600, this.R),
         })
       : null;
-    if (this.perspectiveLayer) this.world.addChild(this.perspectiveLayer.container);
+    if (this.perspectiveLayer) {
+      const below = this.crowdHost ? this.world.getChildIndex(this.crowdHost) : this.world.children.length;
+      this.world.addChildAt(this.perspectiveLayer.container, below);
+    }
     this.runOverlays = extras.run ? new RunOverlays(PIXI, this.R) : null;
     if (this.runOverlays) this.world.addChild(this.runOverlays.container);
     this.markers = extras.day0 ? new CapitalMarkers(PIXI, extras.day0, this.R) : null;
@@ -343,8 +347,10 @@ class ObserverApp {
    * council knows it, on the day shown or at its last council. */
   setUpPerspective(run) {
     this.perspective = { civ: null, asOf: 'shown' };
-    const group = $('perspective-group');
+    const group = $('perspective-bar');
     group.hidden = false;
+    // The top bar's fixed "Observer" chip gives way to the perspective bar's.
+    document.querySelector('#topbar .chip.persp').hidden = true;
     const select = $('perspective');
     run.manifest.civilizations.forEach((id, k) => {
       const option = document.createElement('option');

@@ -716,3 +716,68 @@ Planned with Fable 5.1 after O3 and its review. The user said "Start O4". Built 
 - Pausing can leave the run one day further ahead than the lookahead, while it finishes the day under way.
 - Nothing stops a second `sovereign-world run` on the same run while a runner is attached; the README says so.
 - A journal cut back under a live runner stops it and restarts the page; restart `observe --run-days` to run the new history. A day that finishes in the half second before the cut is noticed is still appended, so cut a run only while it is paused. `WorldStore` itself still extends a shortened journal to its cached length (a follow-up).
+
+## O5 as built: the world as one civilization's council knows it
+
+Planned with Fable 5.1 after O4. The user asked "What's next?" and chose "Start O5". Built in four commits: C0 e9bd54f, C1 2d2410e, C2 0e0850f and C3 e1155b0, plus a layering fix and these docs. The engine is unchanged (no file under `src/sovereign_world/` outside `observer/` changed), so golden hashes and parity hold by construction.
+
+**Where the view comes from.** The journal keeps only each council report's id and hash, not its body, so "what the council saw" is rebuilt: `build_council_report(state, civilization)` on the saved day, exactly the call the engine makes for a council. On council days (0 and every 30th) this is the report the council read; the engine's own leak tests already check that rebuilding gives the same report. On other days it is what the council would be told if it sat that day.
+
+**The serializer** (`observer/perspective.py`). `perspective_record(report)` takes a `CouncilReport` and nothing else. A test checks its signature and that the module imports no state, reader or store and never builds a report. The record holds:
+- the tiles it knows, their terrain, and for each tile it has observed the day last seen and the owner it saw;
+- its own settlements, in the run export's row shape (houses, house work, institutions, plan, walls, defence), with residents and idle workers from the report's population summary;
+- its people: the population summary and the notable people (at most 40) with age, sex, health, duty and skills;
+- the foreign settlements it has met (its contacts, with first and last seen days), ruins, sites (what is left as last seen), roads, bridges, toll posts and garrisons it knows of, each with its as-of day;
+- the borders it knows, its own parties out (spies, couriers, extraction parties, and petitioners at its gates), sieges and wars it knows of;
+- its council's news, newest first, at most 60: battles it fought, notices, caught spies, spy reports, delivered messages, treaties, and what struck it.
+
+Not included: stores, research, drills and decrees (council economics, not drawn), rivers (the terrain draws them; fog hides unknown ones), and what a ruin still holds.
+
+**The route.** `GET /api/run/days/{day}/perspective/{civ}`, where `civ` is the civilization's number in the manifest. It is behind the token like every `/api` route and carries the history epoch. `RunService.perspective` is the one place a report is built from a day's world (a test counts it), and answers are cached per day and civilization. An unsaved day or unknown civilization answers 404; a day not yet walked, 409.
+
+**The static export.** `run_export --perspectives` also writes `days/dNNNNNN.perspective.K.json` for each day and civilization, the same bytes the server serves, and says so in the manifest. Without the flag the export is unchanged, and `EXPORT_VERSION` stays 4.
+
+**The page.**
+- **See as.** A small bar under the top bar holds the perspective chip and the picker: World (observer) or one civilization, on the day shown or at its last council. `?civ=K` opens in a perspective. Switching keeps the camera.
+- **Chip.** "PERSPECTIVE: Elmford realm · what its council knows as of day 180", or "… as of its council on day 30 (shown day 31)".
+- **Fog** covers every tile it has never seen (opacity 0.94), also on the minimap. Tiles it has not seen lately get a grey veil, from 0.12 a day ago to 0.45 a year or more ago (0.3 when undated). The fog lies above the ground and trees and below its own people and the overlays.
+- **Glyphs** mark the foreign settlements, ruins, sites, roads, bridges, toll posts and garrisons its report has, each labelled with the day last seen. The world's site markers and minimap dots are hidden.
+- **Its people** are drawn in its own settlements as its council counts them: the notable people its report names, with their duty and skills, and the rest as "counted, not named" rows (placeholders for age, sex and duty, said so in the inspector). The settlement badge reads "as its council counts them".
+- **Chronicle.** The world chronicle is hidden in a perspective, since an event can carry a fact the civilization does not know. A **Council news** panel lists the report's own records in plain sentences, with Go for those that name a tile.
+- Own parties on the road are drawn and can be picked and followed as before; other peoples' parties are not.
+
+**Access boundary tests** (`tests/observer/test_perspective.py`):
+- the serializer's fence (one parameter, no state, reader or store);
+- the record says what the report says, on a recorded war (4 civilizations; the two at war each know one foreign settlement, the others none), and a rules-1 report serializes;
+- every served day and civilization (the war run and the format-one fixture) equals the serialized report of that day's replay;
+- **noninterference:** what is served equals what would be served from `hide_unseen(state, civilization)`, a world in which everything that civilization cannot know is different; each hidden fact of the engine's own leak tests (an unlearned capture, an unseen siege, an unheard treaty ending, an unseen ruin) leaves the bytes unchanged, and a fact of its own changes them;
+- 404, 409, 422 and 401 answers; serving perspectives writes nothing to the run;
+- an export with perspectives has the server's bytes; one without is unchanged.
+
+**Browser tests** (`observer/tests/perspective.test.mjs`): the frame from a perspective (named people first, the rest counted; overlays in civilization numbers; unknown peoples' borders left out), council days, news sentences, an export without perspectives; and, on a served war run, the page seen as the first civilization and back: chip, kept camera, fog tiles = all tiles − known tiles, drawn residents equal the record's, only its own settlements, at least one foreign settlement, sites and chronicle hidden, the inspector saying "council report", the next day, "at its last council", back to the world with everyone drawn again, no page errors, and the run's files unchanged.
+
+**Timings.** Measured here through FastAPI's test client, on the last day of each run, per civilization.
+
+| | Baseline year (seed 21, 48×48, 141 people, day 365) | 100,000 people (48×48, rules 2, day 10) |
+|---|---|---|
+| First ask | 56–89 ms | 0.60–0.75 s |
+| Cached | about 3 ms | about 3 ms |
+| Size | 12 KB | 12 KB |
+
+**Defaults taken** (the user can change any of these):
+1. Rebuilt from the shown day's saved state, with an "at its last council" choice.
+2. Civilizations addressed by their number in the manifest.
+3. The export carries perspectives only when asked (`--perspectives`).
+4. Its people drawn in its own settlements only: the notable named, the rest counted.
+5. Nearly opaque fog; known tiles veiled by how long ago they were seen.
+6. The world chronicle hidden in a perspective; Council news instead.
+7. Foreign settlements from its contacts only; spy estimates in news, not on the map.
+8. Council economics (stores, research, decrees) not shown.
+9. 64 cached answers.
+10. A settlement with no listed rank shown as a village.
+11. A site never visited shown "as made".
+
+**Known**
+- A small people's report names everyone (up to 40), so in small runs nobody is merely counted.
+- The first ask at 100,000 people takes most of a second (building the report); later asks are cached.
+- The top bar is one row: at 1440 px wide the day stepper and runner controls run off its right edge (the perspective controls have their own bar for this reason).

@@ -163,6 +163,32 @@ days ahead of the page it is.
 - The run is started with the observer's environment (so AI keys set there are used) but
   without the observer's token; the observer tells it only "pause" and "resume".
 
+### Seeing the world as one civilization (O5)
+
+**See as**, in the small bar under the top bar, switches between the world as the observer sees it (everything
+the engine recorded) and one civilization's view: what its council knows. The view is built
+on the server from that civilization's council report alone, the same report its council
+reads (rebuilt for any saved day with the engine's own call), so it holds nothing that
+civilization could not know. The camera stays where it is.
+
+- **Fog** covers every tile it has never seen; tiles it has not seen lately are veiled,
+  darker the longer ago. The minimap is fogged the same way.
+- Its own settlements are drawn with their houses, plans and walls, and its people as its
+  council counts them: the notable people its report names (with their duty and skills), the
+  rest counted but not identified.
+- Foreign settlements, ruins, sites, roads, bridges, toll posts and garrisons appear only as
+  its report has them, each labelled with the day they were last seen. The world's site
+  markers are hidden.
+- The world **Chronicle** is hidden (an event can carry a fact the civilization does not
+  know); **Council news** lists its council's own records instead: its battles, notices,
+  caught spies, spy reports, delivered messages, treaties and what struck it.
+- **on the day shown / at its last council**: what the council knows on the shown day, or as
+  of its last council (day 0 and every 30th day), which is what its council actually read.
+- `?civ=K` opens the page seen as civilization number K.
+- A static export has perspectives only when made with
+  `python -m sovereign_world.observer.run_export RUN --out … --perspectives` (one small
+  file per day and civilization); without them the picker is disabled.
+
 - `http://127.0.0.1:8765/proof.html` — the O1a close-zoom art proof.
 - `http://127.0.0.1:8765/proof.html?scene=depth` — the pinned depth test scene.
 
@@ -241,46 +267,48 @@ node tests/capture.mjs captures --depth --clip         # art-proof stills, depth
 node tests/capture-geography.mjs captures              # terrain stills: world, range, river, desert, lake
 ```
 
-| Test file                  | What it proves                                                                                                                                                    |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `depth.test.mjs`           | Ten pinned overlap cases by draw order and by pixel; indoor citizens never drawn; negative control                                                                |
-| `order-snapshot.test.mjs`  | Refactors do not change the art proof's draw order                                                                                                                |
-| `hex.test.mjs`             | Hex layout: round trips, 25 km spacing, horizontal rows, chunk partition, tile sizes on screen                                                                    |
-| `travel-plan.test.mjs`     | Courier days: five hours walking then camp, terrain costs, ford wading time, deep rivers and water refused, continuity                                            |
-| `rivers.test.mjs`          | Channel widths by depth class, the same wandering curve from either tile                                                                                          |
-| `interior.test.mjs`        | Ground field: determinism, border blending, one wandering shoreline with beach and shallows, snow line, fields, no aliasing, cover patches and ponds by share     |
-| `patches.test.mjs`         | Ground patch sizes and the size chosen at each zoom                                                                                                               |
-| `precision.test.mjs`       | Local-origin rule: a far tile paints identically from any nearby anchor; village graphics stay local with the courier 50 km out                                   |
-| `streaming.test.mjs`       | R4: 60 rapid jumps over a synthetic 4096 × 4096 world with latency stay within request and cache budgets, stale requests are dropped, textures return to baseline |
-| `bands.test.mjs`           | Zoom continuity across four bands, selection, follow days into the courier's journey, patches within budget, speeds 1×–100×, sites, camera independence, pause    |
-| `counts.test.mjs`          | R9 count identities at 400 and 2,000 citizens in every band                                                                                                       |
-| `atlas.test.mjs`           | At 5,000 citizens the atlas is at most three 2048 px pages and 60 MB with the ground, well filled, with every key the renderer asks for and a mask for each frame |
-| `population.test.mjs`      | Synthetic people: shares, determinism, unique ids found again, plausible ages and households, at most 64 bytes a person                                           |
-| `settlement-plan.test.mjs` | Houses for everyone, wards growing with the square root of the population, clear of core and fields, routine tables, walks on the streets, 100K placed in ms      |
-| `crowd.test.mjs`           | At 5,000 and 50,000 people: counts in every band, the crowd budget, 200 people picked exactly, following, cell lists, heap and update time                        |
-| `budgets.test.mjs`         | Caps from the screen size; the observer at 3840 × 2160 and 1280 × 720 stays within them and recomputes them on resize                                             |
-| `tour.test.mjs`            | The measurement tour holds the camera against wheel, drag and buttons, labels each row with the band it measured, records evictions, heap and load times          |
-| `server.test.mjs`          | Live server: wrong token, newest day, Follow latest, later day in 5 s, run unchanged, Go/Follow, travellers, cut-back restart                                     |
-| `chronicle.test.mjs`       | Chronicle sentences with observer-assigned names, how each place was found, routine events hidden, the person an event names                                      |
-| `server-source.test.mjs`   | Live source: answers from another history refused (also a record and people from two), the token dropped from the address                                         |
-| `timeline.test.mjs`        | Replay timeline: days stepped with the time carried over, holding at the last day, the slider, each day's recorded hash                                           |
+| Test file                  | What it proves                                                                                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `depth.test.mjs`           | Ten pinned overlap cases by draw order and by pixel; indoor citizens never drawn; negative control                                                                 |
+| `order-snapshot.test.mjs`  | Refactors do not change the art proof's draw order                                                                                                                 |
+| `hex.test.mjs`             | Hex layout: round trips, 25 km spacing, horizontal rows, chunk partition, tile sizes on screen                                                                     |
+| `travel-plan.test.mjs`     | Courier days: five hours walking then camp, terrain costs, ford wading time, deep rivers and water refused, continuity                                             |
+| `rivers.test.mjs`          | Channel widths by depth class, the same wandering curve from either tile                                                                                           |
+| `interior.test.mjs`        | Ground field: determinism, border blending, one wandering shoreline with beach and shallows, snow line, fields, no aliasing, cover patches and ponds by share      |
+| `patches.test.mjs`         | Ground patch sizes and the size chosen at each zoom                                                                                                                |
+| `precision.test.mjs`       | Local-origin rule: a far tile paints identically from any nearby anchor; village graphics stay local with the courier 50 km out                                    |
+| `streaming.test.mjs`       | R4: 60 rapid jumps over a synthetic 4096 × 4096 world with latency stay within request and cache budgets, stale requests are dropped, textures return to baseline  |
+| `bands.test.mjs`           | Zoom continuity across four bands, selection, follow days into the courier's journey, patches within budget, speeds 1×–100×, sites, camera independence, pause     |
+| `counts.test.mjs`          | R9 count identities at 400 and 2,000 citizens in every band                                                                                                        |
+| `atlas.test.mjs`           | At 5,000 citizens the atlas is at most three 2048 px pages and 60 MB with the ground, well filled, with every key the renderer asks for and a mask for each frame  |
+| `population.test.mjs`      | Synthetic people: shares, determinism, unique ids found again, plausible ages and households, at most 64 bytes a person                                            |
+| `settlement-plan.test.mjs` | Houses for everyone, wards growing with the square root of the population, clear of core and fields, routine tables, walks on the streets, 100K placed in ms       |
+| `crowd.test.mjs`           | At 5,000 and 50,000 people: counts in every band, the crowd budget, 200 people picked exactly, following, cell lists, heap and update time                         |
+| `budgets.test.mjs`         | Caps from the screen size; the observer at 3840 × 2160 and 1280 × 720 stays within them and recomputes them on resize                                              |
+| `tour.test.mjs`            | The measurement tour holds the camera against wheel, drag and buttons, labels each row with the band it measured, records evictions, heap and load times           |
+| `server.test.mjs`          | Live server: wrong token, newest day, Follow latest, later day in 5 s, run unchanged, Go/Follow, travellers, cut-back restart                                      |
+| `chronicle.test.mjs`       | Chronicle sentences with observer-assigned names, how each place was found, routine events hidden, the person an event names                                       |
+| `server-source.test.mjs`   | Live source: answers from another history refused (also a record and people from two), the token dropped from the address                                          |
+| `timeline.test.mjs`        | Replay timeline: days stepped with the time carried over, holding at the last day, the slider, each day's recorded hash                                            |
+| `perspective.test.mjs`     | A civilization's view: its people as its council counts them, council news, then in the page fog, kept camera, hidden world sites and chronicle, the run unchanged |
 
 ## Layout
 
-| Path                                                           | Purpose                                                                                  |
-| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `vendor/pixi/`                                                 | PixiJS 8.21.0 (MIT), vendored unmodified from the npm package                            |
-| `data/terrain/`                                                | Committed engine export for seed 21 (chunks, overview, rivers and lakes, day-0 capitals) |
-| `src/main.js`, `index.html`                                    | The observer prototype                                                                   |
-| `src/world/`                                                   | Projection, hex layout, chunk loader and bounded LRU caches                              |
-| `src/data/`                                                    | Terrain source (and the TEST ONLY synthetic source), naming, SAMPLE village and citizens |
-| `src/render/terrain-layer.js`, `hex-detail.js`                 | Streamed terrain: chunk textures, then per-tile detail                                   |
-| `src/render/patch-layer.js`, `decor.js`                        | Ground patches (3,200 m to 6.25 m) and 50 m cells of trees and rocks                     |
-| `src/world/interior.js`, `rivers.js`                           | Ground colour field inside tiles; river widths and wandering curves                      |
-| `src/sim/travel-plan.js`                                       | The courier's multi-day walk from the engine's travel costs                              |
-| `src/render/village-layer.js`, `scene-renderer.js`, `depth.js` | Village drawing, bands, picking, depth order                                             |
-| `src/render/art/`                                              | Asset contract, painters, atlas                                                          |
-| `src/ui/`                                                      | Inspector, minimap, quality, frame statistics, screen-scaled budgets                     |
-| `src/data/population.js`, `src/data/synthetic/people.js`       | People as typed columns; the synthetic population (the O2 reader will fill the same)     |
-| `src/world/settlement-plan.js`, `src/render/crowd-layer.js`    | Wards, routines and positions; the crowd drawn by band                                   |
-| `src/proof/`                                                   | The O1a art proof page                                                                   |
+| Path                                                                                           | Purpose                                                                                     |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `vendor/pixi/`                                                                                 | PixiJS 8.21.0 (MIT), vendored unmodified from the npm package                               |
+| `data/terrain/`                                                                                | Committed engine export for seed 21 (chunks, overview, rivers and lakes, day-0 capitals)    |
+| `src/main.js`, `index.html`                                                                    | The observer prototype                                                                      |
+| `src/world/`                                                                                   | Projection, hex layout, chunk loader and bounded LRU caches                                 |
+| `src/data/`                                                                                    | Terrain source (and the TEST ONLY synthetic source), naming, SAMPLE village and citizens    |
+| `src/render/terrain-layer.js`, `hex-detail.js`                                                 | Streamed terrain: chunk textures, then per-tile detail                                      |
+| `src/render/patch-layer.js`, `decor.js`                                                        | Ground patches (3,200 m to 6.25 m) and 50 m cells of trees and rocks                        |
+| `src/world/interior.js`, `rivers.js`                                                           | Ground colour field inside tiles; river widths and wandering curves                         |
+| `src/sim/travel-plan.js`                                                                       | The courier's multi-day walk from the engine's travel costs                                 |
+| `src/render/village-layer.js`, `scene-renderer.js`, `depth.js`                                 | Village drawing, bands, picking, depth order                                                |
+| `src/render/art/`                                                                              | Asset contract, painters, atlas                                                             |
+| `src/render/perspective-layer.js`, `src/data/perspective-source.js`, `src/ui/council-panel.js` | One civilization's view (O5): fog, veils, known places, its people as counted, council news |
+| `src/ui/`                                                                                      | Inspector, minimap, quality, frame statistics, screen-scaled budgets                        |
+| `src/data/population.js`, `src/data/synthetic/people.js`                                       | People as typed columns; the synthetic population (the O2 reader will fill the same)        |
+| `src/world/settlement-plan.js`, `src/render/crowd-layer.js`                                    | Wards, routines and positions; the crowd drawn by band                                      |
+| `src/proof/`                                                                                   | The O1a art proof page                                                                      |
