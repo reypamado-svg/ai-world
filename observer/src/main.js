@@ -318,7 +318,10 @@ class ObserverApp {
     $('sample-chip').title =
       'Who lives where, their houses and duties are recorded; where in a settlement they stand and walk is presentation.';
     $('live-chip').textContent = 'Names: observer-assigned';
+    // The run's own bar, under the top bar: the day stepper, the runner, the perspective.
+    $('run-bar').hidden = false;
     $('day-group').hidden = false;
+    keepPanelsBelow($('run-bar'));
     if (run.live) this.setUpChronicle(run);
     // The replay timeline: playing steps through the recorded days, one per display day.
     this.timeline = { dayStartT: this.t, waiting: false, end: false, busy: false };
@@ -349,8 +352,7 @@ class ObserverApp {
    * council knows it, on the day shown or at its last council. */
   setUpPerspective(run) {
     this.perspective = { civ: null, asOf: 'shown' };
-    const group = $('perspective-bar');
-    group.hidden = false;
+    const group = $('perspective-picker');
     // The top bar's fixed "Observer" chip gives way to the perspective bar's.
     document.querySelector('#topbar .chip.persp').hidden = true;
     const select = $('perspective');
@@ -389,7 +391,11 @@ class ObserverApp {
     if (civ === null) url.searchParams.delete('civ');
     else url.searchParams.set('civ', String(civ));
     history.replaceState(null, '', url);
-    return this.loadDay(this.population.day);
+    const started = performance.now();
+    return this.loadDay(this.population.day).then((shown) => {
+      if (shown !== null) this.perspectiveSwitchMs = Math.round(performance.now() - started);
+      return shown;
+    });
   }
 
   /** 'shown': what the council knows on the day shown; 'council': at its last council. */
@@ -688,6 +694,7 @@ class ObserverApp {
   /** Load another exported day; the camera stays where it is. */
   async loadDay(day, { carry = false } = {}) {
     const asked = (this.dayLoads = (this.dayLoads ?? 0) + 1);
+    const started = performance.now();
     let loaded;
     try {
       loaded = await this.loadView(this.runSource.nearestDay(day));
@@ -698,6 +705,8 @@ class ObserverApp {
     }
     // A later ask took over while this one was in flight: show nothing of it.
     if (asked !== this.dayLoads) return null;
+    // How long fetching and building the day took (for the measurement, O6).
+    (this.dayLoadMs ??= []).push(performance.now() - started);
     this.showDay(populationOf(loaded, this.R));
     if (this.timeline) {
       const tl = this.timeline;
@@ -924,6 +933,27 @@ class ObserverApp {
       load: this.load,
       caches: this.caches(),
       tour: this.tourRows ?? null,
+      tourSeconds: this.tourSeconds ?? null,
+      run: this.runSource
+        ? {
+            source: this.runSource.label,
+            live: Boolean(this.runSource.live),
+            hasRunner: Boolean(this.runSource.hasRunner),
+            day: this.population?.day ?? null,
+            days: this.runSource.days.length,
+            civ: this.perspective?.civ ?? null,
+            asOf: this.perspective?.asOf ?? null,
+          }
+        : null,
+      dayLoads: this.dayLoadMs?.length
+        ? {
+            count: this.dayLoadMs.length,
+            avgMs: Math.round(this.dayLoadMs.reduce((a, b) => a + b, 0) / this.dayLoadMs.length),
+            maxMs: Math.round(Math.max(...this.dayLoadMs)),
+            lastMs: Math.round(this.dayLoadMs[this.dayLoadMs.length - 1]),
+          }
+        : null,
+      perspectiveSwitchMs: this.perspectiveSwitchMs ?? null,
       sampleCitizens: this.village ? this.village.renderer.people.length : 0,
       people: this.population ? this.population.frame.length : 0,
       stats: this.stats(),
@@ -1062,7 +1092,9 @@ class ObserverApp {
       return;
     }
     const z = zoom === 'tile-3000' ? zoomForTilePx(3000, this.R) : zoom;
-    const target = this.crowd ? this.crowd.worldPosition(this.crowd.busiestId()) : null;
+    // The first settlement may hold nobody (a perspective of a people with no one at home).
+    const busiest = this.crowd && this.crowd.frame.rowsOf(0).length ? this.crowd.busiestId() : null;
+    const target = busiest ? this.crowd.worldPosition(busiest) : null;
     if (target) {
       this.camera.x = target.x;
       this.camera.y = target.y;
@@ -1084,7 +1116,11 @@ class ObserverApp {
       patchBakes: this.patches.baked,
       heap: jsHeapBytes(),
     });
-    this.setPaused(false);
+    this.tourSeconds = seconds;
+    // A runner the observer started is never resumed by the tour: playing would run the world
+    // (and may cost AI calls). The display is measured paused instead.
+    const runner = Boolean(this.runSource?.hasRunner);
+    if (!runner) this.setPaused(false);
     try {
       for (const [i, [band, zoom]] of TOUR.entries()) {
         this.tourView(zoom);
@@ -1093,7 +1129,7 @@ class ObserverApp {
         const lock = { x: this.camera.x, y: this.camera.y, zoom: this.camera.zoom, touched: false };
         this.tourLock = lock;
         if (banner) {
-          banner.textContent = `Measuring the ${band} band (stop ${i + 1} of ${TOUR.length}, ${seconds} s) — please don't touch the mouse, keyboard or window until the table appears.`;
+          banner.textContent = `Measuring the ${band} band (stop ${i + 1} of ${TOUR.length}, ${seconds} s)${runner ? ', with the runner kept paused' : ''} — please don't touch the mouse, keyboard or window until the table appears.`;
           banner.hidden = false;
         }
         await new Promise((r) => setTimeout(r, 1500)); // let streaming settle first
@@ -1150,7 +1186,15 @@ class ObserverApp {
         ${row('Terrain', c.terrain)}${row(`Ground patches (${c.patchPx} px, bake ${c.patches.bakeMsAvg} ms)`, c.patches)}
         <tr><td>Art atlas and village ground</td><td>${mb(c.atlas.bytes)}</td><td colspan="3">fixed</td></tr>
         <tr><td colspan="5">Screen ${c.screen.devicePixels.toLocaleString('en')} device pixels: caps × ${c.screen.factor}</td></tr>
-        <tr><td colspan="5">Ready in ${secs(m.load.readyMs)} s, first frame at ${secs(m.load.firstFrameMs)} s</td></tr>`;
+        <tr><td colspan="5">Ready in ${secs(m.load.readyMs)} s, first frame at ${secs(m.load.firstFrameMs)} s</td></tr>${
+          m.run
+            ? `<tr><td colspan="5">${m.run.source}, day ${m.run.day} of ${m.run.days} recorded${
+                m.run.civ !== null ? `, seen as civilization ${m.run.civ} (${m.run.asOf})` : ''
+              }${m.dayLoads ? `; day loads ${m.dayLoads.avgMs} ms average, ${m.dayLoads.maxMs} ms at most` : ''}${
+                m.perspectiveSwitchMs !== null ? `; perspective switch ${m.perspectiveSwitchMs} ms` : ''
+              }</td></tr>`
+            : ''
+        }`;
     }
     const tour = $('measure-tour');
     if (tour && this.tourRows) {
@@ -1686,6 +1730,16 @@ async function courierRoute(source, tile) {
     flowBetween,
   };
   return { route, travel };
+}
+
+/** Keep the side panels and the tour banner below a bar that can wrap to more rows. */
+function keepPanelsBelow(bar) {
+  const place = () => {
+    const bottom = bar.hidden ? 44 : bar.getBoundingClientRect().bottom;
+    document.documentElement.style.setProperty('--panel-top', `${Math.ceil(bottom) + 8}px`);
+  };
+  new ResizeObserver(place).observe(bar);
+  place();
 }
 
 async function main() {

@@ -31,17 +31,6 @@
         <button data-speed="50">50×</button>
         <button data-speed="100">100×</button>
       </div>
-      <div class="group" id="day-group" hidden>
-        <button id="btn-day-prev" title="The previous exported day">‹</button>
-        <span id="day-label" class="clock"></span>
-        <button id="btn-day-next" title="The next exported day">›</button>
-        <input id="day-slider" type="range" min="0" max="0" value="0" step="1" title="Skip to a recorded day" />
-        <button id="btn-day-follow" hidden title="Follow the newest day as the run saves it">Follow latest</button>
-        <label class="toggle" id="lookahead-group" hidden title="How many days the run may go ahead of the day shown"
-          >Ahead <input id="lookahead" type="number" min="1" max="30" value="3"
-        /></label>
-      </div>
-      <span class="chip" id="runner-chip" hidden></span>
       <span class="chip" id="live-chip" title="This prototype is not connected to a live run."
         >Prototype · no live run</span
       >
@@ -60,9 +49,20 @@
       >
       <label class="toggle"><input type="checkbox" id="chk-footprints" /> Footprints</label>
     </div>
-    <div id="perspective-bar" hidden title="See the world as one civilization's council knows it">
+    <div id="run-bar" hidden>
+      <div class="group" id="day-group" hidden>
+        <button id="btn-day-prev" title="The previous exported day">‹</button>
+        <span id="day-label" class="clock"></span>
+        <button id="btn-day-next" title="The next exported day">›</button>
+        <input id="day-slider" type="range" min="0" max="0" value="0" step="1" title="Skip to a recorded day" />
+        <button id="btn-day-follow" hidden title="Follow the newest day as the run saves it">Follow latest</button>
+        <label class="toggle" id="lookahead-group" hidden title="How many days the run may go ahead of the day shown"
+          >Ahead <input id="lookahead" type="number" min="1" max="30" value="3"
+        /></label>
+      </div>
+      <span class="chip" id="runner-chip" hidden></span>
       <span class="chip persp" id="perspective-chip">Perspective: Observer</span>
-      <label class="toggle"
+      <label class="toggle" id="perspective-picker" title="See the world as one civilization's council knows it"
         >See as
         <select id="perspective">
           <option value="">World (observer)</option>

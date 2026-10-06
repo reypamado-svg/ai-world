@@ -419,6 +419,17 @@ test('a runner started by the observer plays with the page, stays a few days ahe
     assert.equal(info.control.shown, DAYS);
     assert.match(info.chip, /^RUNNER · paused · day 5 of 11/);
     assert.equal(await page.locator('#lookahead-group').isHidden(), false);
+    // The measurement tour never resumes the runner: the run stays where it was.
+    const tourRows = await page.evaluate(async () => {
+      const rows = await window.__observer.tour(1);
+      document.getElementById('measure').hidden = true;
+      return rows;
+    });
+    assert.equal(tourRows.length, 4);
+    const held = await status();
+    assert.equal(held.control.paused, true);
+    assert.equal(held.runner.phase, 'paused');
+    assert.equal(held.saved_days[1], DAYS);
     // Look at day 5 without following, then play: the run goes 3 days ahead, then waits.
     await page.click('#btn-day-follow');
     assert.equal((await page.evaluate(() => window.__observer.liveInfo())).following, false);

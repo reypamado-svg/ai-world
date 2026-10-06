@@ -1,4 +1,6 @@
 :root {
+  /* Where the side panels start: below the top bar, or below the run bar when it is shown. */
+  --panel-top: 56px;
   --bg: #15181c;
   --panel: rgba(24, 27, 32, 0.92);
   --panel-solid: #1b1f25;
@@ -153,10 +155,10 @@ button.on {
 }
 #inspector {
   position: fixed;
-  top: 56px;
+  top: var(--panel-top);
   right: 14px;
   width: 330px;
-  max-height: calc(100% - 120px);
+  max-height: calc(100% - var(--panel-top) - 64px);
   overflow: auto;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -294,7 +296,8 @@ button.on {
   cursor: crosshair;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
-#topbar select {
+#topbar select,
+#run-bar select {
   font: inherit;
   font-size: 12px;
   background: #2a2f37;
@@ -387,7 +390,7 @@ button.on {
 
 #tour-banner {
   position: fixed;
-  top: 56px;
+  top: var(--panel-top);
   left: 50%;
   transform: translateX(-50%);
   z-index: 9;
@@ -408,9 +411,9 @@ button.on {
 #council {
   position: fixed;
   right: 12px;
-  top: 56px;
+  top: var(--panel-top);
   width: min(380px, calc(100vw - 24px));
-  max-height: calc(100vh - 120px);
+  max-height: calc(100vh - var(--panel-top) - 64px);
   overflow: auto;
   z-index: 7;
   background: var(--panel);
@@ -462,7 +465,7 @@ button.on {
 #council-list li.empty {
   color: var(--muted);
 }
-#perspective-bar {
+#run-bar {
   position: fixed;
   top: 52px;
   left: 12px;
@@ -478,6 +481,15 @@ button.on {
   border: 1px solid var(--line);
   border-radius: 10px;
 }
-#perspective-bar[hidden] {
+#run-bar[hidden] {
   display: none;
+}
+#run-bar .group {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+#run-bar .clock {
+  min-width: 0;
+  white-space: nowrap;
 }

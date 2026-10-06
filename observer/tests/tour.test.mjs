@@ -90,3 +90,34 @@ test('the tour holds the camera, labels rows by band and records load times', as
     await page.close();
   }
 });
+
+test('the tour measures a recorded run, with its day loads', async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+  try {
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.goto(
+      `http://127.0.0.1:${server.address().port}/index.html?run=tests/fixtures/run-town&day=18&quality=low`,
+    );
+    await page.waitForFunction(() => window.__observer?.ready || window.__observerError, null, { timeout: 600000 });
+    assert.equal(await page.evaluate(() => window.__observerError ?? null), null);
+    const rows = await page.evaluate(async () => {
+      const o = window.__observer;
+      await o.loadDay(0);
+      await o.loadDay(18);
+      return o.tour(1);
+    });
+    assert.equal(rows.length, 4);
+    const m = await page.evaluate(() => window.__observer.measurement());
+    assert.equal(m.tourSeconds, 1);
+    assert.equal(m.run.day, 18);
+    assert.equal(m.run.live, false);
+    assert.equal(m.run.hasRunner, false);
+    assert.equal(m.run.civ, null);
+    assert.ok(m.dayLoads.count >= 2 && m.dayLoads.maxMs >= m.dayLoads.avgMs, JSON.stringify(m.dayLoads));
+    assert.match(await page.locator('#measure-caps').textContent(), /day 18 of \d+ recorded; day loads/);
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+});

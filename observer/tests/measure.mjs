@@ -1,6 +1,9 @@
 // Browser rendering measurements at 400, 2,000 and 5,000 SAMPLE citizens (or --citizens=a,b,c),
 // or with --people=a,b,c at that many synthetic people (S7 crowd), centred on a busy ward.
 // Usage: node tests/measure.mjs <outdir> [--quality=high] [--citizens=1000,5000] [--people=1000,100000]
+//        node tests/measure.mjs <outdir> --run=tests/fixtures/run-town [--day=18] [--civ=0]
+// With --run, a recorded run's export is measured (seen as civilization K with --civ=K), and a
+// day load and a perspective switch are timed too (O6).
 //
 // In this container Chromium renders with software GL, so frame times are NOT
 // representative of a real GPU. The JS update time (`jsUpdateMs`, our own frame()
@@ -17,7 +20,18 @@ const citizens = (peopleArg ?? process.argv.find((a) => a.startsWith('--citizens
   .split('=')[1]
   .split(',')
   .map(Number);
-const query = (n) => (peopleArg ? `people=${n}&citizens=0` : `citizens=${n}`);
+const option = (name) => process.argv.find((a) => a.startsWith(`--${name}=`))?.split('=')[1] ?? null;
+const run = option('run');
+const runDay = option('day');
+const runCiv = option('civ');
+const cases = run ? [run] : citizens;
+const label = run ? 'run' : peopleArg ? 'people' : 'citizens';
+const query = (n) =>
+  run
+    ? `run=${n}${runDay !== null ? `&day=${runDay}` : ''}${runCiv !== null ? `&civ=${runCiv}` : ''}`
+    : peopleArg
+      ? `people=${n}&citizens=0`
+      : `citizens=${n}`;
 await mkdir(out, { recursive: true });
 const server = await serve(0);
 const browser = await chromium.launch({
@@ -30,7 +44,7 @@ const browser = await chromium.launch({
 });
 const rows = [];
 const atlases = [];
-for (const n of citizens) {
+for (const n of cases) {
   const page = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
   const t0 = Date.now();
   await page.goto(`http://127.0.0.1:${server.address().port}/index.html?${query(n)}&quality=${quality}`);
@@ -48,11 +62,12 @@ for (const n of citizens) {
       ([z, people]) => {
         const o = window.__observer;
         o.setPaused(false);
-        if (people) o.viewTour(z);
+        if (people)
+          o.viewTour(z); // a crowd: the synthetic people, or a run's
         else if (z === 'home') o.home();
         else o.viewVillage(z === 'tile-3000' ? o.zoomForTilePx(3000) : z);
       },
-      [zoom, !!peopleArg],
+      [zoom, !!peopleArg || !!run],
     );
     await page.evaluate(() => window.__observer.settle());
     await page.waitForTimeout(6000); // let the ticker run in real time
@@ -73,7 +88,26 @@ for (const n of citizens) {
         jsUpdateP95: Number(times[Math.floor(times.length * 0.95)].toFixed(2)),
       };
     });
-    rows.push({ [peopleArg ? 'people' : 'citizens']: n, view, loadMs, ...m.stats, ...js });
+    // A run: one day load timed (to the first recorded day and back).
+    const dayLoadMs = run
+      ? await page.evaluate(async () => {
+          const o = window.__observer;
+          const { days, day } = o.timelineInfo();
+          const t = performance.now();
+          await o.loadDay(days[0]);
+          const ms = performance.now() - t;
+          await o.loadDay(day);
+          return Number(ms.toFixed(1));
+        })
+      : null;
+    rows.push({
+      [label]: n,
+      view,
+      loadMs,
+      ...m.stats,
+      ...js,
+      ...(run ? { dayLoadMs, perspectiveSwitchMs: m.perspectiveSwitchMs, civ: m.run?.civ ?? null } : {}),
+    });
     console.log(
       n,
       view,
@@ -87,7 +121,8 @@ for (const n of citizens) {
 await browser.close();
 server.close();
 const cols = [
-  peopleArg ? 'people' : 'citizens',
+  label,
+  ...(run ? ['civ', 'dayLoadMs', 'perspectiveSwitchMs'] : []),
   'view',
   'frameMsAvg',
   'frameMsP95',
