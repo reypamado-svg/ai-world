@@ -66,6 +66,15 @@ async function journalContent(root) {
   });
 }
 
+/** Stop an observer and wait until it (and the runner it closes) has exited, so nothing is
+ * left running into the next test file. */
+async function stop(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  child.kill();
+  await exited;
+}
+
 async function files(root) {
   const out = {};
   for (const name of (await readdir(root)).sort()) out[name] = (await readFile(join(root, name))).toString('base64');
@@ -90,7 +99,7 @@ before(async () => {
 
 after(async () => {
   await browser?.close();
-  observer?.kill();
+  await stop(observer);
   if (dir) await rm(dir, { recursive: true, force: true });
 });
 
@@ -288,7 +297,7 @@ test('travellers on the road can be picked, and their route is drawn', async () 
     assert.deepEqual(errors, []);
   } finally {
     await page.close();
-    second.kill();
+    await stop(second);
   }
 });
 
@@ -418,6 +427,6 @@ test('a runner started by the observer plays with the page, stays a few days ahe
     assert.deepEqual(await journalContent(root), await journalContent(plain));
   } finally {
     await page.close();
-    observerProcess.kill();
+    await stop(observerProcess);
   }
 });
