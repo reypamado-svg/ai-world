@@ -17,12 +17,10 @@ from sovereign_world.config import (
     SovereignConfig,
     WorldConfig,
 )
-from sovereign_world.engine import advance_day
-from sovereign_world.gateway.factory import build_sovereigns
-from sovereign_world.gateway.records import journal_councils, recorded_councils
+from sovereign_world.gateway.records import recorded_councils
 from sovereign_world.persistence import WorldStore
 from sovereign_world.replay import rederive_run, replay_run, verify_run
-from sovereign_world.rng import StableRng
+from sovereign_world.runner import controlled, run_days
 from sovereign_world.state import build_initial_state, validate_world
 
 app = typer.Typer(
@@ -85,19 +83,22 @@ def initialize(
 def run(
     directory: Path,
     days: int = typer.Option(..., min=1, help="Number of daily ticks to advance."),
+    controlled_run: bool = typer.Option(
+        False,
+        "--controlled",
+        help=(
+            "Start paused and take 'pause' and 'resume' lines on standard input, reporting each"
+            " saved day on standard output (as 'observe --run-days' does); the end of the input"
+            " stops the run after the day in progress."
+        ),
+    ),
 ) -> None:
     """Advance the latest verified state under the run's sovereigns, recording every council."""
     store = WorldStore(directory)
-    manifest = store.manifest()
-    state = replay_run(store)
-    rng = StableRng(manifest.config.seed)
-    sovereigns = build_sovereigns(manifest, state.civilizations, history=recorded_councils(store))
-    for _ in range(days):
-        transition = advance_day(state, rng, sovereigns=sovereigns)
-        store.append_transition(transition.state, transition.events, previous=state)
-        state = transition.state
-        journal_councils(store, sovereigns.values())
-    store.save_checkpoint(state)
+    if controlled_run:
+        controlled(store, days)
+        return
+    state = run_days(store, days)
     typer.echo(f"advanced to day {state.day} ({store.state_hash(state)})")
 
 
@@ -210,3 +211,7 @@ def observe(
             "the observer server needs FastAPI and uvicorn: install the 'observer' extra"
         ) from error
     serve(directory, host=host, port=port)
+
+
+if __name__ == "__main__":
+    app()
