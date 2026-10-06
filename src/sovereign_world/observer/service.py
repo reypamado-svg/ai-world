@@ -12,7 +12,8 @@ every cache and walks the run again from its first day. Each answer carries the 
 made under, so a client can tell a new history from a longer one.
 
 Nothing here writes to the run: the reader opens the database read-only and follows the
-journal by byte offset, and `WorldStore` is never constructed.
+journal by byte offset, and `WorldStore` is never constructed. A new history also stops a
+runner the service holds, so the runner writes nothing more either.
 """
 
 from __future__ import annotations
@@ -217,6 +218,15 @@ class RunService:
             self._reader.refresh()
             if self._reader.history_epoch != self.epoch:
                 self._reset()
+                self._retire()
+
+    def _retire(self) -> None:
+        """A new history: stop the runner for good. Its world and its store's journal tail are
+        the old history's, so its next day or checkpoint would corrupt the new one. It stays
+        attached, so the page can say why it stopped."""
+        link = self._runner.link
+        if link is not None:
+            link.terminate()
 
     def step(self) -> bool:
         """Look for new records, then walk one day; whether a day was walked."""

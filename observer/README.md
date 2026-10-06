@@ -154,6 +154,11 @@ days ahead of the page it is.
   and the lookahead change nothing in it. A run started this way can be carried on later
   with `run` or another `observe --run-days`.
 - Closing the observer stops the run after the day under way, with a checkpoint saved.
+- If the run is cut back or replaced while the runner is attached, the observer stops the
+  runner at once, without a checkpoint (its world belongs to the old history), and the page
+  starts again with **RUNNER · stopped: the run's history changed**. Restart
+  `observe --run-days` to run the new history. Cut a run only while it is paused: a day
+  that finishes in the half second before the observer notices is still saved.
 - One runner per run: do not run `sovereign-world run` on the same run at the same time.
 - The run is started with the observer's environment (so AI keys set there are used) but
   without the observer's token; the observer tells it only "pause" and "resume".

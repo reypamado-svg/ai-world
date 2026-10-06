@@ -72,3 +72,45 @@ test('playing steps through the recorded days and holds at the last', async () =
     await page.close();
   }
 });
+
+test('a slow day load that a later one overtakes shows nothing', async () => {
+  const page = await browser.newPage({ viewport: { width: 1024, height: 640 }, deviceScaleFactor: 1 });
+  try {
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.goto(`http://127.0.0.1:${server.address().port}/index.html?run=tests/fixtures/run-small&day=0`);
+    await page.waitForFunction(() => window.__observer?.ready || window.__observerError, null, { timeout: 600000 });
+    assert.equal(await page.evaluate(() => window.__observerError ?? null), null);
+    await page.evaluate(() => window.__observer.setPaused(true));
+    // Day 3's record answers late.
+    await page.route('**/days/d000003.json', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await route.continue();
+    });
+    const late = page.waitForResponse((r) => r.url().endsWith('d000003.json'));
+    await page.evaluate(() => {
+      const slider = document.getElementById('day-slider');
+      slider.value = '3';
+      slider.dispatchEvent(new Event('input'));
+      slider.value = '5';
+      slider.dispatchEvent(new Event('input'));
+    });
+    await page.waitForFunction(() => window.__observer.timelineInfo().day === 5);
+    await late;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const info = await page.evaluate(() => ({
+      ...window.__observer.timelineInfo(),
+      search: location.search,
+    }));
+    assert.equal(info.day, 5);
+    assert.equal(info.slider.value, 5);
+    assert.match(info.search, /day=5/);
+    // Asked one after the other: the first answers nothing, the second its day.
+    const loads = await page.evaluate(() => Promise.all([window.__observer.loadDay(3), window.__observer.loadDay(4)]));
+    assert.deepEqual(loads, [null, 4]);
+    assert.equal((await page.evaluate(() => window.__observer.timelineInfo())).day, 4);
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+});

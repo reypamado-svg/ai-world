@@ -131,7 +131,15 @@ export class ServerSource extends RunSource {
    * @param {{ paused?: boolean, lookahead?: number, shown?: number }} body
    * @returns {Promise<object|null>} the runner and control state, or null without a runner
    */
-  async control(body) {
+  control(body) {
+    // One at a time: the server may handle two posts in flight in either order, and the last
+    // day asked must be the last one the runner is gated on.
+    const next = (this._controlling ?? Promise.resolve()).catch(() => {}).then(() => this._control(body));
+    this._controlling = next;
+    return next;
+  }
+
+  async _control(body) {
     const res = await this._checked(`${this.api}/control`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

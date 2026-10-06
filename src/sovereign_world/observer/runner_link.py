@@ -8,7 +8,9 @@ is the observer's without the observer's token, so the runner never sees it. The
 only writer of the run; the observer keeps reading it as before and never builds a store.
 
 When the observer closes the pipe (it is stopping), the runner finishes the day under way,
-saves a checkpoint and exits.
+saves a checkpoint and exits. When the run's history changes under the runner (its journal
+cut back or replaced), the observer terminates it at once instead: its world and its journal
+tail belong to the old history, so it must save nothing more, not even a checkpoint.
 """
 
 from __future__ import annotations
@@ -30,12 +32,14 @@ PAUSED = "paused"
 RUNNING = "running"
 DONE = "done"
 EXITED = "exited"
+STOPPED = "stopped"
 
 
 @dataclass(frozen=True, slots=True)
 class RunnerState:
     phase: str
-    """starting, paused, running, done (reached its last day) or exited (stopped otherwise)."""
+    """starting, paused, running, done (reached its last day), stopped (by the observer: the
+    run's history changed under it) or exited (stopped otherwise)."""
     day: int | None = None
     """The last day it saved (or the day it started from)."""
     last_day: int | None = None
@@ -62,6 +66,8 @@ class Runner(Protocol):
 
     def state(self) -> RunnerState: ...
 
+    def terminate(self) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -85,6 +91,7 @@ class RunnerLink:
         self._lock = threading.Lock()
         self._state = RunnerState(STARTING)
         self._wants_running = False
+        self._stopped = False
         self._reader = threading.Thread(target=self._read, name="runner-reports", daemon=True)
         self._reader.start()
 
@@ -129,11 +136,14 @@ class RunnerLink:
                     day = int(words[1])
                     finished = state.last_day is not None and day >= state.last_day
                     state = replace(state, day=day, phase=DONE if finished else EXITED)
+                if self._stopped:
+                    # Reports already on their way when it was stopped do not undo that.
+                    state = replace(state, phase=STOPPED)
                 self._state = state
             self._changed()
         code = self._process.wait()
         with self._lock:
-            phase = self._state.phase if self._state.phase == DONE else EXITED
+            phase = self._state.phase if self._state.phase in (DONE, STOPPED) else EXITED
             self._state = replace(self._state, phase=phase, exit_code=code)
         self._changed()
 
@@ -143,7 +153,7 @@ class RunnerLink:
 
     def _send(self, word: str) -> None:
         stdin = self._process.stdin
-        if stdin is None or stdin.closed or self._process.poll() is not None:
+        if self._stopped or stdin is None or stdin.closed or self._process.poll() is not None:
             return
         try:
             stdin.write(word + "\n")
@@ -168,6 +178,17 @@ class RunnerLink:
     def state(self) -> RunnerState:
         with self._lock:
             return self._state
+
+    def terminate(self) -> None:
+        """Stop the runner now, saving nothing: the run's history changed under it, so its
+        world and journal tail are the old history's and any write would corrupt the new one.
+        Returns at once; the reader thread reports the exit as usual."""
+        with self._lock:
+            self._wants_running = False
+            self._stopped = True
+            self._state = replace(self._state, phase=STOPPED)
+        if self._process.poll() is None:
+            self._process.terminate()
 
     def close(self, timeout: float = 600.0) -> None:
         """Stop the runner after the day under way (closing its input), then wait for it."""

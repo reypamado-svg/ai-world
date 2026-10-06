@@ -648,7 +648,7 @@ Planned with Fable 5.1 after O3 and its review. The user said "Start O4". Built 
   - a day is shown;
   - the newest saved day is fewer than `lookahead` days (default 3) ahead of it.
 
-  Only changes are sent to the runner. A new history pauses it.
+  Only changes are sent to the runner. A new history stops it: the runner is terminated at once, with no checkpoint, because its world and its store's journal tail are the old history's, and is reported as `stopped`. The control routes go on answering (review fix).
 - **Routes.** `GET` and `POST /api/control` (paused, lookahead 1–30, the day shown) sit behind the token, like every `/api` route. The token test now checks every method.
 - **One writer.** The runner is the only writer. The observer still never builds a store, and the runner never sees the observer or its token (a source check).
 
@@ -663,7 +663,8 @@ Planned with Fable 5.1 after O3 and its review. The user said "Start O4". Built 
 - **Labels.**
   - The clock: "Engine day 12 (recorded) · display 14:05 (presentation)".
   - The live chip: "playing at 100×", "following newest", "waiting for day N" or "paused".
-  - The runner chip: "RUNNER · running · day 15 of 365 · 3 ahead", "finished at day N" or "exited (code)".
+  - The runner chip: "RUNNER · running · day 15 of 365 · 3 ahead", "finished at day N", "stopped: the run's history changed" or "exited (code)".
+- **Only the newest day load is shown** (review fix). Each day load is numbered; one that a later load overtook shows nothing and posts nothing. Control posts go one at a time, so the last day asked is the one the runner is gated on.
 - **Opening.** With a runner attached, the page opens paused.
 
 **Following a party** (C4):
@@ -678,18 +679,19 @@ Planned with Fable 5.1 after O3 and its review. The user said "Start O4". Built 
   - the controlled runner waits, reports each day, stops after the day under way at the end of its input, and verifies.
 - **`tests/observer/test_runner_link.py`:**
   - the gate table;
-  - a new history pauses the runner;
+  - a new history stops the runner (a fake one, and a real one that had saved days of its own: the child is gone, and the journal bytes and checkpoints are unchanged);
   - the control route's checks;
   - the runner's environment without the token;
   - a real runner started and finished;
   - **a run driven from a scripted page** through `observe --run-days 31`, with a pause at day 10 and lookahead 5 from day 20: it saves the same journal bytes, prompt hashes, checkpoints and files as `run --days 31`, and the token is in no output.
 - **`tests/observer/test_replay_timeline.py`:** day records equal their replay.
-- **`observer/tests/timeline.test.mjs`:** stepping days with time carried over, holding at the end, the slider, the hash.
+- **`observer/tests/timeline.test.mjs`:** stepping days with time carried over, holding at the end, the slider, the hash; a slow day load that a later one overtakes shows nothing.
 - **`observer/tests/server.test.mjs`:**
   - **`observe --run-days 6`:**
     - it opens paused;
     - it runs up to the lookahead and waits;
     - one more day comes when the page moves on;
+    - of two day loads in a row, only the last is shown and posted as the day shown;
     - lookahead 1;
     - it finishes;
     - the shown hash equals `replay --day`;
@@ -713,4 +715,4 @@ Planned with Fable 5.1 after O3 and its review. The user said "Start O4". Built 
 **Known**
 - Pausing can leave the run one day further ahead than the lookahead, while it finishes the day under way.
 - Nothing stops a second `sovereign-world run` on the same run while a runner is attached; the README says so.
-- A journal cut back under a live runner pauses it and restarts the page, but the runner's own copy of the world is then stale: restart `observe --run-days`.
+- A journal cut back under a live runner stops it and restarts the page; restart `observe --run-days` to run the new history. A day that finishes in the half second before the cut is noticed is still appended, so cut a run only while it is paused. `WorldStore` itself still extends a shortened journal to its cached length (a follow-up).

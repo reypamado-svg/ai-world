@@ -23,6 +23,7 @@ from sovereign_world.observer import TOKEN_ENV
 from sovereign_world.observer.runner_link import (
     DONE,
     PAUSED,
+    STOPPED,
     RunnerLink,
     RunnerState,
     child_environment,
@@ -46,19 +47,25 @@ class FakeRunner:
     def __init__(self) -> None:
         self.sent: list[str] = []
         self.running = False
+        self.stopped = False
 
     def pause(self) -> None:
-        if self.running:
+        if self.running and not self.stopped:
             self.running = False
             self.sent.append("pause")
 
     def resume(self) -> None:
-        if not self.running:
+        if not self.running and not self.stopped:
             self.running = True
             self.sent.append("resume")
 
     def state(self) -> RunnerState:
-        return RunnerState(PAUSED, day=5, last_day=10)
+        return RunnerState(STOPPED if self.stopped else PAUSED, day=5, last_day=10)
+
+    def terminate(self) -> None:
+        self.stopped = True
+        self.running = False
+        self.sent.append("terminate")
 
     def close(self) -> None:
         self.sent.append("close")
@@ -105,24 +112,39 @@ def test_the_runner_goes_on_only_while_the_page_plays_close_behind(old_run: Path
     assert runner.sent[-1] == "close"
 
 
-def test_a_new_history_pauses_the_runner_until_the_page_starts_again(old_run: Path) -> None:
-    service = RunService(old_run)
-    service.walk_all()
-    runner = FakeRunner()
-    service.attach(runner)
-    service.set_control(paused=False, shown=5)
-    assert runner.running
-    journal = old_run / "journal.jsonl"
+def _cut_back_to_day_two(root: Path) -> bytes:
+    journal = root / "journal.jsonl"
     lines = journal.read_bytes().splitlines(keepends=True)
     keep = next(
         index
         for index, line in enumerate(lines)
         if b'"type":"transition"' in line and b'"day":2,' in line
     )
-    journal.write_bytes(b"".join(lines[: keep + 1]))
+    cut = b"".join(lines[: keep + 1])
+    journal.write_bytes(cut)
+    return cut
+
+
+def test_a_new_history_stops_the_runner_and_leaves_the_page_a_reason(old_run: Path) -> None:
+    service = RunService(old_run)
     service.walk_all()
+    runner = FakeRunner()
+    service.attach(runner)
+    service.set_control(paused=False, shown=5)
+    assert runner.running
+    _cut_back_to_day_two(old_run)
+    service.walk_all()
+    assert runner.sent[-1] == "terminate" and not runner.running
+    status = json.loads(service.status().body)
+    assert status["control"]["shown"] is None
+    assert status["runner"]["phase"] == "stopped"
+    # The page starts again and plays: the stopped runner is never resumed.
+    service.set_control(paused=False, shown=2)
     assert not runner.running
-    assert json.loads(service.status().body)["control"]["shown"] is None
+    assert "resume" not in runner.sent[runner.sent.index("terminate") :]
+    client = TestClient(build_app(service, TOKEN))
+    answer = client.post("/api/control", headers=AUTH, json={"paused": False, "shown": 2})
+    assert answer.status_code == 200 and answer.json()["runner"]["phase"] == "stopped"
 
 
 def test_without_a_runner_the_control_answers_409(old_run: Path) -> None:
@@ -180,6 +202,36 @@ def test_a_started_runner_waits_then_saves_and_finishes(old_run: Path) -> None:
         assert changes
     finally:
         link.close(timeout=60)
+
+
+def test_a_run_cut_back_under_a_live_runner_is_stopped_before_it_can_write(
+    old_run: Path,
+) -> None:
+    """The runner has saved days of its own, so closing its input would save a checkpoint of
+    its (now stale) world; a new history must stop it with nothing more written."""
+    service = RunService(old_run)
+    service.walk_all()
+    link = RunnerLink.spawn(old_run, 20, on_change=service.runner_changed)
+    try:
+        service.attach(link)
+        service.set_control(paused=False, shown=5)
+        # The gate holds it three days ahead of the day shown.
+        _wait(lambda: link.state().phase == PAUSED and (link.state().day or 0) >= 8)
+        journal = old_run / "journal.jsonl"
+        size = -1
+        while journal.stat().st_size != size:  # the day under way is saved
+            size = journal.stat().st_size
+            time.sleep(1.0)
+        cut = _cut_back_to_day_two(old_run)
+        checkpoints = _checkpoints(old_run)
+        service.poll()
+        _wait(lambda: link.state().exit_code is not None)
+        assert link.state().phase == STOPPED
+        time.sleep(1.0)
+        assert journal.read_bytes() == cut
+        assert _checkpoints(old_run) == checkpoints
+    finally:
+        service.stop()
 
 
 def _free_port() -> int:

@@ -347,9 +347,11 @@ class ObserverApp {
     chip.textContent =
       phase === 'done'
         ? `RUNNER · finished at day ${day}`
-        : phase === 'exited'
-          ? `RUNNER · exited (code ${code ?? '?'}) at day ${day}`
-          : `RUNNER · ${phase} · day ${day ?? '…'} of ${last ?? '…'}${ahead != null ? ` · ${ahead} ahead` : ''}`;
+        : phase === 'stopped'
+          ? "RUNNER · stopped: the run's history changed (restart observe --run-days to go on)"
+          : phase === 'exited'
+            ? `RUNNER · exited (code ${code ?? '?'}) at day ${day}`
+            : `RUNNER · ${phase} · day ${day ?? '…'} of ${last ?? '…'}${ahead != null ? ` · ${ahead} ahead` : ''}`;
     chip.title =
       'The run goes on only while the page plays, and at most the set number of days ahead of the day shown.';
   }
@@ -367,7 +369,8 @@ class ObserverApp {
     this.advanceDay();
   }
 
-  /** Step to the next recorded day, carrying the played time over; hold at the last one. */
+  /** Step to the next recorded day, carrying the played time over; hold at the last one.
+   * Null when nothing advanced, also when another day load took over meanwhile. */
   async advanceDay() {
     const tl = this.timeline;
     const run = this.runSource;
@@ -548,6 +551,7 @@ class ObserverApp {
 
   /** Load another exported day; the camera stays where it is. */
   async loadDay(day, { carry = false } = {}) {
+    const asked = (this.dayLoads = (this.dayLoads ?? 0) + 1);
     let loaded;
     try {
       loaded = await this.runSource.day(this.runSource.nearestDay(day));
@@ -556,6 +560,8 @@ class ObserverApp {
       this.startAgain();
       return null;
     }
+    // A later ask took over while this one was in flight: show nothing of it.
+    if (asked !== this.dayLoads) return null;
     this.showDay(populationOf(loaded, this.R));
     if (this.timeline) {
       const tl = this.timeline;

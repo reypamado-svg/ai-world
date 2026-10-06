@@ -443,6 +443,14 @@ test('a runner started by the observer plays with the page, stays a few days ahe
     await until(async () => (await status())?.saved_days[1] >= DAYS + 4, 60000, 'one more day');
     // The shown day's hash is the replay's.
     const hash = await page.evaluate(() => window.__observer.runInfo().hash);
+    // Two day loads in a row: only the last one asked is shown, and posted as the day shown.
+    await page.waitForFunction((d) => window.__observer.timelineInfo().days.includes(d), DAYS + 3);
+    const loads = await page.evaluate(
+      (d) => Promise.all([window.__observer.loadDay(d + 2), window.__observer.loadDay(d + 3)]),
+      DAYS,
+    );
+    assert.deepEqual(loads, [null, DAYS + 3]);
+    await until(async () => (await status())?.control?.shown === DAYS + 3, 30000, 'the last day asked');
     // Lookahead 1: already far enough ahead, so it waits.
     await page.evaluate(() => window.__observer.setLookahead(1));
     s = await status();
