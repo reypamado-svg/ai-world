@@ -1,0 +1,41 @@
+{
+  "name": "sample",
+  "license": "generated from this repository's painters; no external assets",
+  "entries": {
+    "building.well": {
+      "file": "building.well.png",
+      "anchor": {
+        "x": 98,
+        "y": 104
+      }
+    },
+    "building.well#shadow": {
+      "file": "building.well--shadow.png",
+      "anchor": {
+        "x": 87,
+        "y": 53
+      }
+    },
+    "nature.oak.0": {
+      "file": "nature.oak.0.png",
+      "anchor": {
+        "x": 100,
+        "y": 194
+      }
+    },
+    "person.0.idle.front.0": {
+      "file": "person.0.idle.front.0.png",
+      "anchor": {
+        "x": 32,
+        "y": 96
+      }
+    },
+    "person.0.idle.front.0#mask": {
+      "file": "person.0.idle.front.0--mask.png",
+      "anchor": {
+        "x": 6,
+        "y": 40
+      }
+    }
+  }
+}

@@ -1,5 +1,10 @@
-// Baking: paint assets (or, later, load pack images) into the shared atlas,
-// and bake ground tiles for a sample scene.
+// Baking: paint assets, or load them from an art pack, into the shared atlas, and bake ground
+// tiles for a sample scene.
+//
+// An art pack (O6) is a folder `art/packs/NAME/` with `pack.json` and one PNG per key it
+// replaces (see `art/manifest.json` for every key and what it must be). Its sprites are added
+// to the atlas before the painters run; the atlas keeps the first sprite under a key, so the
+// painters then fill in every key the pack does not have, and nothing else changes.
 
 import { project, unproject } from '../../world/coords.js';
 import { CIV_COLORS, checkContract, staticAssetPainters } from './registry.js';
@@ -36,11 +41,17 @@ export async function bakeStaticAssets(atlas, civColor, status = () => {}) {
     // Buildings keep their full 2x art for the settlement band; the rest is stored at 1x, as
     // are painters that ask for it (the town walls' small modules).
     const art = { art: p.art ?? (p.category === 'building' ? 2 : 1) };
-    atlas.add(id, r.canvas, r.anchor, {}, art);
+    const entry = atlas.add(id, r.canvas, r.anchor, {}, art);
     if (r.shadow) atlas.add(`${id}#shadow`, r.shadow.canvas, r.shadow.anchor, {}, art);
     assetInfo.set(id, { footprint: r.footprint, doors: r.doors, category: p.category, height: r.height });
+    // A sprite from an art pack is held to the footprint the registry gives, as painted art is.
+    const sprite = entry?.meta?.pack ? { ...r, canvas: entry.meta.canvas, anchor: entry.meta.anchor } : r;
     // Buildings may exceed their wall footprint by the roof overhang (<= 0.6 m a side).
-    contract.push(checkContract(id, r, p.category === 'building' ? 1.3 : 0.9));
+    contract.push({
+      ...checkContract(id, sprite, p.category === 'building' ? 1.3 : 0.9),
+      ...(entry?.meta?.pack ? { pack: entry.meta.pack } : {}),
+    });
+    if (entry?.meta?.canvas) delete entry.meta.canvas;
     count += 1;
     if (count % 6 === 0) await nextFrame();
   }
@@ -54,7 +65,7 @@ export async function bakeStaticAssets(atlas, civColor, status = () => {}) {
  * Cropped to the accents (on even pixels, so halving keeps it aligned with the
  * frame); returns the canvas and the frame's anchor in its pixels.
  */
-function accentMask(white, black, anchor) {
+export function accentMask(white, black, anchor) {
   const W = white.width;
   const H = white.height;
   const w = white.getContext('2d').getImageData(0, 0, W, H);
@@ -114,7 +125,9 @@ export async function bakeSceneActors(atlas, scene, status = () => {}) {
           const f = personFrameCanvas(white, anim, facing, i / spec.frames);
           const g = personFrameCanvas(black, anim, facing, i / spec.frames);
           const key = personFrameKey(a, anim, facing, i);
-          atlas.add(key, f.canvas, f.anchor, {}, ONE_X);
+          const entry = atlas.add(key, f.canvas, f.anchor, {}, ONE_X);
+          // A frame from an art pack takes only the pack's own mask: a painted one would not fit.
+          if (entry?.meta?.pack) continue;
           const mask = accentMask(f.canvas, g.canvas, f.anchor);
           if (mask) atlas.add(`${key}#mask`, mask.canvas, mask.anchor, {}, ONE_X);
         }
@@ -210,4 +223,67 @@ export async function bakeSceneGround(
     }
   }
   return { container, bytes, field };
+}
+
+const CHECKED_CATEGORIES = new Set(['building', 'nature', 'prop']);
+
+/**
+ * Load an art pack into the atlas, before the painters run (see the top of this file).
+ * @param {object} atlas the atlas the painters will fill
+ * @param {string} name the pack's folder under `art/packs/`
+ * @param {(text: string) => void} status
+ * @returns {Promise<{ name: string, fromPack: string[], unknown: string[], error: string | null,
+ *   keys: number }>} the keys that came from the pack, keys the manifest does not know (ignored),
+ *   why the pack could not be used (then nothing came from it), and how many sprite keys (not
+ *   masks or shadows) the manifest lists
+ */
+export async function loadArtPack(atlas, name, status = () => {}, { base = 'art' } = {}) {
+  const report = { name, fromPack: [], unknown: [], error: null, keys: 0 };
+  const json = async (url) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+    return res.json();
+  };
+  let manifest;
+  let pack;
+  try {
+    manifest = await json(`${base}/manifest.json`);
+    report.keys = Object.keys(manifest.keys).filter((key) => !key.includes('#')).length;
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) throw new Error(`"${name}" is not a pack name`);
+    pack = await json(`${base}/packs/${name}/pack.json`);
+  } catch (err) {
+    report.error = String(err.message ?? err);
+    return report;
+  }
+  // Every image is fetched before any is added, so a pack that fails part way adds nothing.
+  const sprites = [];
+  try {
+    for (const [key, entry] of Object.entries(pack.entries ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+      const spec = manifest.keys[key];
+      if (!spec) {
+        report.unknown.push(key);
+        continue;
+      }
+      status(`Loading ${key} from the ${name} art pack`);
+      const res = await fetch(`${base}/packs/${name}/${entry.file}`);
+      if (!res.ok) throw new Error(`${entry.file}: HTTP ${res.status}`);
+      const image = await createImageBitmap(await res.blob());
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      canvas.getContext('2d').drawImage(image, 0, 0);
+      sprites.push({ key, canvas, anchor: { x: entry.anchor.x, y: entry.anchor.y }, spec });
+    }
+  } catch (err) {
+    report.error = String(err.message ?? err);
+    return report;
+  }
+  for (const { key, canvas, anchor, spec } of sprites) {
+    // A static asset's canvas is kept until `bakeStaticAssets` has checked it against its
+    // footprint; nothing else is checked, so nothing else keeps one.
+    const checked = CHECKED_CATEGORIES.has(spec.category) ? { canvas } : {};
+    atlas.add(key, canvas, anchor, { pack: name, anchor, ...checked }, { art: spec.art });
+    report.fromPack.push(key);
+  }
+  return report;
 }

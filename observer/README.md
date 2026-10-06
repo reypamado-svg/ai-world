@@ -22,8 +22,8 @@ Everything on screen says where it comes from:
   placed at the centre of the first civilization's capital tile. They prove nothing about what the simulation records or supports.
 - **PROTOTYPE ARTWORK.** All sprites are original and procedurally painted in
   the browser from code. They sit behind an asset contract
-  (`src/render/art/registry.js`) so a licensed pack can replace them one at a
-  time.
+  (`src/render/art/registry.js`, listed in `art/manifest.json`) so an art pack
+  can replace them one key at a time (`?art=NAME`, see [Art packs](#art-packs-o6)).
 - **Visual approximation.** Street-level movement is a deterministic
   presentation of sample routines (`src/sim/paths.js`): a pure function of
   person and display time. Camera, zoom, selection and following never change
@@ -257,6 +257,52 @@ Rules that keep this working:
   costs (`src/sim/travel-plan.js`): five hours of walking a day, then camp;
   fords waded at the border; never across deep rivers or water.
 
+## Art packs (O6)
+
+`?art=NAME` draws with the PNG sprites in `art/packs/NAME/` wherever the pack has
+one, and with the painted art for every other key. No code changes: the pack's
+sprites go into the atlas before the painters run, and the atlas keeps the first
+sprite under a key. The chip reads `ART PACK: NAME · N of M keys from PNG`; a pack
+that cannot be loaded leaves every sprite painted and the chip says so.
+
+**The contract.** `art/manifest.json` lists every key the renderer can ask for,
+generated from the painters (`node tests/art-manifest.mjs`; a test keeps it
+fresh). For each key it gives the category, the size and anchor of the painted
+sprite in art pixels (twice screen pixels at zoom 1), how the atlas keeps it
+(`art` 2: at that size, buildings; `art` 1: halved), and for static assets the
+ground footprint in metres (fixed by the registry, used for depth order) and a
+building's height.
+
+- Draw a sprite at the manifest's size, with its anchor on the ground point.
+  A different size works (the checker warns), but a static asset may not be
+  wider than its projected footprint plus a small overhang; the page checks
+  this and counts failures on the chip.
+- `KEY#shadow` is an optional soft shadow drawn under the sprite.
+- `KEY#mask` holds a citizen frame's civilization accents in white, anchored
+  to the frame's ground point (it may be cropped). It is tinted with each
+  civilization's colour. A frame from a pack without its mask is drawn in its
+  own colours; a mask or shadow without its sprite in the pack is an error.
+- Building colours (banners, pennants) are painted in; buildings have no mask.
+
+**The pack.** One PNG per key and a `pack.json`:
+
+```json
+{
+  "name": "sample",
+  "license": "generated from this repository's painters; no external assets",
+  "entries": { "building.well": { "file": "building.well.png", "anchor": { "x": 98, "y": 104 } } }
+}
+```
+
+```sh
+node tests/art-export.mjs mypack building.well nature.oak.0   # painted sprites as a starting pack
+node tests/art-pack-check.mjs art/packs/mypack                 # check a pack; exit code 1 on errors
+```
+
+The sample pack (`art/packs/sample/`: a well and its shadow, an oak, and a
+citizen's first idle frame with its mask) is the painters' own art, exported;
+it holds no external assets.
+
 ## Tests
 
 ```sh
@@ -268,32 +314,36 @@ node tests/measure.mjs captures --people=1000,100000   # the same with a synthet
 node tests/capture-observer.mjs captures --clip        # review stills and zoom-through clip
 node tests/capture.mjs captures --depth --clip         # art-proof stills, depth sheet, clip
 node tests/capture-geography.mjs captures              # terrain stills: world, range, river, desert, lake
+node tests/art-manifest.mjs                            # regenerate art/manifest.json after changing a painter
 ```
 
-| Test file                  | What it proves                                                                                                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `depth.test.mjs`           | Ten pinned overlap cases by draw order and by pixel; indoor citizens never drawn; negative control                                                                 |
-| `order-snapshot.test.mjs`  | Refactors do not change the art proof's draw order                                                                                                                 |
-| `hex.test.mjs`             | Hex layout: round trips, 25 km spacing, horizontal rows, chunk partition, tile sizes on screen                                                                     |
-| `travel-plan.test.mjs`     | Courier days: five hours walking then camp, terrain costs, ford wading time, deep rivers and water refused, continuity                                             |
-| `rivers.test.mjs`          | Channel widths by depth class, the same wandering curve from either tile                                                                                           |
-| `interior.test.mjs`        | Ground field: determinism, border blending, one wandering shoreline with beach and shallows, snow line, fields, no aliasing, cover patches and ponds by share      |
-| `patches.test.mjs`         | Ground patch sizes and the size chosen at each zoom                                                                                                                |
-| `precision.test.mjs`       | Local-origin rule: a far tile paints identically from any nearby anchor; village graphics stay local with the courier 50 km out                                    |
-| `streaming.test.mjs`       | R4: 60 rapid jumps over a synthetic 4096 × 4096 world with latency stay within request and cache budgets, stale requests are dropped, textures return to baseline  |
-| `bands.test.mjs`           | Zoom continuity across four bands, selection, follow days into the courier's journey, patches within budget, speeds 1×–100×, sites, camera independence, pause     |
-| `counts.test.mjs`          | R9 count identities at 400 and 2,000 citizens in every band                                                                                                        |
-| `atlas.test.mjs`           | At 5,000 citizens the atlas is at most three 2048 px pages and 60 MB with the ground, well filled, with every key the renderer asks for and a mask for each frame  |
-| `population.test.mjs`      | Synthetic people: shares, determinism, unique ids found again, plausible ages and households, at most 64 bytes a person                                            |
-| `settlement-plan.test.mjs` | Houses for everyone, wards growing with the square root of the population, clear of core and fields, routine tables, walks on the streets, 100K placed in ms       |
-| `crowd.test.mjs`           | At 5,000 and 50,000 people: counts in every band, the crowd budget, 200 people picked exactly, following, cell lists, heap and update time                         |
-| `budgets.test.mjs`         | Caps from the screen size; the observer at 3840 × 2160 and 1280 × 720 stays within them and recomputes them on resize                                              |
-| `tour.test.mjs`            | The measurement tour holds the camera against wheel, drag and buttons, labels each row with the band it measured, records evictions, heap and load times           |
-| `server.test.mjs`          | Live server: wrong token, newest day, Follow latest, later day in 5 s, run unchanged, Go/Follow, travellers, cut-back restart                                      |
-| `chronicle.test.mjs`       | Chronicle sentences with observer-assigned names, how each place was found, routine events hidden, the person an event names                                       |
-| `server-source.test.mjs`   | Live source: answers from another history refused (also a record and people from two), the token dropped from the address                                          |
-| `timeline.test.mjs`        | Replay timeline: days stepped with the time carried over, holding at the last day, the slider, each day's recorded hash                                            |
-| `perspective.test.mjs`     | A civilization's view: its people as its council counts them, council news, then in the page fog, kept camera, hidden world sites and chronicle, the run unchanged |
+| Test file                  | What it proves                                                                                                                                                                                                            |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `depth.test.mjs`           | Ten pinned overlap cases by draw order and by pixel; indoor citizens never drawn; negative control                                                                                                                        |
+| `order-snapshot.test.mjs`  | Refactors do not change the art proof's draw order                                                                                                                                                                        |
+| `hex.test.mjs`             | Hex layout: round trips, 25 km spacing, horizontal rows, chunk partition, tile sizes on screen                                                                                                                            |
+| `travel-plan.test.mjs`     | Courier days: five hours walking then camp, terrain costs, ford wading time, deep rivers and water refused, continuity                                                                                                    |
+| `rivers.test.mjs`          | Channel widths by depth class, the same wandering curve from either tile                                                                                                                                                  |
+| `interior.test.mjs`        | Ground field: determinism, border blending, one wandering shoreline with beach and shallows, snow line, fields, no aliasing, cover patches and ponds by share                                                             |
+| `patches.test.mjs`         | Ground patch sizes and the size chosen at each zoom                                                                                                                                                                       |
+| `precision.test.mjs`       | Local-origin rule: a far tile paints identically from any nearby anchor; village graphics stay local with the courier 50 km out                                                                                           |
+| `streaming.test.mjs`       | R4: 60 rapid jumps over a synthetic 4096 × 4096 world with latency stay within request and cache budgets, stale requests are dropped, textures return to baseline                                                         |
+| `bands.test.mjs`           | Zoom continuity across four bands, selection, follow days into the courier's journey, patches within budget, speeds 1×–100×, sites, camera independence, pause                                                            |
+| `counts.test.mjs`          | R9 count identities at 400 and 2,000 citizens in every band                                                                                                                                                               |
+| `atlas.test.mjs`           | At 5,000 citizens the atlas is at most three 2048 px pages and 60 MB with the ground, well filled, with every key the renderer asks for and a mask for each frame                                                         |
+| `population.test.mjs`      | Synthetic people: shares, determinism, unique ids found again, plausible ages and households, at most 64 bytes a person                                                                                                   |
+| `settlement-plan.test.mjs` | Houses for everyone, wards growing with the square root of the population, clear of core and fields, routine tables, walks on the streets, 100K placed in ms                                                              |
+| `crowd.test.mjs`           | At 5,000 and 50,000 people: counts in every band, the crowd budget, 200 people picked exactly, following, cell lists, heap and update time                                                                                |
+| `budgets.test.mjs`         | Caps from the screen size; the observer at 3840 × 2160 and 1280 × 720 stays within them and recomputes them on resize                                                                                                     |
+| `tour.test.mjs`            | The measurement tour holds the camera against wheel, drag and buttons, labels each row with the band it measured, records evictions, heap and load times                                                                  |
+| `server.test.mjs`          | Live server: wrong token, newest day, Follow latest, later day in 5 s, run unchanged, Go/Follow, travellers, cut-back restart                                                                                             |
+| `chronicle.test.mjs`       | Chronicle sentences with observer-assigned names, how each place was found, routine events hidden, the person an event names                                                                                              |
+| `server-source.test.mjs`   | Live source: answers from another history refused (also a record and people from two), the token dropped from the address                                                                                                 |
+| `timeline.test.mjs`        | Replay timeline: days stepped with the time carried over, holding at the last day, the slider, each day's recorded hash                                                                                                   |
+| `perspective.test.mjs`     | A civilization's view: its people as its council counts them, council news, then in the page fog, kept camera, hidden world sites and chronicle, the run unchanged                                                        |
+| `layout.test.mjs`          | Every control of a recorded run lies within the window at 1440 × 900 and 1280 × 720                                                                                                                                       |
+| `art-manifest.test.mjs`    | The committed art manifest equals the painters' own; sizes, anchors and a mask for every citizen frame                                                                                                                    |
+| `art-pack.test.mjs`        | `?art=sample`: three sprites from PNG, the rest painted, within the contract, nothing missing; a sprite outside its footprint counted; a missing pack falls back; the checker passes the sample and catches a broken pack |
 
 ## Layout
 
@@ -310,6 +360,7 @@ node tests/capture-geography.mjs captures              # terrain stills: world, 
 | `src/sim/travel-plan.js`                                                                       | The courier's multi-day walk from the engine's travel costs                                 |
 | `src/render/village-layer.js`, `scene-renderer.js`, `depth.js`                                 | Village drawing, bands, picking, depth order                                                |
 | `src/render/art/`                                                                              | Asset contract, painters, atlas                                                             |
+| `art/manifest.json`, `art/packs/`                                                              | The asset contract, key by key (generated); art packs, with the sample                      |
 | `src/render/perspective-layer.js`, `src/data/perspective-source.js`, `src/ui/council-panel.js` | One civilization's view (O5): fog, veils, known places, its people as counted, council news |
 | `src/ui/`                                                                                      | Inspector, minimap, quality, frame statistics, screen-scaled budgets                        |
 | `src/data/population.js`, `src/data/synthetic/people.js`                                       | People as typed columns; the synthetic population (the O2 reader will fill the same)        |

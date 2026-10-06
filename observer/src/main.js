@@ -26,7 +26,7 @@ import { RunOverlays } from './render/run-overlays.js';
 import { CapitalMarkers, SiteMarkers } from './render/markers.js';
 import { Atlas } from './render/art/atlas.js';
 import { CIV_COLORS } from './render/art/registry.js';
-import { bakeSceneActors, bakeSceneGround, bakeStaticAssets } from './render/art/bake.js';
+import { bakeSceneActors, bakeSceneGround, bakeStaticAssets, loadArtPack } from './render/art/bake.js';
 import { Camera } from './camera.js';
 import { Minimap } from './ui/minimap.js';
 import { Inspector } from './ui/inspector.js';
@@ -58,6 +58,8 @@ const RUN = params.get('run');
 const LIVE = RUN === 'live';
 const RUN_BASE = RUN && !LIVE && (RUN.includes('/') ? RUN : `data/runs/${RUN}`);
 const LIVE_POLL_MS = 1000;
+// ?art=NAME: draw with the art pack in `art/packs/NAME/` where it has a sprite (O6).
+const ART_PACK = params.get('art');
 // A recorded day lasts this many display seconds when played (14.4 real minutes at 100×).
 const DAY_S = 86400;
 // The live server's token: read from the fragment once and dropped from the address at once,
@@ -1344,6 +1346,8 @@ function buildApi(app) {
     /** The art atlas: pages, fill, and pixels by kind, plus the village ground's bytes. */
     atlasStats: () => ({ ...app.atlas.stats(), groundBytes: Math.round(app.groundBytes) }),
     atlasKeys: () => [...app.atlas.entries.keys()],
+    /** The `?art=` pack: what came from it, why it was not used, and contract failures (O6). */
+    artPack: () => app.artPack,
     /** The population feed (?people=N): totals, bytes and each settlement's plan. */
     populationStats: () => {
       const pop = app.population;
@@ -1742,6 +1746,44 @@ function keepPanelsBelow(bar) {
   place();
 }
 
+/** Load the `?art=` pack, if one is asked for, before the painters fill the atlas. */
+async function loadPack(atlas) {
+  return ART_PACK === null ? null : loadArtPack(atlas, ART_PACK, setStatus);
+}
+
+/** What an art pack gave: its keys, its sprites (keys that are not masks or shadows) out of the
+ * manifest's, keys it has that the manifest does not, why it was not used, and its sprites that
+ * break the asset contract (outside their footprint). */
+function packReport(pack, contract) {
+  if (!pack) return null;
+  return {
+    name: pack.name,
+    fromPack: pack.fromPack,
+    sprites: pack.fromPack.filter((key) => !key.includes('#')).length,
+    keys: pack.keys,
+    unknown: pack.unknown,
+    error: pack.error,
+    contractFailures: contract.filter((c) => c.pack && !c.ok).map((c) => c.id),
+  };
+}
+
+function showArtChip(pack) {
+  if (!pack) return;
+  const chip = $('art-chip');
+  if (pack.error) {
+    chip.textContent = `PROTOTYPE ARTWORK · art pack “${pack.name}” not loaded`;
+    chip.title = `The art pack could not be used, so every sprite is painted: ${pack.error}`;
+    return;
+  }
+  const broken = pack.contractFailures.length;
+  chip.textContent =
+    `ART PACK: ${pack.name} · ${pack.sprites} of ${pack.keys} keys from PNG` +
+    (broken ? ` · ${broken} outside their footprint` : '');
+  chip.title =
+    `Sprites from art/packs/${pack.name}/ where it has them; procedurally painted art for every other key.` +
+    (pack.unknown.length ? ` Ignored, not in the manifest: ${pack.unknown.join(', ')}.` : '');
+}
+
 async function main() {
   const stageEl = $('stage');
   const pixi = new PIXI.Application();
@@ -1782,7 +1824,9 @@ async function main() {
     source = await run.terrain();
     extras = { overview: await source.overview(), run, terrainOptions: { gpuBytes: 192e6, gpuEntries: 256 } };
     const atlas = new Atlas(PIXI);
-    const { assetInfo } = await bakeStaticAssets(atlas, CIV_COLORS[0], setStatus);
+    const pack = await loadPack(atlas);
+    const { assetInfo, contract } = await bakeStaticAssets(atlas, CIV_COLORS[0], setStatus);
+    extras.artPack = packReport(pack, contract);
     const designs = Array.from({ length: APPEARANCE_COUNT }, (_, a) => ({ appearance: a }));
     await bakeSceneActors(atlas, { people: designs, caravan: null }, setStatus);
     atlas.finalize();
@@ -1796,7 +1840,9 @@ async function main() {
     const day0 = await source.day0();
     extras = { overview: await source.overview(), day0, terrainOptions: { gpuBytes: 192e6, gpuEntries: 256 } };
     const atlas = new Atlas(PIXI);
-    const { assetInfo } = await bakeStaticAssets(atlas, CIV_COLORS[0], setStatus);
+    const pack = await loadPack(atlas);
+    const { assetInfo, contract } = await bakeStaticAssets(atlas, CIV_COLORS[0], setStatus);
+    extras.artPack = packReport(pack, contract);
     const footprintOf = (asset) => assetInfo.get(asset).footprint;
     const tile = day0.civilizations[0].capital.tile;
     const { route, travel } = await courierRoute(source, tile);
@@ -1824,6 +1870,8 @@ async function main() {
     ? source.label
     : `Engine world · seed ${source.manifest.engine.seed} · ${source.width}×${source.height} tiles`;
   const app = new ObserverApp(pixi, source, extras);
+  app.artPack = extras.artPack ?? null;
+  showArtChip(app.artPack);
   if (extras.run) app.showRun(extras.run, extras.population);
   // ?civ=K: open seen as civilization number K (O5).
   const civ = params.get('civ');

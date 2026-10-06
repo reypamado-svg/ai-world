@@ -98,3 +98,15 @@ speed and lookahead.
 | The engine's own report hides what a civilization cannot know | `test_an_unlearned_capture_is_hidden`, `test_an_unseen_siege_and_occupation_are_hidden`, `test_an_unheard_treaty_ending_is_hidden`, `test_unseen_ruins_and_the_worlds_ending_are_hidden` |
 | The page draws only what the report says, with opaque fog, and drops late world answers | `perspective.test.mjs` › "the page sees the world as one civilization, and back", `perspective.test.mjs` › "the perspective layer covers unknown tiles opaquely and veils old sightings" |
 | An export's perspectives are the server's bytes | `test_an_export_with_perspectives_has_the_servers_bytes` |
+
+## Exit readiness (O6)
+
+| Promise | Proved by |
+|---|---|
+| Every control of a recorded run is on screen at common window sizes | `layout.test.mjs` › "a run's controls are all on screen at" |
+| The measurement tour records the run, day and perspective it measured, and never resumes a runner | `tour.test.mjs` › "the tour measures a recorded run, with its day loads", `server.test.mjs` › "a runner started by the observer plays with the page, stays a few days ahead, and finishes" |
+| The server's answers can be timed on any run without calling a model | `test_the_route_timings_table_lists_every_measure` |
+| The art manifest lists every key the painters make, and is kept fresh | `art-manifest.test.mjs` › "the committed art manifest equals a fresh one" |
+| An art pack replaces painted sprites key by key, within the asset contract | `art-pack.test.mjs` › "the sample pack draws its sprites from PNG and the painters fill the rest", `art-pack.test.mjs` › "a pack sprite outside its footprint is drawn, and counted on the chip" |
+| A pack that cannot be loaded leaves the painted art and says so | `art-pack.test.mjs` › "a pack that is not there leaves the painted art, and says so" |
+| The pack checker passes a good pack and names what is wrong with a bad one | `art-pack.test.mjs` › "the pack checker passes the sample and catches a broken pack" |
