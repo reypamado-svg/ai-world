@@ -28,6 +28,7 @@ def record_changes(before: dict[str, Any], after: dict[str, Any]) -> dict[str, A
     return {
         "day": after["day"],
         "from": before["day"],
+        "state_hash": after["state_hash"],
         "counts": after["counts"],
         "order": ids,
         "settlements": [row for row in after["settlements"] if old.get(row["id"]) != row],
@@ -57,6 +58,7 @@ def apply_changes(before: dict[str, Any], changes: dict[str, Any]) -> dict[str, 
         owners[(q, r)] = owner
     return {
         "day": changes["day"],
+        "state_hash": changes["state_hash"],
         "counts": changes["counts"],
         "settlements": [rows[settlement_id] for settlement_id in changes["order"]],
         "travellers": changes["travellers"],

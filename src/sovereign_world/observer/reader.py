@@ -220,6 +220,17 @@ class RunReader:
             if day in self._transitions
         )
 
+    def recorded_hash(self, day: int) -> str:
+        """The state hash the run saved for a day (its journal record's, or for the first day
+        the checkpoint's, which is verified on loading)."""
+        start = self._first_checkpoint()
+        if day == start.day:
+            return self._state_hash(start)
+        record = self._transitions.get(day)
+        if record is None:
+            raise KeyError(f"day {day} is not saved in this run")
+        return str(self._payload(record)["state_hash"])
+
     def iter_days(self) -> Iterator[WorldState]:
         for day in self.days():
             yield self.state_at(day)

@@ -152,7 +152,7 @@ def test_a_planned_town_exports_its_plan_and_walls() -> None:
     civilization.wall_rings = {
         capital.settlement_id: ring.model_copy(update={"sections": sections})
     }
-    record = day_record(project_day(state))
+    record = day_record(project_day(state), state_hash="")
     row = next(item for item in record["settlements"] if item["id"] == capital.settlement_id)
     assert row["plan"] == {
         "style": "open",
@@ -196,7 +196,7 @@ def test_a_planned_town_exports_its_plan_and_walls() -> None:
     civilization.defence_orders = {
         capital.settlement_id: DefenceOrder(settlement_id=capital.settlement_id, set_day=3)
     }
-    record = day_record(project_day(state))
+    record = day_record(project_day(state), state_hash="")
     row = next(item for item in record["settlements"] if item["id"] == capital.settlement_id)
     assert row["walls"] == {
         "ring": 2,
@@ -219,7 +219,7 @@ def test_a_planned_town_exports_its_plan_and_walls() -> None:
     older = build_initial_state(RunManifest.new(config, "0.1.0", rules_version=2))
     assert all(
         "plan" not in item and "walls" not in item
-        for item in day_record(project_day(older))["settlements"]
+        for item in day_record(project_day(older), state_hash="")["settlements"]
     )
 
 
@@ -241,7 +241,7 @@ def test_the_committed_town_fixture_is_a_fresh_export(tmp_path: Path) -> None:
     [fortified] = [item for item in walled if "citadel" in item["walls"]]
     assert fortified["walls"]["gatehouses"] == [0, 5] and fortified["defence"]
     manifest = json.loads((tmp_path / "fresh" / "manifest.json").read_text())
-    assert manifest["export_version"] == 3
+    assert manifest["export_version"] == 4
     assert _files(TOWN) == _files(tmp_path / "fresh"), (
         "observer/tests/fixtures/run-town is stale: run tests/observer/town_fixture.py's "
         "record_town and export days 0 and 18 there"

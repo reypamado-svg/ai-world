@@ -252,7 +252,8 @@ class RunService:
                 number = self._numbers[person_id] = len(self._ordered)
                 self._ordered.append(person_id)
             numbers.append(number)
-        return encode_json(day_record(view)), people_bytes(view, numbers)
+        record = day_record(view, state_hash=self._reader.recorded_hash(day))
+        return encode_json(record), people_bytes(view, numbers)
 
     def _keep(self, cache: OrderedDict[int, bytes], day: int, body: bytes) -> None:
         cache[day] = body

@@ -37,10 +37,12 @@ from sovereign_world.observer.reader import RunReader
 from sovereign_world.observer.terrain_export import export_terrain_for
 from sovereign_world.state import build_initial_state
 
-EXPORT_VERSION = 3
+EXPORT_VERSION = 4
 """2: settlements of rules-3 runs carry their town `plan` and wall ring (`walls`).
 3: walls also carry, where there are any, `tower_sections`, `gatehouses`, `ditch`, `stakes`
-and `citadel`; settlements carry their standing `defence` order."""
+and `citadel`; settlements carry their standing `defence` order.
+4: each day carries the `state_hash` the run saved for it, so a shown day can be checked
+against a replay of the run."""
 PEOPLE_LAYOUT: tuple[tuple[str, str], ...] = (
     ("id", "<u4"),
     ("settlement", "<u2"),
@@ -94,9 +96,10 @@ def people_bytes(view: DayProjection, numbers: list[int]) -> bytes:
     return gzip.compress(raw, compresslevel=GZIP_LEVEL, mtime=0)
 
 
-def day_record(view: DayProjection) -> dict[str, Any]:
+def day_record(view: DayProjection, *, state_hash: str) -> dict[str, Any]:
     return {
         "day": view.day,
+        "state_hash": state_hash,
         "counts": view.counts(),
         "settlements": [
             {
@@ -215,7 +218,8 @@ def export_run(
         view = project_day(reader.state_at(day))
         civilizations = civilizations or view.civilizations
         ids = [numbers.setdefault(person_id, len(numbers)) for person_id in view.people.ids]
-        total += _dump(out_dir / "days" / f"d{day:06d}.json", day_record(view))
+        record = day_record(view, state_hash=reader.recorded_hash(day))
+        total += _dump(out_dir / "days" / f"d{day:06d}.json", record)
         blob = people_bytes(view, ids)
         (out_dir / "days" / f"d{day:06d}.people.bin.gz").write_bytes(blob)
         total += len(blob)

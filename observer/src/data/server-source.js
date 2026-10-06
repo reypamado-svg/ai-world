@@ -29,6 +29,7 @@ export function applyChanges(before, changes) {
     day: changes.day,
     owners: sorted,
     settlements: changes.order.map((id) => rows.get(id)),
+    state_hash: changes.state_hash,
     travellers: changes.travellers,
   };
 }
