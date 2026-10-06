@@ -153,6 +153,10 @@ def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT
     def routes(day: int) -> Response:
         return _json(day_or_error(lambda: service.routes(day)))
 
+    @api.get("/run/days/{day}/perspective/{civ}")
+    def perspective(day: int, civ: int) -> Response:
+        return _json(day_or_error(lambda: service.perspective(day, civ)))
+
     @api.get("/run/chronicle")
     def chronicle(day: int = Query(..., ge=0)) -> Response:
         return _json(day_or_error(lambda: service.chronicle(day)))

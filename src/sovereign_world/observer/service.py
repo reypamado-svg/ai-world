@@ -25,8 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from sovereign_world.commands import build_council_report
+from sovereign_world.ids import EntityId
 from sovereign_world.observer.changes import record_changes, routes
 from sovereign_world.observer.chronicle import chronicle_entries
+from sovereign_world.observer.perspective import perspective_record
 from sovereign_world.observer.projection import project_day
 from sovereign_world.observer.reader import RunReader
 from sovereign_world.observer.run_export import (
@@ -113,6 +116,7 @@ class RunService:
         self._cache: OrderedDict[int, tuple[bytes, bytes]] = OrderedDict()
         self._chronicles: OrderedDict[int, bytes] = OrderedDict()
         self._routes: OrderedDict[int, bytes] = OrderedDict()
+        self._perspectives: OrderedDict[tuple[int, int], bytes] = OrderedDict()
         self._terrain: TerrainBundle | None = None
         # A new history: the page starts again, so the runner waits for it.
         self._runner.control.shown = None
@@ -265,7 +269,7 @@ class RunService:
         record = day_record(view, state_hash=self._reader.recorded_hash(day))
         return encode_json(record), people_bytes(view, numbers)
 
-    def _keep(self, cache: OrderedDict[int, bytes], day: int, body: bytes) -> None:
+    def _keep(self, cache: OrderedDict[Any, bytes], day: Any, body: bytes) -> None:
         cache[day] = body
         cache.move_to_end(day)
         while len(cache) > self.cache_days:
@@ -351,6 +355,22 @@ class RunService:
             if body is None:
                 body = encode_json(routes(self._reader.state_at(day)))
             self._keep(self._routes, day, body)
+            return Served(self.epoch, body)
+
+    def perspective(self, day: int, civ: int) -> Served:
+        """What civilization number `civ` knows on a saved day: its council report for that
+        day, as `perspective_record` serializes it. This is the one place a report is built
+        from a day's world; the record is made from the report alone."""
+        with self._lock:
+            self._day_files(day)
+            if not 0 <= civ < len(self._civilizations):
+                raise KeyError(f"no civilization number {civ} in this run")
+            body = self._perspectives.get((day, civ))
+            if body is None:
+                state = self._reader.state_at(day)
+                report = build_council_report(state, EntityId(self._civilizations[civ]))
+                body = encode_json(perspective_record(report))
+            self._keep(self._perspectives, (day, civ), body)
             return Served(self.epoch, body)
 
     def chronicle(self, day: int) -> Served:

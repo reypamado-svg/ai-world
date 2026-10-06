@@ -104,7 +104,7 @@ def test_every_api_route_needs_the_token(old_run: Path) -> None:
     service.walk_all()
     app = build_app(service, TOKEN)
     client = TestClient(app)
-    fill = {"day": "1", "path": "manifest.json", "rest": "anything"}
+    fill = {"day": "1", "civ": "0", "path": "manifest.json", "rest": "anything"}
     paths = _paths(app.routes)
     api = [(method, path) for method, path in paths if path.startswith("/api")]
     assert len(api) >= 10 and ("POST", "/api/control") in api
