@@ -1,6 +1,6 @@
 # Rules Laboratory Operator Guide
 
-The Rules Laboratory is the first playable foundation for the AI civilization world. It creates two to four isolated communities (four by default, `init --civilizations`) with 32 founders each, advances them through deterministic daily ticks, asks scripted sovereigns for monthly decrees, and records a tamper-evident history that can be replayed and verified.
+The Rules Laboratory is the first playable foundation for the AI civilization world. It creates two to four isolated communities (four by default, `init --civilizations`) with 32 founders each, advances them through deterministic daily ticks, asks its sovereigns for decisions at regular councils (every 28 days by default), and records a tamper-evident history that can be replayed and verified.
 
 Phase 1 uses deterministic scripted sovereigns. It contains no OpenAI, Claude, local-model, HTTP, or multi-computer integration. Those adapters belong in later phases and will use the same validated command boundary.
 
@@ -36,6 +36,8 @@ If `py` is unavailable, use any installed Python 3.12 executable in the first co
 ```
 
 Without `--width` and `--height`, a world is 100 × 100 tiles (each 25 km across, a day's walk) and takes about two seconds to generate; the demo uses a smaller 48 × 48 world. Initialization fixes the manifest, seed, terrain, start packages, and founders. After launch, the CLI offers no command that edits people, resources, terrain, or outcomes.
+
+**How often councils sit.** `init --council-interval 7|14|21|28` sets the days between regular councils (28 by default; worlds made before the setting keep 30), and `--crisis-gap N` the fewest days between one civilization's crisis councils (7 by default; 0 holds none). Both are fixed when the world is made. Some things happen once a council whatever its interval: a captive's chance to escape, refusing a petition left unanswered for a whole interval, and a rank's one step up or down; with weekly councils they come four times as often as with 28-day ones, and a model-played civilization is asked four times as often.
 
 `run` resumes the latest verified journal state, advances the requested number of daily ticks, and saves a checkpoint every 30 days and at the end. Repeating `run` continues the same world.
 

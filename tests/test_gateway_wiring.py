@@ -9,7 +9,6 @@ from typer.testing import CliRunner
 
 from sovereign_world.cli import app
 from sovereign_world.commands import (
-    CRISIS_GAP_DAYS,
     DirectOrder,
     DirectOrderKind,
     build_council_report,
@@ -88,7 +87,8 @@ def test_a_crisis_calls_a_model_played_council_the_next_day_and_at_most_weekly()
 
     again = result.state
     _at_war(again, home, rival, learned_day=again.day - 1)
-    assert not crisis_council_due(again, home), f"only one crisis council in {CRISIS_GAP_DAYS} days"
+    gap = again.config.crisis_gap_days
+    assert not crisis_council_due(again, home), f"only one crisis council in {gap} days"
 
 
 def test_scripted_sovereigns_keep_to_the_monthly_council() -> None:

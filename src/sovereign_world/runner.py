@@ -36,7 +36,7 @@ from collections.abc import Callable, Iterator, Mapping
 from types import FrameType
 from typing import TextIO
 
-from sovereign_world.commands import crisis_council_due
+from sovereign_world.commands import council_day, crisis_council_due
 from sovereign_world.config import RunManifest, SpendConfig
 from sovereign_world.engine import advance_day
 from sovereign_world.gateway.factory import build_sovereigns
@@ -255,7 +255,7 @@ def _check_resumed(
     way's: the civilization must be alive, recorded and sitting in council that day."""
     if resumed.day is None:
         return
-    monthly = state.day % state.config.council_interval_days == 0
+    regular = council_day(state)
     for civilization_id in resumed.pending():
         sovereign = sovereigns.get(civilization_id)
         civilization = state.civilizations.get(civilization_id)
@@ -265,7 +265,7 @@ def _check_resumed(
             and civilization is not None
             and civilization.eliminated_day is None
             and (
-                monthly
+                regular
                 or (
                     bool(getattr(sovereign, "crisis_councils", False))
                     and crisis_council_due(state, civilization_id)

@@ -11,9 +11,11 @@ from uuid import uuid4
 import typer
 
 from sovereign_world.config import (
+    COUNCIL_INTERVALS,
     CURRENT_GENERATOR,
     CURRENT_JOURNAL_FORMAT,
     CURRENT_RULES,
+    DEFAULT_CRISIS_GAP,
     ENGINE_VERSION,
     BudgetConfig,
     RunManifest,
@@ -93,9 +95,29 @@ def initialize(
             " whole starting package. 0 is the world as generated."
         ),
     ),
+    council_interval: int = typer.Option(
+        28,
+        "--council-interval",
+        help="Days between regular councils: 7, 14, 21 or 28 (one to four weeks).",
+    ),
+    crisis_gap: int = typer.Option(
+        DEFAULT_CRISIS_GAP,
+        "--crisis-gap",
+        min=0,
+        help="The fewest days between one civilization's crisis councils; 0 holds none.",
+    ),
 ) -> None:
     """Create a locked manifest and day-zero checkpoint."""
-    config = WorldConfig(seed=seed, width=width, height=height, civilizations=civilizations)
+    if council_interval not in COUNCIL_INTERVALS:
+        raise typer.BadParameter("--council-interval must be 7, 14, 21 or 28 days")
+    config = WorldConfig(
+        seed=seed,
+        width=width,
+        height=height,
+        civilizations=civilizations,
+        council_interval_days=council_interval,
+        crisis_gap_days=crisis_gap,
+    )
     if start_rotation >= civilizations:
         raise typer.BadParameter("--start-rotation must be below the number of civilizations")
     manifest = RunManifest.model_validate(
@@ -232,6 +254,9 @@ def inspect(directory: Path) -> None:
     state = replay_run(store)
     typer.echo(f"day: {state.day}")
     typer.echo(f"journal format: {store.journal_format}")
+    typer.echo(f"council interval: {state.config.council_interval_days} days")
+    gap = state.config.crisis_gap_days
+    typer.echo(f"crisis gap: {gap} days" if gap else "crisis councils: none")
     typer.echo(f"state hash: {store.state_hash(state)}")
     for civilization_id in sorted(state.civilizations):
         civilization = state.civilizations[civilization_id]

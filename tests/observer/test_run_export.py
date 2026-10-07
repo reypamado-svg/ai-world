@@ -246,3 +246,22 @@ def test_the_committed_town_fixture_is_a_fresh_export(tmp_path: Path) -> None:
         "observer/tests/fixtures/run-town is stale: run tests/observer/town_fixture.py's "
         "record_town and export days 0 and 18 there"
     )
+
+
+def test_the_export_names_a_council_interval_only_when_it_is_not_monthly() -> None:
+    from sovereign_world.config import RunManifest, WorldConfig
+    from sovereign_world.observer.run_export import manifest_record
+
+    def record(**config: int) -> dict[str, object]:
+        manifest = RunManifest.new(WorldConfig(seed=1, width=24, height=24, **config), "0.2.0")
+        return manifest_record(
+            manifest,
+            journal_format=2,
+            history_epoch=0,
+            civilizations=("a",),
+            days=(0,),
+            saved=(0,),
+        )
+
+    assert "council_interval_days" not in record()
+    assert record(council_interval_days=28)["council_interval_days"] == 28

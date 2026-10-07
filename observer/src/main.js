@@ -418,7 +418,12 @@ class ObserverApp {
     const civ = this.perspective?.civ ?? null;
     const run = this.runSource;
     if (civ === null) return run.day(day);
-    const { day: asked, councilMissing } = perspectiveDayFor(day, run.days, this.perspective.asOf);
+    const { day: asked, councilMissing } = perspectiveDayFor(
+      day,
+      run.days,
+      this.perspective.asOf,
+      run.manifest.council_interval_days ?? 30,
+    );
     const view = perspectiveDay(await run.perspective(asked, civ), run.manifest.civilizations);
     return { ...view, day, councilMissing };
   }
@@ -451,7 +456,7 @@ class ObserverApp {
       p.day !== shownDay
         ? `PERSPECTIVE: ${name} · as of its council on day ${p.day} (shown day ${shownDay})`
         : councilMissing
-          ? `PERSPECTIVE: ${name} · what its council knows as of day ${p.day} (its council day ${councilDay(shownDay)} is not in this export)`
+          ? `PERSPECTIVE: ${name} · what its council knows as of day ${p.day} (its council day ${councilDay(shownDay, this.runSource?.manifest?.council_interval_days ?? 30)} is not in this export)`
           : `PERSPECTIVE: ${name} · what its council knows as of day ${p.day}`;
     chip.title =
       "Built from this civilization's council report alone: the tiles it knows, when it last saw them, the foreign settlements, ruins, sites and roads it knows of, and its own people as its council counts them.";

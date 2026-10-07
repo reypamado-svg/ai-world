@@ -58,7 +58,12 @@ def seeds_of(text: str) -> list[int]:
 
 
 def specs_of(
-    seeds: Iterable[int], size: int, days: int, rotations: str, assignments: str
+    seeds: Iterable[int],
+    size: int,
+    days: int,
+    rotations: str,
+    assignments: str,
+    interval: int = 30,
 ) -> list[HistorySpec]:
     turns = (
         list(range(CIVILIZATIONS))
@@ -77,6 +82,7 @@ def specs_of(
             rotation=rotation,
             assignment=ASSIGNMENTS[label],
             label=label,
+            interval=interval,
         )
         for label in chosen
         for seed in seeds
@@ -99,6 +105,11 @@ def workers_of(text: str) -> int:
     if text == "auto":
         return max(1, (os.cpu_count() or 2) - 1)
     return max(1, int(text))
+
+
+def _one(name: str, values: set[int]) -> dict[str, int]:
+    """A setting every history of the batch shares, for the launch gate to match against."""
+    return {name: next(iter(values))} if len(values) == 1 else {}
 
 
 def _play(spec: HistorySpec) -> tuple[str, list[Row] | str]:
@@ -153,6 +164,10 @@ def run_batch(out: Path, specs: Sequence[HistorySpec], workers: int) -> dict[str
         "specs": sorted({(spec.label, spec.size, spec.days) for spec in specs}),
         "seeds": sorted({spec.seed for spec in specs}),
         "rotations": sorted({spec.rotation for spec in specs}),
+        **_one("council_interval_days", {spec.interval for spec in specs}),
+        **_one("size", {spec.size for spec in specs}),
+        **_one("days", {spec.days for spec in specs}),
+        **_one("civilizations", {len(spec.assignment) for spec in specs}),
         "failed": sorted(failures),
     }
     if failures:

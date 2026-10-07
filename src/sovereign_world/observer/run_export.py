@@ -156,6 +156,13 @@ def manifest_record(
         "width": manifest.config.width,
         "height": manifest.config.height,
         "civilizations": list(civilizations),
+        # Named only when it is not the month every world had before it could be chosen, so
+        # exports of those worlds are unchanged; the page reads a missing one as 30.
+        **(
+            {"council_interval_days": manifest.config.council_interval_days}
+            if manifest.config.council_interval_days != 30
+            else {}
+        ),
         "days": list(days),
         "saved_days": [saved[0], saved[-1]],
         "duties": list(DUTIES),

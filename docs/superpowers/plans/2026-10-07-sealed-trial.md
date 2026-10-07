@@ -270,8 +270,41 @@ the rest, instead of stopping at the first and silently playing on.
   on four loopback ports; the gate passes before sealing with a probe (each model asked once);
   a failed balance report stops it unless accepted with a reason; `keygen`, `seal --days 95`;
   the launch pass is ready, and fails with the seal key still present or another signer; the
-  sealed world runs, is killed after the second council of day 90, resumes, and verifies by its
+  sealed world runs, is killed after the second council of day 84 (its third 28-day council), resumes, and verifies by its
   signer through day 95 with no model asked twice; a changed manifest is then refused by `run`
   (exit 4) and by the gate.
 - **Defaults taken** (the user may change them): the override is printed, not recorded in the
   seal; disk thresholds 2 and 10 GiB; the clock floor is the day the gate was written.
+
+## Adjustable council cadence (detailed by Fable 5.1 at 1b38673)
+
+The user asked whether the councils' frequency can be adjusted, and chose: regular councils
+every 1, 2, 3 or 4 weeks, set when a world is made, 4 weeks by default; 30 days only for worlds
+made before; and the crisis councils' spacing settable too.
+
+- **Settings.** `WorldConfig.council_interval_days` accepts 7, 14, 21, 28, or 30 for older
+  worlds; `crisis_gap_days` (default 7, 0 holds no crisis councils) is left out of every hash at
+  its default, so every world made before keeps its manifest, state, journal and checkpoint
+  hashes. `sovereign-world init --council-interval {7,14,21,28}` (default 28) and
+  `--crisis-gap N`; `inspect` shows both; a fork keeps its parent's; the seal covers both
+  through the manifest.
+- **Engine.** One `council_day(state)` rule decides regular council days everywhere (engine,
+  resume check, scenario helper). The crisis gap is the world's own. Escapes, petition
+  refusals and rank steps stay "once a council": with weekly councils they come four times as
+  often as with 28-day ones, and so do model calls and their cost.
+- **The charter** says the world's cadence ("Every 14 days (on day 0 and every 14th day after),
+  and when a crisis strikes (at most once in 3 days), ..."). For a 30-day world with the usual
+  gap it is byte-identical to before (pinned by test for rules 1, 2 and 3), so recorded prompts
+  and the prompt version (council-7) are unchanged. The council report carries both settings,
+  left out at 30 and 7.
+- **Calibration** takes `--council-interval` (default 28) and records the interval, map size,
+  days and civilizations in `run.json` and `report.json`; the scripted policies count councils
+  rather than days (unchanged for monthly worlds). **The launch gate** fails a report made for
+  another interval, map size or number of civilizations, and counts the cap's room in the
+  planned days' regular councils.
+- **The observer** reads the interval from the export (named only when it is not 30, so older
+  exports are unchanged), and "at its last council" lands on the world's own council day.
+
+**Before launch:** the balance report in `docs/calibration/2026-10-year-one/` measured 30-day
+councils, and the engine hash has moved, so the trial needs a fresh calibration at its own
+interval and map size (about 2.4 hours unattended).

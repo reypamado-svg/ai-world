@@ -35,11 +35,15 @@ class HistorySpec:
     """The policy of civilization 0, 1, 2, ... in order."""
     label: str = ""
     """The assignment's name in reports (``builders``, ``mixed``)."""
+    interval: int = 30
+    """Days between councils."""
 
     @property
     def key(self) -> str:
         """Names the history: rows already written under it are not played again."""
-        return f"{self.label}|{self.seed}|{self.size}|{self.days}|{self.rotation}"
+        key = f"{self.label}|{self.seed}|{self.size}|{self.days}|{self.rotation}"
+        # Histories played before the interval could be chosen are monthly, and keep their key.
+        return key if self.interval == 30 else f"{key}|{self.interval}"
 
 
 FIELDS = (
@@ -109,6 +113,7 @@ def run_history(spec: HistorySpec) -> list[Row]:
                     width=spec.size,
                     height=spec.size,
                     civilizations=len(spec.assignment),
+                    council_interval_days=spec.interval,
                 ),
                 ENGINE_VERSION,
             ).model_dump(),

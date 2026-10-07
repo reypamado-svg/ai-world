@@ -108,6 +108,10 @@ def _report(root: Path, *, ok: bool = True, **changes: Any) -> Path:
         "histories": 2000,
         "rows": 8000,
         "checks": [{"check": "builders: position 0 win share in 15% to 35%", "passed": ok}],
+        "council_interval_days": 30,
+        "size": 24,
+        "days": 365,
+        "civilizations": 4,
     }
     report.update(changes)
     (root / "report.json").write_text(json.dumps(report))
@@ -170,7 +174,9 @@ def test_the_cap_and_prices_are_required_and_a_thin_cap_warned(tmp_path: Path) -
     unpriced = _gate(_store(tmp_path / "b", spend=SpendConfig(max_cost_usd=100)))
     assert unpriced["spend"].status == "FAIL" and "no price for m" in unpriced["spend"].detail
     thin = _gate(_store(tmp_path / "c", spend=SpendConfig(max_cost_usd=0.5, prices=price)))
-    assert thin["spend"].status == "WARN" and "fewer than a year's 13" in thin["spend"].detail
+    assert thin["spend"].status == "WARN" and "fewer than the 13 regular councils of 365 days" in (
+        thin["spend"].detail
+    )
 
 
 def test_keys_are_named_never_shown(tmp_path: Path) -> None:
@@ -266,6 +272,20 @@ def test_the_balance_report(tmp_path: Path) -> None:
     assert small["balance"].status == "WARN"
     missing = _gate(store, GateOptions(launch=True))
     assert missing["balance"].status == "FAIL"
+    for key, value, words in (
+        (
+            "council_interval_days",
+            28,
+            "the report measured councils every 28 days; this run has councils every 30 days",
+        ),
+        ("size", 32, "the report measured 32 by 32 worlds; this run has a 24 by 24 world"),
+        ("civilizations", 3, "the report measured 3 civilizations; this run has 4"),
+        ("size", None, "the report does not say its size"),
+    ):
+        check = _gate(
+            store, GateOptions(calibration=_report(tmp_path / f"{key}-{value}", **{key: value}))
+        )["balance"]
+        assert check.status == "FAIL" and words in check.detail, check.detail
 
 
 def test_the_launch_pass_checks_the_seal_and_the_day(

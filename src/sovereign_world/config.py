@@ -7,7 +7,15 @@ import json
 from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 CURRENT_GENERATOR = 3
 """The world generator new runs use; see ``RunManifest.generator_version``."""
@@ -17,6 +25,11 @@ CURRENT_JOURNAL_FORMAT = 2
 """How new runs save their days; see ``RunManifest.journal_format``."""
 ENGINE_VERSION = "0.2.0"
 """The engine version new runs record (``RunManifest.engine_version``)."""
+COUNCIL_INTERVALS = (7, 14, 21, 28)
+"""The days between regular councils a new world may choose (one to four weeks)."""
+LEGACY_COUNCIL_INTERVAL = 30
+"""The interval of every world made before it could be chosen; valid for them only."""
+DEFAULT_CRISIS_GAP = 7
 
 
 class WorldConfig(BaseModel):
@@ -30,7 +43,29 @@ class WorldConfig(BaseModel):
     civilizations: int = Field(default=4, ge=2, le=4)
     """How many civilizations the world starts with: two to four."""
     founders_per_civilization: int = Field(default=32, ge=32, le=32)
-    council_interval_days: int = Field(default=30, ge=30, le=30)
+    council_interval_days: int = LEGACY_COUNCIL_INTERVAL
+    """Days between regular councils: 7, 14, 21 or 28 for new worlds (`init` defaults to 28);
+    30 for worlds made before it could be chosen."""
+    crisis_gap_days: int = Field(default=DEFAULT_CRISIS_GAP, ge=0, le=365)
+    """The fewest days between one civilization's crisis councils; 0 holds none. Left out of
+    every hash at its default, so worlds made before it keep theirs."""
+
+    @field_validator("council_interval_days")
+    @classmethod
+    def _known_interval(cls, value: int) -> int:
+        if value not in (*COUNCIL_INTERVALS, LEGACY_COUNCIL_INTERVAL):
+            raise ValueError(
+                "council_interval_days must be 7, 14, 21 or 28 days (30 only for worlds made"
+                " before the setting)"
+            )
+        return value
+
+    @model_serializer(mode="wrap")
+    def _omit_default_crisis_gap(self, handler: SerializerFunctionWrapHandler) -> object:
+        dumped = handler(self)
+        if isinstance(dumped, dict) and dumped.get("crisis_gap_days") == DEFAULT_CRISIS_GAP:
+            dumped.pop("crisis_gap_days")
+        return dumped
 
 
 ProviderKind = Literal["baseline", "anthropic", "openai", "compatible"]

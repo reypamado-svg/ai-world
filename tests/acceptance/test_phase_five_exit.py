@@ -31,7 +31,9 @@ from sovereign_world.runner import CRASH_ENV
 from sovereign_world.seal import SEAL_KEY_ENV
 
 DAYS = 95
-KILL = "after_council:90:2"
+INTERVAL = 28
+"""Days between councils (`init`'s default)."""
+KILL = f"after_council:{3 * INTERVAL}:2"
 PLAYED = tuple(f"civilization:000000000{n}" for n in range(1, 5))
 INIT = ("init", "--seed", "21", "--width", "24", "--height", "24")
 RUN = (sys.executable, "-m", "sovereign_world.cli", "run")
@@ -59,6 +61,10 @@ def _report(root: Path, *, ok: bool) -> Path:
                 "histories": 2000,
                 "rows": 8000,
                 "checks": checks,
+                "council_interval_days": INTERVAL,
+                "size": 24,
+                "days": 365,
+                "civilizations": 4,
             }
         )
     )
@@ -153,13 +159,13 @@ def test_the_sealed_trial_world_passes_its_gate_and_recovers(
     other = cli.invoke(app, [*launch[:4], "0" * 64, *launch[5:]])
     assert other.exit_code == 1 and "FAIL  seal" in other.output
 
-    # The world runs, is killed in the middle of day 90's councils, and resumes.
+    # The world runs, is killed in the middle of day 84's councils, and resumes.
     for stub in stubs:
         stub.calls.clear()
     killed = _run(run, DAYS, KILL)
     assert killed.returncode == 137, killed.stderr
     assert f"crash hook: {KILL}" in killed.stderr
-    assert _saved_day(run) == 90
+    assert _saved_day(run) == 3 * INTERVAL
     resumed = _run(run, DAYS - _saved_day(run))
     assert resumed.returncode == 0, resumed.stderr
     assert resumed.stdout.startswith(f"advanced to day {DAYS}")
@@ -172,7 +178,7 @@ def test_the_sealed_trial_world_passes_its_gate_and_recovers(
     assert set(asked.values()) == {1}, "a council's model was asked twice"
     councils = recorded_councils(WorldStore(run))
     used = {(str(record.civilization_id), record.day) for record in councils if record.usage}
-    assert {(civ, day) for civ in PLAYED for day in (0, 30, 60, 90)} <= used
+    assert {(civ, day) for civ in PLAYED for day in range(0, DAYS, INTERVAL)} <= used
 
     # Changing the manifest afterwards refuses the run, and the gate says so.
     store = WorldStore(run)

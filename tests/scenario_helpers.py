@@ -13,6 +13,7 @@ from sovereign_world.commands import (
     DirectOrder,
     DirectOrderKind,
     build_council_report,
+    council_day,
     crisis_council_due,
 )
 from sovereign_world.config import CURRENT_JOURNAL_FORMAT, RunManifest
@@ -72,7 +73,7 @@ def _simulate(
     events: list[DomainEvent] = []
     councils: list[Council] = []
     for _ in range(days):
-        monthly = state.day % state.config.council_interval_days == 0
+        monthly = council_day(state)
         sitting = [
             civilization_id
             for civilization_id in sorted(state.civilizations)

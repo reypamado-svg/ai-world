@@ -630,6 +630,8 @@ _REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
     ("defence_orders", {}),
     ("citadels", {}),
     ("siege_days_of_food", {}),
+    ("council_interval_days", 30),
+    ("crisis_gap_days", 7),
 )
 """Report fields added since council-3, and the value at which each is left out, so reports
 from older worlds read, and so prompt, exactly as before."""
@@ -719,6 +721,10 @@ class CouncilReport(BaseModel):
     recent_events: tuple[DomainEvent, ...] = ()
     rules_version: int = 1
     """The rules this world runs under; version 2 adds houses, ranks and civil research."""
+    council_interval_days: int = 30
+    """Days between this world's regular councils."""
+    crisis_gap_days: int = 7
+    """The fewest days between crisis councils; 0 when crises call none."""
     housing: dict[EntityId, HousingView] = Field(default_factory=dict)
     """Each settlement's houses (rules version 2)."""
     house_jobs: tuple[HouseJob, ...] = ()
@@ -805,7 +811,6 @@ def _housing_views(
     return views
 
 
-CRISIS_GAP_DAYS = 7
 """A civilization holds at most one crisis council in this many days."""
 
 
@@ -837,12 +842,19 @@ def crisis_reasons(state: WorldState, civilization_id: EntityId) -> tuple[str, .
     return tuple(reason for reason, struck in found.items() if struck)
 
 
+def council_day(state: WorldState) -> bool:
+    """Whether today is a regular council day: day 0 and every interval after it."""
+    return state.day % state.config.council_interval_days == 0
+
+
 def crisis_council_due(state: WorldState, civilization_id: EntityId) -> bool:
-    """A council outside the monthly round, called by yesterday's news."""
-    if state.day == 0 or state.day % state.config.council_interval_days == 0:
+    """A council outside the regular round, called by yesterday's news, at most once in the
+    world's crisis gap (a gap of 0 calls none)."""
+    gap = state.config.crisis_gap_days
+    if gap == 0 or council_day(state):
         return False
     last = state.civilizations[civilization_id].last_crisis_council
-    if last is not None and state.day - last < CRISIS_GAP_DAYS:
+    if last is not None and state.day - last < gap:
         return False
     return bool(crisis_reasons(state, civilization_id))
 
@@ -1166,6 +1178,8 @@ def build_council_report(
         known_rivers=known_rivers(state.world_map, frozenset(civilization.known_tiles)),
         known_sites=known_sites(state, civilization),
         rules_version=state.rules_version,
+        council_interval_days=state.config.council_interval_days,
+        crisis_gap_days=state.config.crisis_gap_days,
         housing=_housing_views(state, civilization_id, residents),
         land=_land_views(state, civilization_id),
         extractions=tuple(

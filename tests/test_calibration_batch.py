@@ -145,3 +145,22 @@ def test_a_history_the_engine_fails_on_is_named_and_the_others_go_on(
     assert (tmp_path / "failures.txt").read_text().startswith(broken)
     run = json.loads((tmp_path / "run.json").read_text())
     assert run["engine_hash"] == engine_hash() and run["rule_hash"] == rule_hash()
+
+
+def test_a_batch_records_the_cadence_and_size_it_measured(tmp_path: Path) -> None:
+    monthly = specs_of([1], 24, 5, "0", "builders")
+    assert monthly[0].key == "builders|1|24|5|0"
+    weekly = specs_of([1], 24, 15, "0", "builders", 7)
+    assert weekly[0].key == "builders|1|24|15|0|7" and weekly[0].interval == 7
+    run_batch(tmp_path, weekly, workers=1)
+    run = json.loads((tmp_path / "run.json").read_text())
+    assert (run["council_interval_days"], run["size"], run["days"], run["civilizations"]) == (
+        7,
+        24,
+        15,
+        4,
+    )
+    assert main(["report", str(tmp_path)]) in (0, 1)
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert report["council_interval_days"] == 7 and report["size"] == 24
+    assert "councils every 7 days" in (tmp_path / "report.md").read_text()

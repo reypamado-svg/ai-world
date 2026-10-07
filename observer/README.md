@@ -189,7 +189,7 @@ civilization could not know. The camera stays where it is.
   know); **Council news** lists its council's own records instead: its battles, notices,
   caught spies, spy reports, delivered messages, treaties and what struck it.
 - **on the day shown / at its last council**: what the council knows on the shown day, or as
-  of its last council (day 0 and every 30th day), which is what its council actually read. In
+  of its last regular council (day 0 and every council interval after it: 30 days for older worlds, the world's own 7, 14, 21 or 28 for newer ones), which is what its council actually read. In
   a static export that does not hold that council day (one made with `--stride`), the shown
   day stands in and the chip says so.
 - `?civ=K` opens the page seen as civilization number K.

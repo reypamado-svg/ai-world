@@ -26,6 +26,8 @@ from sovereign_world.persistence import WorldStore
 from sovereign_world.runner import CRASH_ENV
 
 DAYS = 35
+INTERVAL = 28
+"""Days between councils (`init`'s default): councils sit on days 0 and 28 of the run."""
 PLAYED = ("civilization:0000000001", "civilization:0000000003")
 cli = CliRunner()
 RUN = (sys.executable, "-m", "sovereign_world.cli", "run")
@@ -121,10 +123,10 @@ def test_every_crash_point_resumes_to_the_same_journal(
         "after_transition:1",
         "before_day:17",
         "after_councils:17",
+        f"after_council:{INTERVAL}:2",
+        f"after_councils:{INTERVAL}",
+        f"after_transition:{INTERVAL + 1}",
         "after_checkpoint:30",
-        "after_council:30:2",
-        "after_councils:30",
-        "after_transition:31",
     )
     for point in points:
         result = _run(killed, DAYS - _saved_day(killed), point)

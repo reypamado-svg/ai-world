@@ -20,6 +20,13 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--days", type=int, default=365)
     run.add_argument("--rotations", default="all")
     run.add_argument("--assignments", default="builders,mixed")
+    run.add_argument(
+        "--council-interval",
+        type=int,
+        default=28,
+        choices=(7, 14, 21, 28, 30),
+        help="days between councils, as in the world to be launched",
+    )
     run.add_argument("--workers", default="auto")
     run.add_argument("--quick", action="store_true", help="a small preset, for a quick check")
     report = commands.add_parser("report", help="write the fairness report")
@@ -30,7 +37,12 @@ def main(argv: list[str] | None = None) -> int:
             for key, value in QUICK.items():
                 setattr(args, key, value)
         specs = specs_of(
-            seeds_of(args.seeds), args.size, args.days, args.rotations, args.assignments
+            seeds_of(args.seeds),
+            args.size,
+            args.days,
+            args.rotations,
+            args.assignments,
+            args.council_interval,
         )
         summary = run_batch(args.out, specs, workers_of(args.workers))
         print(

@@ -4,7 +4,8 @@ Each policy is the baseline's steady economy plus one trait, decided from the co
 alone, so thousands of histories can ask how a start fares under different play:
 
 - ``builder``: the baseline, nothing more;
-- ``expander``: sends settlers to the nearest open site with water, every 90 days from day 60;
+- ``expander``: sends settlers to the nearest open site with water, every third council from
+  the third (days 60, 150, ... with monthly councils);
 - ``trader``: explores until it meets a neighbour it can walk to, offers it trade, accepts trade
   offered, and sends a small caravan to each partner at every council;
 - ``raider``: explores until it meets a neighbour it can walk to, declares war on it, then sends
@@ -108,7 +109,7 @@ def _explore(report: CouncilReport, people: list[EntityId]) -> list[DirectOrder]
     deep = {
         frozenset((view.tile, view.across)) for view in report.known_rivers if view.depth == "deep"
     }
-    council = report.day // 30
+    council = report.day // report.council_interval_days
     start = report.start_center
     for turn in range(6):
         direction = sorted(start.neighbors())[(council + turn) % 6]
@@ -138,7 +139,9 @@ def _explore(report: CouncilReport, people: list[EntityId]) -> list[DirectOrder]
 
 
 def _expander(report: CouncilReport) -> list[DirectOrder]:
-    if report.day < 60 or (report.day - 60) % 90:
+    # From the third council, every third council (days 60, 150, ... in a monthly world).
+    council = report.day // report.council_interval_days
+    if council < 2 or (council - 2) % 3:
         return []
     people = _idle(report)
     if len(people) < 4:
@@ -218,7 +221,7 @@ def _trader(report: CouncilReport) -> list[DirectOrder]:
     for civilization_id, route in contacts:
         if civilization_id in partners or civilization_id in offered or not people:
             continue
-        if report.day % 360 < 30 or len(orders) == 0:
+        if report.day % 360 < report.council_interval_days or len(orders) == 0:
             orders.append(
                 DirectOrder(
                     command_id=f"offer:{report.day}:{civilization_id}",

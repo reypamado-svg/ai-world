@@ -42,6 +42,7 @@ from sovereign_world.commands import (
     DirectOrderKind,
     ProjectKind,
     build_council_report,
+    council_day,
     crisis_council_due,
     idle_at,
     journey_supplies,
@@ -3518,7 +3519,7 @@ def _advance_civilizations(state: WorldState) -> list[DomainEvent]:
     """Eliminate the civilizations with no one left, track the homeless and break them up,
     and record the endings of the world."""
     events: list[DomainEvent] = []
-    council = state.day % state.config.council_interval_days == 0
+    council = council_day(state)
     for civilization_id in sorted(state.civilizations):
         civilization = state.civilizations[civilization_id]
         if civilization.eliminated_day is not None:
@@ -6510,7 +6511,7 @@ def _run_councils(
     sovereigns: Mapping[EntityId, Sovereign],
 ) -> list[DomainEvent]:
     events: list[DomainEvent] = []
-    monthly = state.day % state.config.council_interval_days == 0
+    regular = council_day(state)
     for civilization_id in sorted(sovereigns):
         if (
             civilization_id not in state.civilizations
@@ -6520,11 +6521,11 @@ def _run_councils(
         sovereign = sovereigns[civilization_id]
         # Sovereigns that take them are also called to council by a crisis.
         crisis = (
-            not monthly
+            not regular
             and getattr(sovereign, "crisis_councils", False)
             and crisis_council_due(state, civilization_id)
         )
-        if not (monthly or crisis):
+        if not (regular or crisis):
             continue
         if crisis:
             state.civilizations[civilization_id].last_crisis_council = state.day
@@ -7028,7 +7029,7 @@ def advance_day(
     events: list[DomainEvent] = []
     if rules_for(candidate.rules_version).decrees_expire:
         events.extend(_expire_decrees(candidate))
-    if candidate.day % candidate.config.council_interval_days == 0:
+    if council_day(candidate):
         for civilization_id in sorted(candidate.civilizations):
             events.extend(_refuse_unanswered(candidate, civilization_id))
     if sovereigns is not None:
@@ -7311,7 +7312,7 @@ def advance_day(
     fed_on_the_road = fed_on_the_road | _march_captives(candidate)
     events.extend(_check_tribute(candidate))
     _settle_newcomers(candidate)
-    if candidate.day % candidate.config.council_interval_days == 0:
+    if council_day(candidate):
         events.extend(_escapes(candidate, rng))
     events.extend(_advance_drills(candidate))
     events.extend(_advance_crafting(candidate))
@@ -7668,10 +7669,7 @@ def advance_day(
 
     events.extend(_advance_civilizations(candidate))
     events.extend(_advance_territory(candidate))
-    if (
-        rules_for(candidate.rules_version).ranks
-        and candidate.day % candidate.config.council_interval_days == 0
-    ):
+    if rules_for(candidate.rules_version).ranks and council_day(candidate):
         events.extend(_advance_ranks(candidate))
     events.extend(_joined_roads(candidate))
     if candidate.day % LEARNING_INTERVAL == 0:

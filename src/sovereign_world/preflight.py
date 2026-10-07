@@ -68,8 +68,14 @@ GATE_WRITTEN = date(2026, 10, 7)
 """A clock showing an earlier date is wrong."""
 DISK_FAIL_BYTES = 2 * 2**30
 DISK_WARN_BYTES = 10 * 2**30
-COUNCILS_IN_A_YEAR = 13
-"""Monthly councils on days 0, 30, ..., 360."""
+
+
+def regular_councils(interval: int, planned_days: int) -> int:
+    """The regular councils in a run of `planned_days` days: day 0 and every interval after
+    (13 in a year of monthly councils, 14 at 28 days, 53 weekly)."""
+    return (planned_days - 1) // interval + 1
+
+
 MIN_HISTORIES = 1_000
 MIN_OBSERVER_TOKEN_CHARS = 32
 MAX_CLOCK_SKEW_SECONDS = 300.0
@@ -325,13 +331,13 @@ def launch_gate(
         checks.append(_check_players(run))
         checks.append(_check_providers(run))
         checks.append(_check_prompts(run))
-        checks.append(_check_spend(store, run))
+        checks.append(_check_spend(store, run, options))
         checks.append(_check_keys(run, environ))
         checks.append(_check_endpoints(run))
         checks.append(_check_probe(run, options, environ, prober))
     checks.append(_check_disk(store, disk_usage))
     checks.append(_check_clock(store, run, options, now, dates))
-    checks.append(_check_balance(options))
+    checks.append(_check_balance(options, run))
     checks.append(_check_seal(store, run, options))
     checks.append(_check_seal_key(options, environ))
     checks.append(_check_observer_token(environ))
@@ -432,7 +438,7 @@ def _check_prompts(run: _Run) -> Check:
     return Check("prompts", "PASS", f"{PROMPT_VERSION}, reply schema {reply_schema_hash()[:12]}…")
 
 
-def _check_spend(store: WorldStore, run: _Run) -> Check:
+def _check_spend(store: WorldStore, run: _Run, options: GateOptions) -> Check:
     from sovereign_world.gateway.records import recorded_councils
     from sovereign_world.spend import tally, worst_case_round
 
@@ -458,8 +464,13 @@ def _check_spend(store: WorldStore, run: _Run) -> Check:
         f" ${worst.cost_usd:,.2f}, covers {rounds}; {budgets.max_output_tokens:,} output tokens,"
         f" {budgets.timeout_seconds:g} s a call"
     )
-    if rounds < COUNCILS_IN_A_YEAR:
-        return Check("spend", "WARN", f"{detail}: fewer than a year's {COUNCILS_IN_A_YEAR}")
+    needed = regular_councils(run.manifest.config.council_interval_days, options.planned_days)
+    if rounds < needed:
+        return Check(
+            "spend",
+            "WARN",
+            f"{detail}: fewer than the {needed} regular councils of {options.planned_days} days",
+        )
     return Check("spend", "PASS", detail)
 
 
@@ -606,7 +617,7 @@ def _check_clock(
     return Check("clock", "PASS", f"{shown}; within {MAX_CLOCK_SKEW_SECONDS:g} s of every host")
 
 
-def _check_balance(options: GateOptions) -> Check:
+def _check_balance(options: GateOptions, run: _Run | None) -> Check:
     import json
 
     from sovereign_world.rulehash import engine_hash
@@ -626,6 +637,40 @@ def _check_balance(options: GateOptions) -> Check:
             "FAIL",
             "the report was made under another engine; run the calibration again",
         )
+    if run is not None:
+        # The report must measure worlds like this one (calibration maps are square).
+        config = run.manifest.config
+        expected: dict[str, tuple[object, str, str]] = {
+            "council_interval_days": (
+                config.council_interval_days,
+                "councils every {} days",
+                f"councils every {config.council_interval_days} days",
+            ),
+            "size": (
+                config.width if config.width == config.height else None,
+                "{0} by {0} worlds",
+                f"a {config.width} by {config.height} world",
+            ),
+            "civilizations": (
+                config.civilizations,
+                "{} civilizations",
+                f"{config.civilizations} civilizations",
+            ),
+        }
+        for key, (wanted, measured, this) in expected.items():
+            found = report.get(key)
+            if found is None:
+                return Check(
+                    "balance",
+                    "FAIL",
+                    f"the report does not say its {key.replace('_', ' ')}; make it again",
+                )
+            if found != wanted:
+                return Check(
+                    "balance",
+                    "FAIL",
+                    f"the report measured {measured.format(found)}; this run has {this}",
+                )
     notes: list[str] = []
     if report.get("engine_version") != ENGINE_VERSION:
         notes.append(f"made under engine {report.get('engine_version')}")

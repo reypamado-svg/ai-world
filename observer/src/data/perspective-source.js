@@ -14,17 +14,18 @@ import { hashString } from '../sim/rng.js';
 
 export const COUNCIL_DAYS = 30;
 
-/** The day of the last council on or before `day` (councils sit on day 0 and every 30th). */
-export function councilDay(day) {
-  return day - (day % COUNCIL_DAYS);
+/** The day of the last regular council on or before `day`: councils sit on day 0 and every
+ * `interval` days after (30 for worlds made before the interval could be chosen). */
+export function councilDay(day, interval = COUNCIL_DAYS) {
+  return day - (day % interval);
 }
 
 /** Which day's perspective to show for `day`: the day itself, or with asOf 'council' its last
  * council day when the export holds that day. `councilMissing` says it does not, so the shown
  * day stands in (a static export made with a stride may skip council days). */
-export function perspectiveDayFor(day, days, asOf) {
+export function perspectiveDayFor(day, days, asOf, interval = COUNCIL_DAYS) {
   if (asOf !== 'council') return { day, councilMissing: false };
-  const council = councilDay(day);
+  const council = councilDay(day, interval);
   return days.includes(council) ? { day: council, councilMissing: false } : { day, councilMissing: true };
 }
 

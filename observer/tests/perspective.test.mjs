@@ -133,6 +133,16 @@ test('the last council falls on day 0 and every 30th day', () => {
   assert.equal(councilDay(45), 30);
 });
 
+test("the last council follows the world's own interval", () => {
+  assert.equal(councilDay(45, 7), 42);
+  assert.equal(councilDay(55, 28), 28);
+  assert.equal(councilDay(27, 28), 0);
+  // A 28-day world exported with a stride of 10: day 56's council is in it, day 28's is not.
+  const days = [0, 10, 20, 30, 40, 50, 56, 60];
+  assert.deepEqual(perspectiveDayFor(60, days, 'council', 28), { day: 56, councilMissing: false });
+  assert.deepEqual(perspectiveDayFor(40, days, 'council', 28), { day: 40, councilMissing: true });
+});
+
 test('council news reads as plain sentences', () => {
   assert.match(
     describeNews({
