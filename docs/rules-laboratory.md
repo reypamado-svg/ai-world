@@ -37,7 +37,9 @@ If `py` is unavailable, use any installed Python 3.12 executable in the first co
 
 Without `--width` and `--height`, a world is 100 × 100 tiles (each 25 km across, a day's walk) and takes about two seconds to generate; the demo uses a smaller 48 × 48 world. Initialization fixes the manifest, seed, terrain, start packages, and founders. After launch, the CLI offers no command that edits people, resources, terrain, or outcomes.
 
-`run` resumes the latest verified journal state, advances the requested number of daily ticks, and saves a new checkpoint. Repeating `run` continues the same world.
+`run` resumes the latest verified journal state, advances the requested number of daily ticks, and saves a checkpoint every 30 days and at the end. Repeating `run` continues the same world.
+
+**Stopping and recovering.** Press Ctrl+C once and the run stops after the day under way, saves a checkpoint and says `stopped at day N`; a second Ctrl+C stops it at once. After a crash, a kill or a power cut, run `run` again: it carries on from what was saved. Each council is saved the moment it is held, before its day, so a council a model has already answered is reused and that model is not asked again; only a reply in flight at the moment of the kill is lost. If the saved councils cannot belong to the day under way (the journal was changed or mixed with another run), `run` refuses with `cannot resume: …`, exit code 1, and writes nothing.
 
 ## Rules versions
 
@@ -100,5 +102,7 @@ Each world directory contains:
 - **Format 2** (new runs and every fork): the journal opens with a header record. Each day saves only what changed since the day before; the whole world is saved every 30 days, and after any gap. Hashes use version 2, worked out in parts, so a large world hashes and saves in a fraction of the time.
 - **Format 1** (runs made before this): the whole world every day, hash version 1. Old runs keep their format, carry on in it, and replay and verify exactly as before. A fork of an old run is saved in format 2.
 - `world.sqlite3-wal` and `world.sqlite3-shm`: temporary SQLite files that may appear while a command is running.
+
+**Council records.** New runs save a day's councils before the day; runs recorded earlier saved them after it. Both orders replay, verify and rederive alike.
 
 Copy the entire directory when backing up or moving a world. Do not edit either authoritative file; verification will report corruption rather than silently accepting a changed history.

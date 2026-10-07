@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
@@ -98,9 +98,78 @@ class RecordedSovereign:
         return self._envelopes[key]
 
 
+RecordSink = Callable[[CouncilRecord], None]
+"""Takes each council the moment it is held (the runner saves it to the journal at once)."""
+
+
+class ResumeRefused(RuntimeError):
+    """The run cannot be resumed as its journal stands."""
+
+
+class ResumedCouncils:
+    """The councils saved for the day a run was interrupted in, before the day itself was saved.
+
+    Each is given back to its civilization when that day is held again, so its model is never
+    asked twice; a council that does not match the one the world holds refuses the resume."""
+
+    def __init__(self, records: Iterable[CouncilRecord] = ()) -> None:
+        self._pending: dict[EntityId, CouncilRecord] = {}
+        days = set()
+        for record in records:
+            days.add(record.day)
+            if record.civilization_id in self._pending:
+                raise ResumeRefused(
+                    f"the journal holds two councils of {record.civilization_id} for day"
+                    f" {record.day}"
+                )
+            self._pending[record.civilization_id] = record
+        if len(days) > 1:
+            raise ResumeRefused(
+                f"the journal holds unfinished councils of days {sorted(days)}; only the day"
+                " under way when the run stopped can have them"
+            )
+        self.day: int | None = days.pop() if days else None
+        self.refused: str | None = None
+
+    def take(self, civilization_id: EntityId) -> CouncilRecord | None:
+        """The saved council of this civilization, once."""
+        return self._pending.pop(civilization_id, None)
+
+    def refuse(self, reason: str) -> None:
+        if self.refused is None:
+            self.refused = reason
+
+    def pending(self) -> tuple[EntityId, ...]:
+        return tuple(sorted(self._pending))
+
+
+def split_resumed(
+    records: Iterable[CouncilRecord], day: int
+) -> tuple[tuple[CouncilRecord, ...], ResumedCouncils]:
+    """The councils of days already saved, and those of `day`, the day under way when the run
+    stopped (held before its day was saved). A council of a later day is corruption."""
+    history: list[CouncilRecord] = []
+    orphans: list[CouncilRecord] = []
+    for record in records:
+        if record.day < day:
+            history.append(record)
+        elif record.day == day:
+            orphans.append(record)
+        else:
+            raise ResumeRefused(
+                f"the journal holds a council of {record.civilization_id} for day {record.day},"
+                f" but its last saved day is {day}"
+            )
+    return tuple(history), ResumedCouncils(orphans)
+
+
 @runtime_checkable
 class RecordsCouncils(Protocol):
     def drain_records(self) -> tuple[CouncilRecord, ...]: ...
+
+    def record_to(self, sink: RecordSink | None) -> None: ...
+
+    def resume_from(self, resumed: ResumedCouncils) -> None: ...
 
 
 def journal_councils(

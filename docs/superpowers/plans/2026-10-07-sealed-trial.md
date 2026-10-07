@@ -25,8 +25,8 @@ The models, the cap, the seed, the size, the rotation and the pace are chosen on
 | Slice | What | Status |
 |---|---|---|
 | A | Balance calibration with rotated starts | Code done (c70dd1f, 098acef); the 2,000-history matrix is running |
-| B | Usage recording and the spending cap | Done (this commit) |
-| C | Crash-safe recovery | Planned |
+| B | Usage recording and the spending cap | Done (36dcb6c) |
+| C | Crash-safe recovery | Done (this commit) |
 | D | Sealing | Planned |
 | E | The launch gate | Planned |
 | F | The live run on the user's PC | Planned |
@@ -94,3 +94,58 @@ The models, the cap, the seed, the size, the rotation and the pace are chosen on
   `tests/integration/test_spend_cap.py` (a run stops before the day that could pass the cap,
   keeps its checkpoint, asks no model again on resume, still verifies; the command line exits
   with 3 and reports the spend); a runner-link test for the new report.
+
+## C as built (detailed by Fable 5.1 at 36dcb6c)
+
+**The gap it closes.** A run day used to advance the world (asking the models), save the day,
+then save its councils, with one checkpoint at the end. A kill between the day and its councils
+lost paid replies and left a run `rederive` could never pass; a kill during the third model's
+call threw away the first two replies.
+
+- **Councils saved as they are held.** `run_days` gives every recording sovereign a sink
+  (`record_to`); each council is appended to the journal the moment `decide` finishes, before
+  the day's transition. Only a reply still in flight can be lost to a kill. Without a sink
+  (scenarios, tests) councils queue for `journal_councils` as before.
+- **Resuming.** On start the journal's councils are split against the resumed day S
+  (`split_resumed`): earlier days are the sovereigns' history; councils of day S are the
+  interrupted day's (`ResumedCouncils`), never put into history, never written again, and
+  counted once in the spend. When day S is held again, each civilization's saved council is
+  given back: the model-played one returns its saved orders after checking the report id and
+  the prompt hash; a scripted one checks that it gives the same orders. Nothing is asked.
+- **Refusals** (`ResumeRefused`, `run` exits 1 with `cannot resume: …`), before anything is
+  asked or written:
+  - a council of a day after the last saved day;
+  - two councils of one civilization, or of two days;
+  - a saved council of a civilization that is gone, not recorded, or does not sit in council
+    that day (the monthly council, or a crisis council for sovereigns that take them);
+  - a saved council asked a different question, or (scripted) giving other orders;
+  - a saved council not held again.
+  The engine swallows errors from `decide`, so the refusal is carried on the shared
+  `ResumedCouncils` and raised by the runner after the day is advanced and before it is saved.
+- **Why the journal ends the same.** With the same replies, an unbroken run and any run killed
+  and resumed write the same records in the same order: a day's councils in civilization order,
+  each once, then the day. Records carry no time, so their bytes and hash chain are equal.
+  Only the checkpoint table may differ (a stop adds one).
+- **Checkpoints every 30 days** (`CHECKPOINT_INTERVAL`), and at the end; SQLite only, no
+  journal byte changes.
+- **Ctrl+C** (`interruptible`, in `run` for both modes): the first stops after the day under
+  way and prints how to stop at once; the second raises `KeyboardInterrupt`. `run` then says
+  `stopped at day N` and exits 0. A paused controlled runner waits in half-second steps so
+  Ctrl+C reaches it on Windows too. The observer's protocol is unchanged.
+- **Crash hook, for tests only.** `SOVEREIGN_WORLD_CRASH_AT=point:day[:n]` ends the process at
+  once (`os._exit(137)`) at `before_day`, `after_council` (the n-th council saved that day),
+  `after_councils`, `after_transition` or `after_checkpoint`. Nothing sets it outside the kill
+  test.
+- **Tests:**
+  - `tests/test_resume.py`: councils before their day; a day stopped after its councils, and one
+    stopped after two of four, resume to the unbroken journal byte for byte with no model asked
+    again; spend counted once; each refusal, with the journal unchanged; checkpoints at 0, 30
+    and the end; Ctrl+C once and twice.
+  - `tests/integration/test_kill_recovery.py`, with `tests/stub_model.py` (an OpenAI-compatible
+    stand-in on loopback): two model-played civilizations, `sovereign-world run` killed at 11
+    points across days 0–31, then resumed: the journal equals the unbroken run's, `verify`
+    passes, every council's model was asked exactly once. Random kills (two seeds, at least two
+    kills each, some inside a model call) end the same way. A real SIGINT stops a running world
+    after its day (not on Windows, where a test cannot send one).
+- **Limit:** a run recorded before this slice that lost its councils at a kill cannot be
+  repaired; `rederive` still fails on it.

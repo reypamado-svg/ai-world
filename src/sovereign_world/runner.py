@@ -1,10 +1,16 @@
 """Running a world forward, day by day: the one loop that writes a run (O4).
 
 `run_days` is what `sovereign-world run` does: replay the latest verified state, then for each
-day advance it under the run's sovereigns, save the day and the councils held, and save a
-checkpoint at the end. A `RunControl` may hold the loop between days; holding changes nothing
-the run records, because nothing about the pause reaches the world, its random streams or its
-journal.
+day advance it under the run's sovereigns and save the day, with a checkpoint every 30 days and
+at the end. A `RunControl` may hold the loop between days; holding changes nothing the run
+records, because nothing about the pause reaches the world, its random streams or its journal.
+
+Crash safety (sealed trial): each council is saved to the journal the moment it is held, before
+its day. A run killed at any point is resumed by running it again: councils already saved for
+the day under way are given back to their civilizations, so no model is asked twice about one
+council, and the journal ends as an unbroken run's would. Saved councils that cannot be that
+day's refuse the resume (`ResumeRefused`) before anything is asked or written. The first Ctrl+C
+(`interruptible`) stops the loop after the day under way.
 
 `controlled` is the same loop driven from standard input, for an observer that started the
 runner as its child (`sovereign-world run --controlled`, used by `observe --run-days`). It
@@ -17,23 +23,42 @@ no settings and no secrets.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
+from types import FrameType
 from typing import TextIO
 
+from sovereign_world.commands import crisis_council_due
 from sovereign_world.config import RunManifest, SpendConfig
 from sovereign_world.engine import advance_day
 from sovereign_world.gateway.factory import build_sovereigns
-from sovereign_world.gateway.records import CouncilRecord, journal_councils, recorded_councils
+from sovereign_world.gateway.records import (
+    COUNCIL_RECORD,
+    CouncilRecord,
+    RecordsCouncils,
+    ResumedCouncils,
+    ResumeRefused,
+    recorded_councils,
+    split_resumed,
+)
+from sovereign_world.ids import EntityId
 from sovereign_world.persistence import WorldStore
 from sovereign_world.replay import replay_run
 from sovereign_world.rng import StableRng
+from sovereign_world.scripted import Sovereign
 from sovereign_world.spend import stop_reason, tally
 from sovereign_world.state import WorldState
 
 PAUSE = "pause"
 RESUME = "resume"
+CHECKPOINT_INTERVAL = 30
+"""Days between checkpoints (the same as journal snapshots, by choice, not by need)."""
+CRASH_ENV = "SOVEREIGN_WORLD_CRASH_AT"
+"""Tests only: ``point:day[:n]`` ends the process at once at that point of the loop."""
 
 
 class RunControl:
@@ -73,7 +98,8 @@ class RunControl:
         """Block while paused; whether the loop may go on (False once stopped)."""
         with self._changed:
             while self._paused and not self._stopped:
-                self._changed.wait()
+                # A timed wait lets Ctrl+C through on every platform.
+                self._changed.wait(timeout=0.5)
             return not self._stopped
 
 
@@ -84,6 +110,45 @@ class SpendCapReached(Exception):
         super().__init__(reason)
         self.reason = reason
         self.state = state
+
+
+def _crash_point() -> tuple[str, ...] | None:
+    value = os.environ.get(CRASH_ENV)
+    return tuple(value.split(":")) if value else None
+
+
+def _crash_if(point: tuple[str, ...] | None, name: str, *numbers: int) -> None:
+    """End the process with no clean-up, as a power cut would (tests of recovery only)."""
+    if point is not None and point == (name, *map(str, numbers)):
+        sys.stderr.write(f"crash hook: {':'.join(point)}\n")
+        sys.stderr.flush()
+        os._exit(137)
+
+
+@contextlib.contextmanager
+def interruptible(control: RunControl, *, out: TextIO | None = None) -> Iterator[None]:
+    """The first Ctrl+C stops the run after the day under way; a second stops it at once."""
+    previous = signal.getsignal(signal.SIGINT)
+    pressed = False
+
+    def handler(signum: int, frame: FrameType | None) -> None:
+        nonlocal pressed
+        if pressed:
+            raise KeyboardInterrupt
+        pressed = True
+        control.stop()
+        print(
+            "stopping after the day under way; press Ctrl+C again to stop at once (running"
+            " again then picks up from what was saved)",
+            file=out or sys.stderr,
+            flush=True,
+        )
+
+    signal.signal(signal.SIGINT, handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 def run_days(
@@ -102,35 +167,94 @@ def run_days(
     With a spending cap (``manifest.spend``), the loop stops cleanly before any day that could
     take the run past it, saves a checkpoint, and raises ``SpendCapReached``. ``spend_limit_usd``
     may lower the cost cap for this session; it never raises it."""
+    crash = _crash_point()
     manifest = _with_limit(store.manifest(), spend_limit_usd)
     state = replay_run(store)
     rng = StableRng(manifest.config.seed)
-    history = recorded_councils(store)
+    records = recorded_councils(store)
+    history, resumed = split_resumed(records, state.day)
     sovereigns = build_sovereigns(manifest, state.civilizations, history=history)
-    spent = tally(history, manifest.spend)
+    _check_resumed(resumed, state, sovereigns)
+    # Every council saved counts once, those of the interrupted day included.
+    spent = tally(records, manifest.spend)
+    written: list[CouncilRecord] = []
+
+    def save(record: CouncilRecord) -> None:
+        store.append_record(COUNCIL_RECORD, record.model_dump(mode="json"))
+        written.append(record)
+        _crash_if(crash, "after_council", record.day, len(written))
+
+    for sovereign in sovereigns.values():
+        if isinstance(sovereign, RecordsCouncils):
+            sovereign.record_to(save)
+            sovereign.resume_from(resumed)
     if on_start is not None:
         on_start(state)
     advanced = 0
     for _ in range(days):
         if control is not None and not control.wait_to_advance():
             break
+        _crash_if(crash, "before_day", state.day)
         reason = stop_reason(manifest, spent)
         if reason is not None:
             if advanced:
                 store.save_checkpoint(state)
             raise SpendCapReached(reason, state)
+        written.clear()
         transition = advance_day(state, rng, sovereigns=sovereigns)
+        _crash_if(crash, "after_councils", state.day)
+        if resumed.refused is not None:
+            raise ResumeRefused(resumed.refused)
+        if resumed.pending():
+            names = ", ".join(str(civ) for civ in resumed.pending())
+            raise ResumeRefused(
+                f"the saved councils of day {state.day} for {names} were not held again"
+            )
         store.append_transition(transition.state, transition.events, previous=state)
         state = transition.state
-        written: list[CouncilRecord] = []
-        journal_councils(store, sovereigns.values(), written)
+        _crash_if(crash, "after_transition", state.day)
         spent.merge(tally(written, manifest.spend))
         advanced += 1
         if on_day is not None:
             on_day(state)
+        if state.day % CHECKPOINT_INTERVAL == 0:
+            store.save_checkpoint(state)
+            _crash_if(crash, "after_checkpoint", state.day)
     if advanced:
         store.save_checkpoint(state)
     return state
+
+
+def _check_resumed(
+    resumed: ResumedCouncils, state: WorldState, sovereigns: Mapping[EntityId, Sovereign]
+) -> None:
+    """Refuse, before anything is asked or written, saved councils that cannot be the day under
+    way's: the civilization must be alive, recorded and sitting in council that day."""
+    if resumed.day is None:
+        return
+    monthly = state.day % state.config.council_interval_days == 0
+    for civilization_id in resumed.pending():
+        sovereign = sovereigns.get(civilization_id)
+        civilization = state.civilizations.get(civilization_id)
+        sits = (
+            sovereign is not None
+            and isinstance(sovereign, RecordsCouncils)
+            and civilization is not None
+            and civilization.eliminated_day is None
+            and (
+                monthly
+                or (
+                    bool(getattr(sovereign, "crisis_councils", False))
+                    and crisis_council_due(state, civilization_id)
+                )
+            )
+        )
+        if not sits:
+            raise ResumeRefused(
+                f"the journal holds a council of {civilization_id} for day {state.day}, but"
+                f" {civilization_id} holds no council that day; the journal was changed or"
+                " belongs to another history"
+            )
 
 
 def _with_limit(manifest: RunManifest, limit_usd: float | None) -> RunManifest:
@@ -149,10 +273,12 @@ def controlled(
     commands: TextIO = sys.stdin,
     out: TextIO = sys.stdout,
     spend_limit_usd: float | None = None,
+    control: RunControl | None = None,
 ) -> WorldState:
     """`run_days` held by `pause` and `resume` lines on `commands`, reporting on `out`. A run
     stopped by its spending cap says `stopped <day> spend_cap` instead of `done <day>`."""
-    control = RunControl(paused=True)
+    control = control or RunControl()
+    control.pause()
     speaking = threading.Lock()
 
     def say(line: str) -> None:

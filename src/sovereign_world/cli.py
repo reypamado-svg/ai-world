@@ -19,10 +19,16 @@ from sovereign_world.config import (
     SpendConfig,
     WorldConfig,
 )
-from sovereign_world.gateway.records import recorded_councils
+from sovereign_world.gateway.records import ResumeRefused, recorded_councils
 from sovereign_world.persistence import WorldStore
 from sovereign_world.replay import rederive_run, replay_run, verify_run
-from sovereign_world.runner import SpendCapReached, controlled, run_days
+from sovereign_world.runner import (
+    RunControl,
+    SpendCapReached,
+    controlled,
+    interruptible,
+    run_days,
+)
 from sovereign_world.spend import Tally, prompt_round, stop_reason, tally, worst_case_round
 from sovereign_world.state import build_initial_state, validate_world
 
@@ -121,17 +127,25 @@ def run(
     """Advance the latest verified state under the run's sovereigns, recording every council.
 
     A run with a spending cap stops cleanly, with a checkpoint and exit code 3, before any day
-    whose councils could take it past the cap."""
+    whose councils could take it past the cap. Ctrl+C stops it after the day under way. After a
+    crash or a kill, running it again carries on from what was saved, asking no model again
+    about a council already saved."""
     store = WorldStore(directory)
+    control = RunControl(paused=controlled_run)
     try:
-        if controlled_run:
-            controlled(store, days, spend_limit_usd=spend_limit)
-            return
-        state = run_days(store, days, spend_limit_usd=spend_limit)
+        with interruptible(control):
+            if controlled_run:
+                controlled(store, days, spend_limit_usd=spend_limit, control=control)
+                return
+            state = run_days(store, days, control=control, spend_limit_usd=spend_limit)
     except SpendCapReached as stop:
         typer.echo(f"stopped before day {stop.state.day + 1}: {stop.reason}", err=True)
         raise typer.Exit(3) from None
-    typer.echo(f"advanced to day {state.day} ({store.state_hash(state)})")
+    except ResumeRefused as refused:
+        typer.echo(f"cannot resume: {refused}", err=True)
+        raise typer.Exit(1) from None
+    verb = "stopped at" if control.stopped else "advanced to"
+    typer.echo(f"{verb} day {state.day} ({store.state_hash(state)})")
 
 
 def _spend_lines(title: str, total: Tally) -> list[str]:
