@@ -28,6 +28,7 @@ function fakeServer() {
         return JSON.stringify({ history_epoch: server.epoch, ready: manifest.days.length, people: ids.length });
       }
       if (path === 'api/run/manifest') return file('manifest.json');
+      if (path === 'api/run/seal') return JSON.stringify(server.seal ?? { sealed: false });
       if (path === 'api/run/days') return JSON.stringify(manifest.days);
       if (path.startsWith('api/run/ids?from=')) {
         const from = Number(path.split('=')[1]);
@@ -64,6 +65,16 @@ test('a live source reads the run while its history stays the same', async () =>
   assert.deepEqual((await src.chronicle(1)).events, []);
   assert.equal((await src.terrain()).manifest.export_version, 4);
   assert.equal((await src.refresh()).reset, false);
+});
+
+test('a live source asks whether the run is sealed, and by whom', async () => {
+  const server = fakeServer();
+  const src = await ServerSource.open('api', { token: 't', fetch: server.fetch });
+  assert.deepEqual(await src.seal(), { sealed: false });
+  server.seal = { sealed: true, fingerprint: 'ab'.repeat(32), signature_valid: true, planned_days: 365 };
+  assert.equal((await src.seal()).planned_days, 365);
+  server.epoch = 1;
+  await assert.rejects(src.seal(), HistoryChanged);
 });
 
 test('an answer from another history is refused, not shown', async () => {

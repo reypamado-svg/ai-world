@@ -297,6 +297,29 @@ class RunService:
             }
             return Served(self.epoch, encode_json(body))
 
+    def seal(self) -> Served:
+        """Whether the run is sealed, and its seal's public parts, with whether its signature
+        verifies by the key it names."""
+        from sovereign_world.seal import Seal, SealRefused
+
+        with self._lock:
+            document = self._reader.seal_document()
+            if document is None:
+                return Served(self.epoch, encode_json({"sealed": False}))
+            seal = Seal.model_validate(document)
+            try:
+                seal.verify_signature()
+                valid = True
+            except SealRefused:
+                valid = False
+            record = {
+                "sealed": True,
+                "fingerprint": seal.fingerprint,
+                "signature_valid": valid,
+                **seal.model_dump(mode="json"),
+            }
+            return Served(self.epoch, encode_json(record))
+
     def manifest(self) -> Served:
         with self._lock:
             reader = self._reader

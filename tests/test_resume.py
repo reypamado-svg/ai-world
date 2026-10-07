@@ -57,7 +57,7 @@ def asked(monkeypatch: pytest.MonkeyPatch) -> list[tuple[EntityId, int]]:
     """Every model call, as (civilization, council day); each answers quietly."""
     calls: list[tuple[EntityId, int]] = []
 
-    def build(manifest, civilization_ids, *, history=()):  # type: ignore[no-untyped-def]
+    def build(manifest, civilization_ids, *, history=(), pinned=None):  # type: ignore[no-untyped-def]
         ids = sorted(civilization_ids)
 
         def provider(civ: EntityId) -> ScriptedProvider:

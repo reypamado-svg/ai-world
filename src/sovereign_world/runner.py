@@ -12,6 +12,10 @@ council, and the journal ends as an unbroken run's would. Saved councils that ca
 day's refuse the resume (`ResumeRefused`) before anything is asked or written. The first Ctrl+C
 (`interruptible`) stops the loop after the day under way.
 
+A sealed run (`seal.py`) is checked against its seal before anything else: a changed manifest,
+seal, code or provider refuses it (`SealRefused`), hosted models are reached only at their
+sealed addresses, and the loop stops at the seal's planned days.
+
 `controlled` is the same loop driven from standard input, for an observer that started the
 runner as its child (`sovereign-world run --controlled`, used by `observe --run-days`). It
 starts paused and understands exactly two lines, `pause` and `resume`; anything else is
@@ -49,7 +53,9 @@ from sovereign_world.ids import EntityId
 from sovereign_world.persistence import WorldStore
 from sovereign_world.replay import replay_run
 from sovereign_world.rng import StableRng
+from sovereign_world.rulehash import rule_hash
 from sovereign_world.scripted import Sovereign
+from sovereign_world.seal import SealRefused, check_seal, stored_seal
 from sovereign_world.spend import stop_reason, tally
 from sovereign_world.state import WorldState
 
@@ -156,7 +162,7 @@ def run_days(
     days: int,
     *,
     control: RunControl | None = None,
-    on_start: Callable[[WorldState], None] | None = None,
+    on_start: Callable[[WorldState, int], None] | None = None,
     on_day: Callable[[WorldState], None] | None = None,
     spend_limit_usd: float | None = None,
 ) -> WorldState:
@@ -168,12 +174,29 @@ def run_days(
     take the run past it, saves a checkpoint, and raises ``SpendCapReached``. ``spend_limit_usd``
     may lower the cost cap for this session; it never raises it."""
     crash = _crash_point()
-    manifest = _with_limit(store.manifest(), spend_limit_usd)
+    stored = store.manifest()
+    seal = stored_seal(store)
+    if seal is not None:
+        # Before anything is replayed, asked or written: the run must still match its seal.
+        check_seal(store, stored, seal, code_hash=rule_hash())
+    manifest = _with_limit(stored, spend_limit_usd)
     state = replay_run(store)
+    if seal is not None:
+        remaining = seal.planned_days - state.day
+        if remaining <= 0:
+            raise SealRefused(
+                f"the seal plans {seal.planned_days} days and the run stands at day {state.day}"
+            )
+        days = min(days, remaining)
     rng = StableRng(manifest.config.seed)
     records = recorded_councils(store)
     history, resumed = split_resumed(records, state.day)
-    sovereigns = build_sovereigns(manifest, state.civilizations, history=history)
+    pinned = (
+        {civilization: pin.base_url() for civilization, pin in seal.providers.items()}
+        if seal is not None
+        else None
+    )
+    sovereigns = build_sovereigns(manifest, state.civilizations, history=history, pinned=pinned)
     _check_resumed(resumed, state, sovereigns)
     # Every council saved counts once, those of the interrupted day included.
     spent = tally(records, manifest.spend)
@@ -189,7 +212,7 @@ def run_days(
             sovereign.record_to(save)
             sovereign.resume_from(resumed)
     if on_start is not None:
-        on_start(state)
+        on_start(state, days)
     advanced = 0
     for _ in range(days):
         if control is not None and not control.wait_to_advance():
@@ -296,8 +319,8 @@ def controlled(
                 say("running")
         control.stop()
 
-    def started(state: WorldState) -> None:
-        say(f"start {state.day} {state.day + days}")
+    def started(state: WorldState, planned: int) -> None:
+        say(f"start {state.day} {state.day + planned}")
         say("paused")
         threading.Thread(target=listen, name="runner-commands", daemon=True).start()
 

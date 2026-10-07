@@ -28,6 +28,7 @@ const CONTROLS = [
   '#btn-day-next',
   '#day-slider',
   '#runner-chip',
+  '#seal-chip',
   '#perspective-chip',
   '#perspective',
   '#perspective-asof',
@@ -52,6 +53,9 @@ for (const [width, height] of [
         const chip = document.getElementById('runner-chip');
         chip.hidden = false;
         chip.textContent = 'RUNNER · running · day 365 of 365 · 3 ahead';
+        const seal = document.getElementById('seal-chip');
+        seal.hidden = false;
+        seal.textContent = 'SEALED · 1a2b 3c4d 5e6f 7a8b';
         return selectors.map((selector) => {
           const el = document.querySelector(selector);
           const r = el.getBoundingClientRect();

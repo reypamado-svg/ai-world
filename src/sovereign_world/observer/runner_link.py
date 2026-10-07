@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Protocol
 
 from sovereign_world.observer import TOKEN_ENV
+from sovereign_world.seal import SEAL_KEY_ENV
 
 STARTING = "starting"
 PAUSED = "paused"
@@ -74,10 +75,12 @@ class Runner(Protocol):
 
 
 def child_environment(environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    """The runner's environment: the observer's own, without the observer's token. AI keys
-    and other settings pass through unchanged, as they would to `sovereign-world run`."""
+    """The runner's environment: the observer's own, without the observer's token or the seal
+    key. AI keys and other settings pass through unchanged, as they would to `sovereign-world
+    run`."""
     source = os.environ if environ is None else environ
-    return {key: value for key, value in source.items() if key != TOKEN_ENV}
+    hidden = {TOKEN_ENV, SEAL_KEY_ENV}
+    return {key: value for key, value in source.items() if key not in hidden}
 
 
 class RunnerLink:

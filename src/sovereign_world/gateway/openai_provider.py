@@ -21,14 +21,23 @@ from sovereign_world.gateway.provider import (
 class OpenAIProvider:
     name = "openai"
 
-    def __init__(self, model: str, *, max_retries: int = 2, client: Any = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        *,
+        max_retries: int = 2,
+        client: Any = None,
+        base_url: str | None = None,
+    ) -> None:
+        """`base_url`, when given (a sealed run pins it), wins over OPENAI_BASE_URL."""
         if not model:
             raise ValueError("an OpenAI sovereign needs its model named in the run settings")
         self.model = model
         if client is None:
             import openai
 
-            client = openai.OpenAI(max_retries=max_retries)
+            pinned: dict[str, Any] = {"base_url": base_url} if base_url else {}
+            client = openai.OpenAI(max_retries=max_retries, **pinned)
         self._client = client
 
     def complete(self, request: ModelRequest) -> ModelReply:

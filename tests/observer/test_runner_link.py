@@ -30,6 +30,7 @@ from sovereign_world.observer.runner_link import (
     child_environment,
 )
 from sovereign_world.observer.service import NoRunner, RunService
+from sovereign_world.seal import SEAL_KEY_ENV
 
 pytest.importorskip("fastapi")
 
@@ -172,9 +173,14 @@ def test_the_control_route_checks_what_it_is_given(old_run: Path) -> None:
 
 
 def test_the_runner_never_sees_the_token() -> None:
-    environ = {TOKEN_ENV: "secret", "ANTHROPIC_API_KEY": "key", "PATH": "/bin"}
+    environ = {
+        TOKEN_ENV: "secret",
+        SEAL_KEY_ENV: "swseal1:secret",
+        "ANTHROPIC_API_KEY": "key",
+        "PATH": "/bin",
+    }
     child = child_environment(environ)
-    assert TOKEN_ENV not in child
+    assert TOKEN_ENV not in child and SEAL_KEY_ENV not in child
     assert child == {"ANTHROPIC_API_KEY": "key", "PATH": "/bin"}
     source = (SOURCE / "runner_link.py").read_text()
     assert "WorldStore(" not in source and "persistence import" not in source

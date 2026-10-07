@@ -37,6 +37,10 @@ def main(argv: list[str] | None = None) -> int:
             f"{summary['histories']} histories ({summary['played_now']} played now) in"
             f" {summary['elapsed_seconds']} s on {summary['workers']} workers: {args.out}"
         )
+        failed = summary["failed"]
+        if isinstance(failed, list) and failed:
+            print(f"{len(failed)} histories failed (engine bugs); see {args.out / 'failures.txt'}")
+            return 1
         return 0
     result = write_report(args.directory)
     print(f"{'passed' if result['passed'] else 'FAILED'}: {args.directory / 'report.md'}")

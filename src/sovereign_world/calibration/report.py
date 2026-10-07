@@ -176,6 +176,7 @@ def write_report(directory: Path) -> dict[str, object]:
         else {}
     )
     result["rule_hash"] = run.get("rule_hash")
+    result["engine_hash"] = run.get("engine_hash")
     result["engine_version"] = run.get("engine_version")
     (directory / "report.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     tables = result["tables"]
@@ -192,6 +193,7 @@ def write_report(directory: Path) -> dict[str, object]:
         "",
         f"**{passed}.** {result['histories']} histories, {result['rows']} civilizations."
         f" Engine {run.get('engine_version', '?')},"
+        f" engine hash `{str(run.get('engine_hash', '?'))[:16]}…`,"
         f" rule hash `{str(run.get('rule_hash', '?'))[:16]}…`.",
         "",
         "## Checks",

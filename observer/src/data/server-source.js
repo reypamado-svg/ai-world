@@ -93,6 +93,11 @@ export class ServerSource extends RunSource {
     return this._json(`${this.base}/days/${day}/perspective/${civ}`);
   }
 
+  /** Whether the run is sealed, and by whom (sealed trial). */
+  async seal() {
+    return this._json(`${this.base}/seal`);
+  }
+
   /** The day's parties on the road, with their routes. */
   async routes(day) {
     return this._json(`${this.base}/days/${day}/routes`);

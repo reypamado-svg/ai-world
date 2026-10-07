@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 from uuid import uuid4
@@ -21,13 +22,27 @@ from sovereign_world.config import (
 )
 from sovereign_world.gateway.records import ResumeRefused, recorded_councils
 from sovereign_world.persistence import WorldStore
+from sovereign_world.preflight import offline_checks
 from sovereign_world.replay import rederive_run, replay_run, verify_run
+from sovereign_world.rulehash import engine_hash, rule_hash
 from sovereign_world.runner import (
     RunControl,
     SpendCapReached,
     controlled,
     interruptible,
     run_days,
+)
+from sovereign_world.seal import (
+    SEAL_KEY_ENV,
+    SealKeyInvalid,
+    SealKeyMissing,
+    SealRefused,
+    check_seal,
+    generate_key,
+    grouped,
+    load_key,
+    make_seal,
+    stored_seal,
 )
 from sovereign_world.spend import Tally, prompt_round, stop_reason, tally, worst_case_round
 from sovereign_world.state import build_initial_state, validate_world
@@ -129,7 +144,10 @@ def run(
     A run with a spending cap stops cleanly, with a checkpoint and exit code 3, before any day
     whose councils could take it past the cap. Ctrl+C stops it after the day under way. After a
     crash or a kill, running it again carries on from what was saved, asking no model again
-    about a council already saved."""
+    about a council already saved. A sealed run is refused (exit code 4) if it no longer
+    matches its seal, and stops at its planned days."""
+    # Only `seal` uses the seal key; nothing that runs a world keeps it.
+    os.environ.pop(SEAL_KEY_ENV, None)
     store = WorldStore(directory)
     control = RunControl(paused=controlled_run)
     try:
@@ -144,6 +162,9 @@ def run(
     except ResumeRefused as refused:
         typer.echo(f"cannot resume: {refused}", err=True)
         raise typer.Exit(1) from None
+    except SealRefused as refused:
+        typer.echo(f"seal refused: {refused}", err=True)
+        raise typer.Exit(4) from None
     verb = "stopped at" if control.stopped else "advanced to"
     typer.echo(f"{verb} day {state.day} ({store.state_hash(state)})")
 
@@ -242,10 +263,31 @@ def replay(
 
 
 @app.command()
-def verify(directory: Path) -> None:
-    """Verify manifest, journal hashes, replay, checkpoint, and invariants."""
+def verify(
+    directory: Path,
+    signer: str | None = typer.Option(
+        None,
+        "--signer",
+        help="The fingerprint the run must be sealed by (64 hex digits; spaces allowed).",
+    ),
+) -> None:
+    """Verify manifest, journal hashes, replay, checkpoint, and invariants, and a sealed run's
+    seal (by the given signer, if one is named)."""
     store = WorldStore(directory)
-    store.manifest()
+    manifest = store.manifest()
+    sealed = stored_seal(store)
+    notes: list[str] = []
+    if signer is not None and sealed is None:
+        typer.echo("this run is not sealed", err=True)
+        raise typer.Exit(code=1)
+    if sealed is not None:
+        try:
+            notes = check_seal(
+                store, manifest, sealed, code_hash=rule_hash(), signer=signer, strict_code=False
+            )
+        except (SealRefused, ValueError) as refused:
+            typer.echo(f"seal refused: {refused}", err=True)
+            raise typer.Exit(code=1) from None
     result = verify_run(store)
     replayed = replay_run(store, target_day=result.verified_through_day)
     validate_world(replayed)
@@ -262,6 +304,67 @@ def verify(directory: Path) -> None:
         f"verified through day {result.verified_through_day} "
         f"({result.state_hash}, {result.records} records, journal format {store.journal_format})"
     )
+    if sealed is not None:
+        code = "differs from this code" if notes else "matches this code"
+        typer.echo(
+            f"sealed by {grouped(sealed.fingerprint)} for {sealed.planned_days} days;"
+            f" its code hash {code}"
+        )
+
+
+@app.command()
+def keygen() -> None:
+    """Make a new seal key: printed once, saved nowhere. Keep it, and its fingerprint."""
+    key, fingerprint = generate_key()
+    typer.echo(f"{SEAL_KEY_ENV}={key}")
+    typer.echo(f"fingerprint: {grouped(fingerprint)}")
+    typer.echo(
+        "This key is shown once and saved nowhere. Put it in the environment only to seal a run,"
+        " and keep the fingerprint to check the run's seal later."
+    )
+
+
+@app.command()
+def seal(
+    directory: Path,
+    days: int = typer.Option(..., min=1, help="The days the sealed run is planned to last."),
+) -> None:
+    """Seal a run on day 0 with the key in SOVEREIGN_WORLD_SEAL_KEY. From then on `run` refuses
+    any change to its manifest, code, prompts or model endpoints, and stops at the planned
+    days. The key is read from the environment, used once, and never written or shown."""
+    store = WorldStore(directory)
+    manifest = store.manifest()
+    state = store.load_checkpoint()
+    problems = offline_checks(store, manifest, state)
+    if problems:
+        for problem in problems:
+            typer.echo(f"cannot seal: {problem}", err=True)
+        raise typer.Exit(1)
+    try:
+        key = load_key(os.environ)
+    except (SealKeyMissing, SealKeyInvalid) as error:
+        typer.echo(f"cannot seal: {error}", err=True)
+        raise typer.Exit(1) from None
+    finally:
+        os.environ.pop(SEAL_KEY_ENV, None)
+    sealed = make_seal(
+        manifest,
+        state,
+        planned_days=days,
+        key=key,
+        code_hash=rule_hash(),
+        engine_hash=engine_hash(),
+    )
+    del key
+    store.write_seal(sealed.model_dump(mode="json"))
+    typer.echo(f"sealed run {sealed.run_id} for {days} days")
+    typer.echo(f"fingerprint: {grouped(sealed.fingerprint)}")
+    typer.echo(f"manifest hash: {sealed.manifest_hash}")
+    typer.echo(f"code hash: {sealed.code_hash}")
+    typer.echo(f"engine hash: {sealed.engine_hash}")
+    typer.echo(f"prompt {sealed.prompt_version}, reply schema {sealed.reply_schema_hash}")
+    for civilization_id, pin in sealed.providers.items():
+        typer.echo(f"{civilization_id}: {pin.kind} {pin.model} at {pin.base_url()}")
 
 
 @app.command()
@@ -321,6 +424,7 @@ def observe(
         raise typer.BadParameter(
             "the observer server needs FastAPI and uvicorn: install the 'observer' extra"
         ) from error
+    os.environ.pop(SEAL_KEY_ENV, None)
     serve(directory, host=host, port=port, run_days=run_days)
 
 

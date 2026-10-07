@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -86,6 +87,24 @@ class RunReader:
                 raise RuntimeError("manifest hash mismatch")
             self._manifest = manifest
         return self._manifest
+
+    def seal_document(self) -> dict[str, object] | None:
+        """The run's seal as saved, or None for a run that is not sealed (read-only)."""
+        connection = _readonly(self.database_path)
+        try:
+            row = connection.execute(
+                "SELECT seal_json, seal_hash FROM seal WHERE id = 1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        if hashlib.sha256(row[0].encode("utf-8")).hexdigest() != row[1]:
+            raise RuntimeError("seal hash mismatch")
+        document: dict[str, object] = json.loads(row[0])
+        return document
 
     @property
     def journal_format(self) -> int:

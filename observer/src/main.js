@@ -325,6 +325,12 @@ class ObserverApp {
     $('day-group').hidden = false;
     keepPanelsBelow($('run-bar'));
     if (run.live) this.setUpChronicle(run);
+    if (run.live && run.seal) {
+      run
+        .seal()
+        .then((seal) => this.showSealChip(seal))
+        .catch(() => {});
+    }
     // The replay timeline: playing steps through the recorded days, one per display day.
     this.timeline = { dayStartT: this.t, waiting: false, end: false, busy: false };
     const slider = $('day-slider');
@@ -481,6 +487,20 @@ class ObserverApp {
       ?.control({ lookahead: n })
       .then(() => this.showRunnerChip())
       .catch((err) => this.liveError(err));
+  }
+
+  /** A sealed run's chip: its signer's fingerprint, and a warning if the seal does not verify. */
+  showSealChip(seal) {
+    const chip = $('seal-chip');
+    if (!seal?.sealed) {
+      chip.hidden = true;
+      return;
+    }
+    const groups = seal.fingerprint.match(/.{4}/g) ?? [];
+    chip.hidden = false;
+    chip.classList.toggle('warn', !seal.signature_valid);
+    chip.textContent = `SEALED · ${groups.slice(0, 4).join(' ')}${seal.signature_valid ? '' : ' · SIGNATURE DOES NOT VERIFY'}`;
+    chip.title = `Sealed for ${seal.planned_days} days by ${groups.join(' ')}. Check it with sovereign-world verify --signer.`;
   }
 
   showRunnerChip() {
@@ -1467,6 +1487,8 @@ function buildApi(app) {
             chip: $('runner-chip').textContent,
           }
         : null,
+    /** The seal chip, as shown (hidden for an unsealed run). */
+    sealInfo: () => ({ chip: $('seal-chip').textContent, hidden: $('seal-chip').hidden }),
     /** The day shown's travellers: [q, r, civilization, count] per tile. */
     runTravellers: () => app.population?.record.travellers ?? [],
     /** Canvas point of the k-th traveller dot of the day shown, or null. */

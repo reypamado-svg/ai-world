@@ -2740,6 +2740,34 @@ def _captive(state: WorldState, person_id: EntityId) -> Person | None:
     return None
 
 
+def _fitted(journey: Journey, travellers: tuple[EntityId, ...]) -> Journey:
+    """The party with fewer carriers: what the others carried goes with them, so the food packed
+    (and, if that is not enough, gear, in reverse resource order) is cut to what the rest can
+    bear. A party that still fits keeps its load exactly."""
+    capacity = journey.carry_per_person * len(travellers)
+    campaign = journey.kind is JourneyKind.CAMPAIGN
+
+    def gear(cargo: dict[Resource, int]) -> int:
+        return cargo_load(cargo) if campaign else sum(cargo.values())
+
+    cargo = dict(journey.cargo)
+    packed = journey.provisions_packed
+    if gear(cargo) + packed > capacity:
+        packed = max(capacity - gear(cargo), 0)
+        for resource in sorted(cargo, reverse=True):
+            while cargo[resource] and gear(cargo) > capacity:
+                cargo[resource] -= 1
+        cargo = {resource: count for resource, count in cargo.items() if count}
+    return journey.model_copy(
+        update={
+            "traveller_ids": travellers,
+            "cargo": cargo,
+            "provisions_packed": packed,
+            "provisions": min(journey.provisions, packed),
+        }
+    )
+
+
 def _take_captives(state: WorldState, battle: Battle, at_home: bool) -> list[DomainEvent]:
     """The winners hold the fighters they caught: at home, or marching with the party."""
     if not battle.captured:
@@ -2752,7 +2780,7 @@ def _take_captives(state: WorldState, battle: Battle, at_home: bool) -> list[Dom
         if journey.active and taken & set(journey.traveller_ids):
             left = tuple(item for item in journey.traveller_ids if item not in taken)
             journey = (
-                journey.model_copy(update={"traveller_ids": left})
+                _fitted(journey, left)
                 if left
                 else journey.model_copy(
                     update={

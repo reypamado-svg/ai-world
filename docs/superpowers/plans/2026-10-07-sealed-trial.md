@@ -26,8 +26,8 @@ The models, the cap, the seed, the size, the rotation and the pace are chosen on
 |---|---|---|
 | A | Balance calibration with rotated starts | Code done (c70dd1f, 098acef); the 2,000-history matrix is running |
 | B | Usage recording and the spending cap | Done (36dcb6c) |
-| C | Crash-safe recovery | Done (this commit) |
-| D | Sealing | Planned |
+| C | Crash-safe recovery | Done (bcc35ad) |
+| D | Sealing | Done (this commit) |
 | E | The launch gate | Planned |
 | F | The live run on the user's PC | Planned |
 | G | Reachable from outside | Planned |
@@ -149,3 +149,60 @@ call threw away the first two replies.
     after its day (not on Windows, where a test cannot send one).
 - **Limit:** a run recorded before this slice that lost its councils at a kill cannot be
   repaired; `rederive` still fails on it.
+
+## D as built (detailed by Fable 5.1 at bcc35ad)
+
+- **Keys.** `sovereign-world keygen` prints `SOVEREIGN_WORLD_SEAL_KEY=swseal1:<43 base64url
+  characters>` (an Ed25519 private seed) and its fingerprint (the sha256 of the 32-byte public
+  key, shown in groups of four hex digits), and writes nothing. Only `seal` reads the variable;
+  `seal`, `run` and `observe` remove it from their own environment, and the observer never
+  passes it to the runner it starts. Errors about the key never show its value.
+- **The seal** (`seal.py`, a signed `Seal` document, canonical sorted-key JSON as the manifest
+  hash uses): the run id; the manifest hash; the code hash (`rule_hash`, every package source
+  but the observer's) and the engine hash (`engine_hash`, see below); the engine, generator,
+  rules and journal versions; the prompt version and the reply schema's hash; each
+  civilization's charter hash (the charter depends only on who it is and the rules version, so
+  it holds for the whole run); the provider pins (kind, model, scheme, host with port, path,
+  and the name of the token variable); the budgets; the spending cap; the planned days; the
+  start rotation; the public key and the signature.
+- **Sealing.** `sovereign-world seal RUN_DIR --days 365` on day 0 only, after offline checks
+  (`preflight.offline_checks`: day 0, journal format 2, nothing saved but the header, not yet
+  sealed, every sovereign in the world, model-played ones on this engine's prompt version with
+  a model named, every endpoint readable). The seal is saved in a SQLite `seal` table and as
+  the journal's `seal` record right after the header. It prints the fingerprint, the hashes and
+  each pin, never the key.
+- **Enforcement.** Before anything is replayed, asked or written, `run` (and the observer's
+  runner) checks the signature, the manifest hash, run id, versions, budgets, cap, rotation and
+  provider pins against the run, the journal's seal record and header, and the code hash.
+  Any difference refuses the run (`SealRefused`, exit code 4, `seal refused: …`). Hosted models
+  are reached only at their sealed addresses (`https://api.anthropic.com`,
+  `https://api.openai.com/v1`), passed to the clients so `ANTHROPIC_BASE_URL` and
+  `OPENAI_BASE_URL` have no effect. A request for more days than the plan has left is cut to
+  what is left; a run at its planned end is refused.
+- **`verify`** now checks that the journal's header names the stored manifest and that every
+  saved day carries the manifest hash the run started under. For a sealed run it also checks
+  the seal, and `verify --signer FINGERPRINT` refuses a run sealed by another key. Code that
+  differs from the sealed code is reported, not refused, so an archived run still verifies.
+- **A fork of a sealed run** is a new, unsealed run (it may be sealed anew).
+- **The observer** answers `GET /api/run/seal` (behind the token) with `{"sealed": false}` or
+  the seal's public parts, its fingerprint and whether its signature verifies; a live page
+  shows `SEALED · 1a2b 3c4d 5e6f 7a8b`, in warning colours if the signature does not verify.
+- **Two code hashes.** The seal freezes everything that runs the world (`rule_hash`), because
+  the runner, the cap, the gateway and the seal's own checks must not move under it. The
+  balance calibration measures only the engine and the scripted policies, so it records
+  `engine_hash`, which leaves out the observer, the gateway, running, saving, replaying,
+  spending, sealing and the calibration's own batch and report; a fix there does not make a
+  finished 2,000-history calibration stale. The launch gate (slice E) checks the report's
+  engine hash.
+- **Limit.** Whoever holds the key can seal a changed run anew; the fingerprint the operator
+  checks with `verify --signer` is what ties a run to its key.
+
+### An engine bug the calibration found, fixed alongside D
+
+A raiding party that lost one of its eight fighters to capture at home kept the food it had
+packed for eight, which seven cannot carry, so the world stopped on its own validity check
+(seed 10, mixed policies, rotation 1, day 140). Captured fighters now take their share with
+them: the food packed (and, if that is not enough, gear) is cut to what the rest can bear. A
+party that still fits keeps its load exactly, so every run that did not crash is unchanged.
+The calibration batch also now names a history the engine fails on (`failures.txt`) and plays
+the rest, instead of stopping at the first and silently playing on.

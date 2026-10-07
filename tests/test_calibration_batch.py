@@ -7,10 +7,12 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
+
 from sovereign_world.calibration.__main__ import main
 from sovereign_world.calibration.batch import done_keys, run_batch, seeds_of, specs_of
-from sovereign_world.calibration.histories import FIELDS, HistorySpec, run_history
-from sovereign_world.rulehash import rule_hash
+from sovereign_world.calibration.histories import FIELDS, HistorySpec, Row, run_history
+from sovereign_world.rulehash import engine_hash, rule_hash
 
 
 def _rows(path: Path) -> list[dict[str, str]]:
@@ -88,3 +90,58 @@ def test_the_rule_hash_follows_the_code_but_not_the_observer(tmp_path: Path) -> 
     assert rule_hash(root) != first
     (root / "engine.py").write_bytes(b"x = 2\r\n")
     assert rule_hash(root) == rule_hash(root)
+
+
+def test_the_engine_hash_follows_the_engine_and_policies_but_not_what_runs_them(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "pkg"
+    for name in (
+        "engine.py",
+        "cli.py",
+        "runner.py",
+        "gateway/x.py",
+        "observer/y.py",
+        "calibration/policies.py",
+        "calibration/batch.py",
+    ):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text("x = 1\n")
+    engine, rules = engine_hash(root), rule_hash(root)
+    for name, engine_moves, rule_moves in (
+        ("cli.py", False, True),
+        ("runner.py", False, True),
+        ("gateway/x.py", False, True),
+        ("calibration/batch.py", False, True),
+        ("observer/y.py", False, False),
+        ("calibration/policies.py", True, True),
+        ("engine.py", True, True),
+    ):
+        (root / name).write_text((root / name).read_text() + "y = 2\n")
+        assert (engine_hash(root) != engine) == engine_moves, name
+        assert (rule_hash(root) != rules) == rule_moves, name
+        engine, rules = engine_hash(root), rule_hash(root)
+
+
+def test_a_history_the_engine_fails_on_is_named_and_the_others_go_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sovereign_world.calibration import batch
+
+    specs = specs_of([1, 2], 24, 5, "0", "builders")
+    broken = specs[0].key
+
+    def play(spec: HistorySpec) -> list[Row]:
+        if spec.key == broken:
+            raise ValueError("cargo and provisions exceed carrier capacity\nmore detail")
+        return run_history(spec)
+
+    monkeypatch.setattr(batch, "run_history", play)
+    summary = run_batch(tmp_path, specs, workers=1)
+    assert summary["failed"] == [
+        f"{broken}: ValueError: cargo and provisions exceed carrier capacity"
+    ]
+    assert len(done_keys(tmp_path / "histories.csv")) == 1
+    assert (tmp_path / "failures.txt").read_text().startswith(broken)
+    run = json.loads((tmp_path / "run.json").read_text())
+    assert run["engine_hash"] == engine_hash() and run["rule_hash"] == rule_hash()

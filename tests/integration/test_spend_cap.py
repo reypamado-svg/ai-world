@@ -48,7 +48,7 @@ def scripted(monkeypatch: pytest.MonkeyPatch) -> list[ScriptedProvider]:
     """Every model-played council answers quietly, reporting fixed token counts."""
     made: list[ScriptedProvider] = []
 
-    def build(manifest, civilization_ids, *, history=()):  # type: ignore[no-untyped-def]
+    def build(manifest, civilization_ids, *, history=(), pinned=None):  # type: ignore[no-untyped-def]
         ids = sorted(civilization_ids)
         providers = {
             civ: ScriptedProvider(

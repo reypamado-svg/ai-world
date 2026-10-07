@@ -419,3 +419,53 @@ def test_a_run_whose_map_was_edited_is_shown_as_recorded(tmp_path: Path) -> None
             rows += chunk.json()["tiles"]
     shown = {(row[0], row[1]): row[2] for row in rows}
     assert shown == {(t.coord.q, t.coord.r): t.terrain.value for t in recorded.tiles}
+
+
+def test_the_seal_route_says_whether_and_by_whom_a_run_is_sealed(
+    old_run: Path, tmp_path: Path
+) -> None:
+    from sovereign_world.config import RunManifest, WorldConfig
+    from sovereign_world.rulehash import engine_hash, rule_hash
+    from sovereign_world.seal import SEAL_KEY_ENV, generate_key, load_key, make_seal
+    from sovereign_world.state import build_initial_state
+
+    plain = _client(RunService(old_run))
+    assert json.loads(plain.get("/api/run/seal", headers=AUTH).content) == {"sealed": False}
+    assert plain.get("/api/run/seal").status_code == 401
+
+    manifest = RunManifest.new(WorldConfig(seed=21, width=24, height=24), "0.2.0")
+    state = build_initial_state(manifest)
+    store = WorldStore.create(tmp_path / "sealed", manifest, state)
+    key, fingerprint = generate_key()
+    seal = make_seal(
+        manifest,
+        state,
+        planned_days=365,
+        key=load_key({SEAL_KEY_ENV: key}),
+        code_hash=rule_hash(),
+        engine_hash=engine_hash(),
+    )
+    store.write_seal(seal.model_dump(mode="json"))
+
+    def saved() -> tuple[bytes, list[tuple[str, list[tuple[object, ...]]]]]:
+        # The run's data: its journal and every table's rows. (The writer's own SQLite log may
+        # be folded into the database file whenever its connections close; that is not the
+        # observer writing.)
+        connection = sqlite3.connect(f"{store.database_path.as_uri()}?mode=ro", uri=True)
+        try:
+            tables = [
+                (name, connection.execute(f"SELECT * FROM {name}").fetchall())
+                for (name,) in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+                )
+            ]
+        finally:
+            connection.close()
+        return store.journal_path.read_bytes(), tables
+
+    before = saved()
+    answer = json.loads(_client(RunService(store.root)).get("/api/run/seal", headers=AUTH).content)
+    assert answer["sealed"] is True and answer["signature_valid"] is True
+    assert answer["fingerprint"] == fingerprint and answer["planned_days"] == 365
+    assert key.removeprefix("swseal1:") not in json.dumps(answer)
+    assert saved() == before

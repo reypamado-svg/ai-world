@@ -6,8 +6,10 @@
 
 ``run`` plays every seed, rotation and assignment and appends one row per civilization to
 ``DIR/histories.csv``; a history whose rows are already there is not played again, so a run
-that was stopped carries on where it left off. ``DIR/run.json`` records what was asked, the
-engine version, the rule hash and how long it took. ``report`` writes the fairness report
+that was stopped carries on where it left off. A history the engine fails on is named in
+``DIR/failures.txt`` and ``run.json`` and the others go on; it is an engine bug to fix, after
+which running again plays it. ``DIR/run.json`` records what was asked, the engine version, the
+engine and rule hashes and how long it took. ``report`` writes the fairness report
 (``report.py``).
 """
 
@@ -24,7 +26,7 @@ from pathlib import Path
 from sovereign_world.calibration.histories import FIELDS, HistorySpec, Row, run_history
 from sovereign_world.calibration.policies import POLICIES
 from sovereign_world.config import ENGINE_VERSION
-from sovereign_world.rulehash import rule_hash
+from sovereign_world.rulehash import engine_hash, rule_hash
 
 ASSIGNMENTS: dict[str, tuple[str, ...]] = {
     "builders": ("builder",) * 4,
@@ -99,6 +101,14 @@ def workers_of(text: str) -> int:
     return max(1, int(text))
 
 
+def _play(spec: HistorySpec) -> tuple[str, list[Row] | str]:
+    """One history's rows, or what stopped it (so one engine bug does not stop the batch)."""
+    try:
+        return spec.key, run_history(spec)
+    except Exception as error:
+        return spec.key, f"{type(error).__name__}: {str(error).splitlines()[0]}"
+
+
 def run_batch(out: Path, specs: Sequence[HistorySpec], workers: int) -> dict[str, object]:
     """Play every spec not already in ``out/histories.csv``; return what ``run.json`` holds."""
     out.mkdir(parents=True, exist_ok=True)
@@ -112,17 +122,23 @@ def run_batch(out: Path, specs: Sequence[HistorySpec], workers: int) -> dict[str
         if new_file:
             writer.writeheader()
 
-        def write(rows: list[Row]) -> None:
+        failures: list[str] = []
+
+        def write(played: tuple[str, list[Row] | str]) -> None:
+            key, rows = played
+            if isinstance(rows, str):
+                failures.append(f"{key}: {rows}")
+                return
             for row in rows:
                 writer.writerow(row.values())
             handle.flush()
 
         if workers == 1:
             for spec in todo:
-                write(run_history(spec))
+                write(_play(spec))
         else:
             with ProcessPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(run_history, spec) for spec in todo]
+                futures = [pool.submit(_play, spec) for spec in todo]
                 for future in as_completed(futures):
                     write(future.result())
     summary: dict[str, object] = {
@@ -133,9 +149,13 @@ def run_batch(out: Path, specs: Sequence[HistorySpec], workers: int) -> dict[str
         "elapsed_seconds": round(time.monotonic() - started, 1),
         "engine_version": ENGINE_VERSION,
         "rule_hash": rule_hash(),
+        "engine_hash": engine_hash(),
         "specs": sorted({(spec.label, spec.size, spec.days) for spec in specs}),
         "seeds": sorted({spec.seed for spec in specs}),
         "rotations": sorted({spec.rotation for spec in specs}),
+        "failed": sorted(failures),
     }
+    if failures:
+        (out / "failures.txt").write_text("".join(f"{line}\n" for line in sorted(failures)))
     (out / "run.json").write_text(json.dumps(summary, indent=2, default=list) + "\n")
     return summary

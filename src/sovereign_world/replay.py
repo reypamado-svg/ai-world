@@ -102,6 +102,10 @@ def replay_run(store: WorldStore, target_day: int | None = None) -> WorldState:
 
 def verify_run(store: WorldStore) -> VerificationResult:
     records = store.read_records()
+    manifest_hash = store.manifest().content_hash()
+    header = records[0] if records and records[0].type == "header" else None
+    if header is not None and header.payload.get("manifest_hash") != manifest_hash:
+        raise RuntimeError("manifest hash mismatch in the journal's header")
     days = [int(record.payload["day"]) for record in records if record.type == "transition"]
     # A forked run begins at its fork, not at day zero.
     start = store.load_checkpoint(at_or_before=days[0] - 1) if days else store.load_checkpoint()
@@ -111,6 +115,9 @@ def verify_run(store: WorldStore) -> VerificationResult:
         actual_hash = store.state_hash(state, fresh=True)
         if actual_hash != record.payload["state_hash"]:
             raise RuntimeError(f"state hash mismatch at journal sequence {record.sequence}")
+        # Every day names the manifest the run started under (a fork restamps its own start).
+        if state.manifest_hash != start.manifest_hash:
+            raise RuntimeError(f"manifest hash mismatch at day {state.day}")
         last_day = state.day
         last_hash = actual_hash
     return VerificationResult(

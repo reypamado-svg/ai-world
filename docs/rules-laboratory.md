@@ -41,6 +41,19 @@ Without `--width` and `--height`, a world is 100 × 100 tiles (each 25 km across
 
 **Stopping and recovering.** Press Ctrl+C once and the run stops after the day under way, saves a checkpoint and says `stopped at day N`; a second Ctrl+C stops it at once. After a crash, a kill or a power cut, run `run` again: it carries on from what was saved. Each council is saved the moment it is held, before its day, so a council a model has already answered is reused and that model is not asked again; only a reply in flight at the moment of the kill is lost. If the saved councils cannot belong to the day under way (the journal was changed or mixed with another run), `run` refuses with `cannot resume: …`, exit code 1, and writes nothing.
 
+## Seal a run
+
+A run meant to be a trial is sealed on day 0, so nothing about it can change afterwards:
+
+```powershell
+& .venv\Scripts\sovereign-world.exe keygen
+$env:SOVEREIGN_WORLD_SEAL_KEY = Read-Host -MaskInput "Seal key"
+& .venv\Scripts\sovereign-world.exe seal work\trial --days 365
+Remove-Item Env:SOVEREIGN_WORLD_SEAL_KEY
+```
+
+`keygen` shows a new key and its fingerprint once and saves neither: keep the key safe and the fingerprint written down. `seal` signs the run's settings, code, prompts, model endpoints, spending cap and planned days with the key, and saves the seal with the run. From then on `run` refuses (exit code 4) a run whose settings, seal, code or endpoints have changed, and stops at the planned days; `verify --signer <fingerprint>` checks the run was sealed by that key. A fork of a sealed run is a new, unsealed run. After updating the code, run `uv pip install -e .[dev]` again: sealing needs the `cryptography` package.
+
 ## Rules versions
 
 Each world records the rules it runs under in its manifest.

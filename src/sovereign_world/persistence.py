@@ -66,6 +66,8 @@ def _record_hash(
 
 
 HEADER = "header"
+SEAL = "seal"
+"""The run's signed seal (sealed trial), saved once, right after the header, before day 1."""
 """The first record of a format-2 journal: its format and hash version."""
 
 
@@ -108,6 +110,11 @@ class WorldStore:
                     content_hash TEXT NOT NULL,
                     state_hash TEXT NOT NULL,
                     previous_checkpoint_hash TEXT NOT NULL
+                );
+                CREATE TABLE seal (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    seal_json TEXT NOT NULL,
+                    seal_hash TEXT NOT NULL
                 );
                 """
             )
@@ -173,6 +180,43 @@ class WorldStore:
         if manifest.content_hash() != row[1]:
             raise RuntimeError("manifest hash mismatch")
         return manifest
+
+    def seal_document(self) -> dict[str, Any] | None:
+        """The run's seal as saved, or None for a run that is not sealed (or predates seals)."""
+        try:
+            with sqlite3.connect(self.database_path) as connection:
+                row = connection.execute(
+                    "SELECT seal_json, seal_hash FROM seal WHERE id = 1"
+                ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if row is None:
+            return None
+        if hashlib.sha256(row[0].encode("utf-8")).hexdigest() != row[1]:
+            raise RuntimeError("seal hash mismatch")
+        document: dict[str, Any] = json.loads(row[0])
+        return document
+
+    def write_seal(self, document: dict[str, Any]) -> None:
+        """Save the seal once, in SQLite and as the journal's record after its header; only a
+        run that has saved nothing but its header may be sealed."""
+        records = self.read_records()
+        if [record.type for record in records] != [HEADER]:
+            raise RuntimeError("only a run that has saved nothing yet can be sealed")
+        if self.seal_document() is not None:
+            raise RuntimeError("the run is already sealed")
+        text = json.dumps(document, sort_keys=True, separators=(",", ":"))
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS seal (id INTEGER PRIMARY KEY CHECK (id = 1),"
+                " seal_json TEXT NOT NULL, seal_hash TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO seal VALUES (1, ?, ?)",
+                (text, hashlib.sha256(text.encode("utf-8")).hexdigest()),
+            )
+            connection.commit()
+        self.append_record(SEAL, document)
 
     def iter_records(self) -> Iterator[JournalRecord]:
         """Every complete record, checked against its sequence, chain and hash, read one

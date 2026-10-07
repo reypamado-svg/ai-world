@@ -129,6 +129,10 @@ def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT
     def manifest() -> Response:
         return _json(service.manifest())
 
+    @api.get("/run/seal")
+    def seal() -> Response:
+        return _json(service.seal())
+
     @api.get("/run/ids")
     def ids(start: int = Query(0, alias="from", ge=0)) -> Response:
         return _json(service.ids(start))
