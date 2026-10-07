@@ -1,0 +1,505 @@
+{
+  "checks": [
+    {
+      "check": "builders: position 0 mean population within \u00b115%",
+      "passed": true,
+      "value": 0.0
+    },
+    {
+      "check": "builders: position 0 survival at least 95%",
+      "passed": true,
+      "value": 1.0
+    },
+    {
+      "check": "builders: position 0 win share in 15% to 35%",
+      "passed": true,
+      "value": 0.254
+    },
+    {
+      "check": "builders: position 1 mean population within \u00b115%",
+      "passed": true,
+      "value": -0.0001
+    },
+    {
+      "check": "builders: position 1 survival at least 95%",
+      "passed": true,
+      "value": 1.0
+    },
+    {
+      "check": "builders: position 1 win share in 15% to 35%",
+      "passed": true,
+      "value": 0.2487
+    },
+    {
+      "check": "builders: position 2 mean population within \u00b115%",
+      "passed": true,
+      "value": 0.0003
+    },
+    {
+      "check": "builders: position 2 survival at least 95%",
+      "passed": true,
+      "value": 1.0
+    },
+    {
+      "check": "builders: position 2 win share in 15% to 35%",
+      "passed": true,
+      "value": 0.2508
+    },
+    {
+      "check": "builders: position 3 mean population within \u00b115%",
+      "passed": true,
+      "value": -0.0003
+    },
+    {
+      "check": "builders: position 3 survival at least 95%",
+      "passed": true,
+      "value": 1.0
+    },
+    {
+      "check": "builders: position 3 win share in 15% to 35%",
+      "passed": true,
+      "value": 0.2465
+    },
+    {
+      "check": "mixed: builder at position 0 within \u00b120%",
+      "passed": true,
+      "value": -0.0
+    },
+    {
+      "check": "mixed: builder at position 1 within \u00b120%",
+      "passed": true,
+      "value": -0.0004
+    },
+    {
+      "check": "mixed: builder at position 2 within \u00b120%",
+      "passed": true,
+      "value": 0.0004
+    },
+    {
+      "check": "mixed: builder at position 3 within \u00b120%",
+      "passed": true,
+      "value": -0.0
+    },
+    {
+      "check": "mixed: expander at position 0 within \u00b120%",
+      "passed": true,
+      "value": -0.0007
+    },
+    {
+      "check": "mixed: expander at position 1 within \u00b120%",
+      "passed": true,
+      "value": 0.0006
+    },
+    {
+      "check": "mixed: expander at position 2 within \u00b120%",
+      "passed": true,
+      "value": 0.0007
+    },
+    {
+      "check": "mixed: expander at position 3 within \u00b120%",
+      "passed": true,
+      "value": -0.0006
+    },
+    {
+      "check": "mixed: raider at position 0 within \u00b120%",
+      "passed": true,
+      "value": 0.0011
+    },
+    {
+      "check": "mixed: raider at position 1 within \u00b120%",
+      "passed": true,
+      "value": 0.001
+    },
+    {
+      "check": "mixed: raider at position 2 within \u00b120%",
+      "passed": true,
+      "value": 0.0038
+    },
+    {
+      "check": "mixed: raider at position 3 within \u00b120%",
+      "passed": true,
+      "value": -0.0059
+    },
+    {
+      "check": "mixed: trader at position 0 within \u00b120%",
+      "passed": true,
+      "value": 0.0007
+    },
+    {
+      "check": "mixed: trader at position 1 within \u00b120%",
+      "passed": true,
+      "value": -0.0
+    },
+    {
+      "check": "mixed: trader at position 2 within \u00b120%",
+      "passed": true,
+      "value": -0.0
+    },
+    {
+      "check": "mixed: trader at position 3 within \u00b120%",
+      "passed": true,
+      "value": -0.0006
+    }
+  ],
+  "engine_hash": "1200ba13e4fc4922e484c39e18b37088da546ab436fb865a6e04bf240972364e",
+  "engine_version": "0.2.0",
+  "histories": 2000,
+  "passed": true,
+  "rows": 8000,
+  "rule_hash": "8f11e0c210e6297323fbc39a8e25aa1ebf1289b2cf04343fb4c77ca38c776f70",
+  "tables": {
+    "builders by civilization": {
+      "0": {
+        "battles": 0.0,
+        "living": 33.569,
+        "n": 1000,
+        "peak": 33.569,
+        "rejected": 0.16,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 50.591,
+        "wars": 0.0,
+        "win_share": 0.22916666666666666
+      },
+      "1": {
+        "battles": 0.0,
+        "living": 33.587,
+        "n": 1000,
+        "peak": 33.587,
+        "rejected": 0.16,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 50.53,
+        "wars": 0.0,
+        "win_share": 0.25016666666666665
+      },
+      "2": {
+        "battles": 0.0,
+        "living": 33.721,
+        "n": 1000,
+        "peak": 33.721,
+        "rejected": 0.16,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 50.6,
+        "wars": 0.0,
+        "win_share": 0.24933333333333335
+      },
+      "3": {
+        "battles": 0.0,
+        "living": 33.679,
+        "n": 1000,
+        "peak": 33.679,
+        "rejected": 0.16,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 50.561,
+        "wars": 0.0,
+        "win_share": 0.2713333333333333
+      }
+    },
+    "builders by start position": {
+      "0": {
+        "battles": 0.0,
+        "living": 33.639,
+        "n": 1000,
+        "peak": 33.639,
+        "rejected": 0.116,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 46.052,
+        "wars": 0.0,
+        "win_share": 0.254
+      },
+      "1": {
+        "battles": 0.0,
+        "living": 33.637,
+        "n": 1000,
+        "peak": 33.637,
+        "rejected": 0.22,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 50.802,
+        "wars": 0.0,
+        "win_share": 0.24866666666666665
+      },
+      "2": {
+        "battles": 0.0,
+        "living": 33.65,
+        "n": 1000,
+        "peak": 33.65,
+        "rejected": 0.188,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 51.639,
+        "wars": 0.0,
+        "win_share": 0.25083333333333335
+      },
+      "3": {
+        "battles": 0.0,
+        "living": 33.63,
+        "n": 1000,
+        "peak": 33.63,
+        "rejected": 0.116,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 53.789,
+        "wars": 0.0,
+        "win_share": 0.2465
+      }
+    },
+    "mixed by policy": {
+      "builder": {
+        "battles": 0.0,
+        "living": 33.565,
+        "n": 1000,
+        "peak": 33.565,
+        "rejected": 0.16,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 50.591,
+        "wars": 0.0,
+        "win_share": 0.23808333333333334
+      },
+      "expander": {
+        "battles": 0.0,
+        "living": 33.472,
+        "n": 1000,
+        "peak": 33.499,
+        "rejected": 1.359,
+        "settlements": 2.744,
+        "survival": 1.0,
+        "tiles": 51.948,
+        "wars": 0.0,
+        "win_share": 0.23441666666666666
+      },
+      "raider": {
+        "battles": 0.164,
+        "living": 33.468,
+        "n": 1000,
+        "peak": 33.655,
+        "rejected": 4.631,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 44.333,
+        "wars": 0.097,
+        "win_share": 0.2699166666666667
+      },
+      "trader": {
+        "battles": 0.0,
+        "living": 33.717,
+        "n": 1000,
+        "peak": 33.718,
+        "rejected": 4.82,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 44.586,
+        "wars": 0.0,
+        "win_share": 0.25758333333333333
+      }
+    },
+    "mixed by policy and position": {
+      "builder @ 0": {
+        "battles": 0.0,
+        "living": 33.564,
+        "n": 250,
+        "peak": 33.564,
+        "rejected": 0.116,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 46.064,
+        "wars": 0.0,
+        "win_share": 0.24233333333333335
+      },
+      "builder @ 1": {
+        "battles": 0.0,
+        "living": 33.552,
+        "n": 250,
+        "peak": 33.552,
+        "rejected": 0.22,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 50.796,
+        "wars": 0.0,
+        "win_share": 0.236
+      },
+      "builder @ 2": {
+        "battles": 0.0,
+        "living": 33.58,
+        "n": 250,
+        "peak": 33.58,
+        "rejected": 0.188,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 51.696,
+        "wars": 0.0,
+        "win_share": 0.24133333333333334
+      },
+      "builder @ 3": {
+        "battles": 0.0,
+        "living": 33.564,
+        "n": 250,
+        "peak": 33.564,
+        "rejected": 0.116,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 53.808,
+        "wars": 0.0,
+        "win_share": 0.23266666666666666
+      },
+      "expander @ 0": {
+        "battles": 0.0,
+        "living": 33.448,
+        "n": 250,
+        "peak": 33.476,
+        "rejected": 1.54,
+        "settlements": 3.224,
+        "survival": 1.0,
+        "tiles": 47.82,
+        "wars": 0.0,
+        "win_share": 0.23533333333333334
+      },
+      "expander @ 1": {
+        "battles": 0.0,
+        "living": 33.492,
+        "n": 250,
+        "peak": 33.508,
+        "rejected": 1.148,
+        "settlements": 2.632,
+        "survival": 1.0,
+        "tiles": 52.076,
+        "wars": 0.0,
+        "win_share": 0.23766666666666666
+      },
+      "expander @ 2": {
+        "battles": 0.0,
+        "living": 33.496,
+        "n": 250,
+        "peak": 33.52,
+        "rejected": 1.5,
+        "settlements": 2.548,
+        "survival": 1.0,
+        "tiles": 52.792,
+        "wars": 0.0,
+        "win_share": 0.23466666666666666
+      },
+      "expander @ 3": {
+        "battles": 0.0,
+        "living": 33.452,
+        "n": 250,
+        "peak": 33.492,
+        "rejected": 1.248,
+        "settlements": 2.572,
+        "survival": 1.0,
+        "tiles": 55.104,
+        "wars": 0.0,
+        "win_share": 0.23
+      },
+      "raider @ 0": {
+        "battles": 0.144,
+        "living": 33.504,
+        "n": 250,
+        "peak": 33.644,
+        "rejected": 4.532,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 40.172,
+        "wars": 0.048,
+        "win_share": 0.2806666666666667
+      },
+      "raider @ 1": {
+        "battles": 0.144,
+        "living": 33.5,
+        "n": 250,
+        "peak": 33.668,
+        "rejected": 4.84,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 44.884,
+        "wars": 0.112,
+        "win_share": 0.27266666666666667
+      },
+      "raider @ 2": {
+        "battles": 0.088,
+        "living": 33.596,
+        "n": 250,
+        "peak": 33.692,
+        "rejected": 4.284,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 44.384,
+        "wars": 0.112,
+        "win_share": 0.272
+      },
+      "raider @ 3": {
+        "battles": 0.28,
+        "living": 33.272,
+        "n": 250,
+        "peak": 33.616,
+        "rejected": 4.868,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 47.892,
+        "wars": 0.116,
+        "win_share": 0.25433333333333336
+      },
+      "trader @ 0": {
+        "battles": 0.0,
+        "living": 33.74,
+        "n": 250,
+        "peak": 33.74,
+        "rejected": 4.696,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 40.248,
+        "wars": 0.0,
+        "win_share": 0.256
+      },
+      "trader @ 1": {
+        "battles": 0.0,
+        "living": 33.716,
+        "n": 250,
+        "peak": 33.716,
+        "rejected": 5.012,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 45.54,
+        "wars": 0.0,
+        "win_share": 0.26
+      },
+      "trader @ 2": {
+        "battles": 0.0,
+        "living": 33.716,
+        "n": 250,
+        "peak": 33.716,
+        "rejected": 4.384,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 44.776,
+        "wars": 0.0,
+        "win_share": 0.26566666666666666
+      },
+      "trader @ 3": {
+        "battles": 0.0,
+        "living": 33.696,
+        "n": 250,
+        "peak": 33.7,
+        "rejected": 5.188,
+        "settlements": 1.0,
+        "survival": 1.0,
+        "tiles": 47.78,
+        "wars": 0.0,
+        "win_share": 0.24866666666666665
+      }
+    }
+  },
+  "thresholds": {
+    "policy_spread": 0.2,
+    "position_spread": 0.15,
+    "survival": 0.95,
+    "win_share": [
+      0.15,
+      0.35
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+table,group,n,living,peak,tiles,settlements,survival,win_share,wars,battles,rejected
+builders by start position,0,1000,33.639,33.639,46.052,1.0,1.0,0.254,0.0,0.0,0.116
+builders by start position,1,1000,33.637,33.637,50.802,1.0,1.0,0.249,0.0,0.0,0.22
+builders by start position,2,1000,33.65,33.65,51.639,1.0,1.0,0.251,0.0,0.0,0.188
+builders by start position,3,1000,33.63,33.63,53.789,1.0,1.0,0.246,0.0,0.0,0.116
+builders by civilization,0,1000,33.569,33.569,50.591,1.0,1.0,0.229,0.0,0.0,0.16
+builders by civilization,1,1000,33.587,33.587,50.53,1.0,1.0,0.25,0.0,0.0,0.16
+builders by civilization,2,1000,33.721,33.721,50.6,1.0,1.0,0.249,0.0,0.0,0.16
+builders by civilization,3,1000,33.679,33.679,50.561,1.0,1.0,0.271,0.0,0.0,0.16
+mixed by policy,builder,1000,33.565,33.565,50.591,1.0,1.0,0.238,0.0,0.0,0.16
+mixed by policy,expander,1000,33.472,33.499,51.948,2.744,1.0,0.234,0.0,0.0,1.359
+mixed by policy,raider,1000,33.468,33.655,44.333,1.0,1.0,0.27,0.097,0.164,4.631
+mixed by policy,trader,1000,33.717,33.718,44.586,1.0,1.0,0.258,0.0,0.0,4.82
+mixed by policy and position,builder @ 0,250,33.564,33.564,46.064,1.0,1.0,0.242,0.0,0.0,0.116
+mixed by policy and position,builder @ 1,250,33.552,33.552,50.796,1.0,1.0,0.236,0.0,0.0,0.22
+mixed by policy and position,builder @ 2,250,33.58,33.58,51.696,1.0,1.0,0.241,0.0,0.0,0.188
+mixed by policy and position,builder @ 3,250,33.564,33.564,53.808,1.0,1.0,0.233,0.0,0.0,0.116
+mixed by policy and position,expander @ 0,250,33.448,33.476,47.82,3.224,1.0,0.235,0.0,0.0,1.54
+mixed by policy and position,expander @ 1,250,33.492,33.508,52.076,2.632,1.0,0.238,0.0,0.0,1.148
+mixed by policy and position,expander @ 2,250,33.496,33.52,52.792,2.548,1.0,0.235,0.0,0.0,1.5
+mixed by policy and position,expander @ 3,250,33.452,33.492,55.104,2.572,1.0,0.23,0.0,0.0,1.248
+mixed by policy and position,raider @ 0,250,33.504,33.644,40.172,1.0,1.0,0.281,0.048,0.144,4.532
+mixed by policy and position,raider @ 1,250,33.5,33.668,44.884,1.0,1.0,0.273,0.112,0.144,4.84
+mixed by policy and position,raider @ 2,250,33.596,33.692,44.384,1.0,1.0,0.272,0.112,0.088,4.284
+mixed by policy and position,raider @ 3,250,33.272,33.616,47.892,1.0,1.0,0.254,0.116,0.28,4.868
+mixed by policy and position,trader @ 0,250,33.74,33.74,40.248,1.0,1.0,0.256,0.0,0.0,4.696
+mixed by policy and position,trader @ 1,250,33.716,33.716,45.54,1.0,1.0,0.26,0.0,0.0,5.012
+mixed by policy and position,trader @ 2,250,33.716,33.716,44.776,1.0,1.0,0.266,0.0,0.0,4.384
+mixed by policy and position,trader @ 3,250,33.696,33.7,47.78,1.0,1.0,0.249,0.0,0.0,5.188
