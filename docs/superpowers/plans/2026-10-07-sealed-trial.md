@@ -24,11 +24,11 @@ The models, the cap, the seed, the size, the rotation and the pace are chosen on
 
 | Slice | What | Status |
 |---|---|---|
-| A | Balance calibration with rotated starts | Code done (c70dd1f, 098acef); the 2,000-history matrix is running |
+| A | Balance calibration with rotated starts | Done: the 2,000-history report passed (`docs/calibration/2026-10-year-one/`) |
 | B | Usage recording and the spending cap | Done (36dcb6c) |
 | C | Crash-safe recovery | Done (bcc35ad) |
-| D | Sealing | Done (this commit) |
-| E | The launch gate | Planned |
+| D | Sealing | Done (6bbdff1) |
+| E | The launch gate | Done (this commit) |
 | F | The live run on the user's PC | Planned |
 | G | Reachable from outside | Planned |
 | H | Docs and close | Planned |
@@ -59,6 +59,36 @@ The models, the cap, the seed, the size, the rotation and the pace are chosen on
   each policy within ±20% across positions.
 - **`rulehash.rule_hash()`:** the sha256 of the package's `.py` sources, `observer/` left out,
   line endings normalised. The report records it.
+
+### The matrix (2,000 one-year histories)
+
+250 seeds × 4 start rotations × 2 assignments (four builders; one builder, expander, trader and
+raider), 32×32 worlds, 365 days, rules 3, the scripted policies only. It took about 2.4 hours on
+3–4 cores; the report, its tables, the run record and every history's rows are in
+`docs/calibration/2026-10-year-one/`, under engine hash `1200ba13e4fc4922…`.
+
+**Every threshold passed.** Builders: each start position's mean population within 0.03% of the
+mean, survival 100%, win shares 24.7–25.4%. Mixed: every policy within 0.6% across positions.
+
+**What the numbers also say.** The thresholds pass partly because a scripted year is quiet:
+
+- **Little happens.** 32 founders become 33.6 on average (39 at most); a builder never founds a
+  second settlement; expanders reach 2.7 settlements.
+- **Contact is rare.** A raider declares war in about 1 history in 10 and fights 0.16 battles a
+  year; nobody else fights at all. Explorers on a 32×32 map met another people in about 1 of 16
+  civilizations in the probes. On the planned 64×64 trial map, four model-played civilizations
+  would very likely never meet in a year.
+- **Start position 0 holds less land.** Builders at position 0 hold 46 tiles at year end against
+  51–54 at the others (14% below position 3). Territory is not one of the thresholds, and in a
+  year it does not turn into people, but over a longer run it could.
+- **Acting first is not an advantage here.** By civilization id, builders' win shares are 23%,
+  25%, 25% and 27%: the first to act wins least.
+
+These are for the user to weigh before launch: a smaller map, a longer run, or starts that know
+their neighbours would make contact likely; position 0's land could be evened in the generator.
+
+**Found on the way:** an engine crash (a war party losing captives; fixed in 6bbdff1) and the
+batch's silent stall after a failing history (fixed in the same commit).
 
 ## B as built
 
@@ -206,3 +236,42 @@ them: the food packed (and, if that is not enough, gear) is cut to what the rest
 party that still fits keeps its load exactly, so every run that did not crash is unchanged.
 The calibration batch also now names a history the engine fails on (`failures.txt`) and plays
 the rest, instead of stopping at the first and silently playing on.
+
+## E as built (detailed by Fable 5.1 at 6bbdff1)
+
+- **`sovereign-world preflight RUN_DIR [--probe] [--launch] [--signer FP] [--calibration REPORT]
+  [--accept-balance-failure REASON] [--days N] [--json]`**: 17 checks, each PASS, WARN, FAIL or
+  SKIP, then the counts; exit 0 only with no FAIL. The table, with what each check maps to in
+  spec §19 and the roadmap, is `docs/launch-gate.md`; a test keeps the two identical.
+- **What it checks:**
+  - the run itself (`verify`'s checks, now `replay.verify_whole`), day 0, a pinned engine
+    self-test (a fixed 24 by 24 world, 10 scripted days, under a second) and the code hashes;
+  - four civilizations played by models on four distinct (kind, host) providers, all on this
+    engine's prompt version;
+  - the cost cap set, every model priced (an unpriced model would be priced at the table's
+    dearest rate, nothing on an empty table), and room for a year's 13 worst-case rounds;
+  - every token variable present (by name), and the endpoint policy (hosted models at their
+    own addresses; others `https` with a token, or on this computer);
+  - with `--probe`, one tiny call per provider through the provider the run uses, reporting
+    the answering model, time and tokens, journaled nowhere and counted against no cap; and
+    every remote host's clock;
+  - disk space (FAIL under 2 GiB, WARN under 10), and a plausible clock;
+  - the balance report: passed, under this engine hash. A failed one is a FAIL unless the
+    operator passes `--accept-balance-failure "REASON"`, which makes it a WARN printing the
+    reason, kept nowhere in the run;
+  - with `--launch`: the seal (signature, signer, every sealed field, the engine hash and the
+    planned days), the seal key out of the environment, and the observer token's length.
+- **It writes nothing** and prints no secret: errors from a provider are cut to one line with
+  every known token value removed. It removes the seal key from its own environment, as `run`
+  does. `seal` keeps its own offline checks only (the sealing shell holds the seal key and
+  nothing else) and prints the `preflight --launch` command to run next.
+- **`verify`** now says why it fails (`not verified: …`) instead of exiting silently.
+- **The Phase 5 exit test** (`tests/acceptance/test_phase_five_exit.py`): four stand-in models
+  on four loopback ports; the gate passes before sealing with a probe (each model asked once);
+  a failed balance report stops it unless accepted with a reason; `keygen`, `seal --days 95`;
+  the launch pass is ready, and fails with the seal key still present or another signer; the
+  sealed world runs, is killed after the second council of day 90, resumes, and verifies by its
+  signer through day 95 with no model asked twice; a changed manifest is then refused by `run`
+  (exit 4) and by the gate.
+- **Defaults taken** (the user may change them): the override is printed, not recorded in the
+  seal; disk thresholds 2 and 10 GiB; the clock floor is the day the gate was written.

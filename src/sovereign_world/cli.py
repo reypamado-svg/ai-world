@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -22,8 +23,9 @@ from sovereign_world.config import (
 )
 from sovereign_world.gateway.records import ResumeRefused, recorded_councils
 from sovereign_world.persistence import WorldStore
-from sovereign_world.preflight import offline_checks
-from sovereign_world.replay import rederive_run, replay_run, verify_run
+from sovereign_world.preflight import GateOptions, launch_gate, offline_checks, render
+from sovereign_world.preflight import passed as gate_passed
+from sovereign_world.replay import replay_run, verify_whole
 from sovereign_world.rulehash import engine_hash, rule_hash
 from sovereign_world.runner import (
     RunControl,
@@ -288,18 +290,11 @@ def verify(
         except (SealRefused, ValueError) as refused:
             typer.echo(f"seal refused: {refused}", err=True)
             raise typer.Exit(code=1) from None
-    result = verify_run(store)
-    replayed = replay_run(store, target_day=result.verified_through_day)
-    validate_world(replayed)
-    if store.state_hash(replayed, fresh=True) != result.state_hash:
-        raise typer.Exit(code=1)
-    checkpoint_state = store.load_checkpoint()
-    validate_world(checkpoint_state)
-    if recorded_councils(store):
-        # The recorded councils alone, with no model called, must give the same world.
-        rederived = rederive_run(store)
-        if rederived.state_hash != result.state_hash:
-            raise typer.Exit(code=1)
+    try:
+        result = verify_whole(store)
+    except RuntimeError as error:
+        typer.echo(f"not verified: {error}", err=True)
+        raise typer.Exit(code=1) from None
     typer.echo(
         f"verified through day {result.verified_through_day} "
         f"({result.state_hash}, {result.records} records, journal format {store.journal_format})"
@@ -365,6 +360,76 @@ def seal(
     typer.echo(f"prompt {sealed.prompt_version}, reply schema {sealed.reply_schema_hash}")
     for civilization_id, pin in sealed.providers.items():
         typer.echo(f"{civilization_id}: {pin.kind} {pin.model} at {pin.base_url()}")
+    typer.echo(
+        f"next: sovereign-world preflight {directory} --launch --signer"
+        f" {sealed.fingerprint} --days {days} --calibration REPORT --probe"
+    )
+
+
+@app.command()
+def preflight(
+    directory: Path,
+    probe: bool = typer.Option(
+        False, "--probe", help="One tiny real call per provider; journaled nowhere."
+    ),
+    launch: bool = typer.Option(
+        False,
+        "--launch",
+        help="The pass before launch: the run must be sealed, on day 0, with a balance report.",
+    ),
+    signer: str | None = typer.Option(
+        None, "--signer", help="The fingerprint the run must be sealed by."
+    ),
+    calibration: str | None = typer.Option(
+        None, "--calibration", help="The balance calibration's report.json, or its folder."
+    ),
+    accept_balance_failure: str | None = typer.Option(
+        None,
+        "--accept-balance-failure",
+        metavar="REASON",
+        help="Launch although the balance report failed; the reason is printed, kept nowhere.",
+    ),
+    days: int = typer.Option(365, "--days", min=1, help="The days the seal must plan."),
+    as_json: bool = typer.Option(False, "--json", help="Print the checks as JSON."),
+) -> None:
+    """The launch gate: a plain checklist a sealed trial must pass before it starts. Writes
+    nothing, and prints only the names of the variables that hold keys."""
+    environ = dict(os.environ)
+    os.environ.pop(SEAL_KEY_ENV, None)
+    checks = launch_gate(
+        WorldStore(directory),
+        GateOptions(
+            launch=launch,
+            probe=probe,
+            signer=signer,
+            calibration=Path(calibration) if calibration else None,
+            accept_balance_failure=accept_balance_failure,
+            planned_days=days,
+        ),
+        environ=environ,
+    )
+    ready = gate_passed(checks)
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "passed": ready,
+                    "checks": [
+                        {"id": c.id, "title": c.title, "status": c.status, "detail": c.detail}
+                        for c in checks
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        for line in render(checks):
+            typer.echo(line)
+        seal_check = next(check for check in checks if check.id == "seal")
+        if launch and ready:
+            typer.echo(f"ready to launch: {seal_check.detail}")
+    if not ready:
+        raise typer.Exit(1)
 
 
 @app.command()

@@ -159,3 +159,21 @@ def rederive_run(store: WorldStore) -> VerificationResult:
         state_hash=store.state_hash(state),
         records=len(records),
     )
+
+
+def verify_whole(store: WorldStore) -> VerificationResult:
+    """Everything `sovereign-world verify` checks of the world itself: the journal's hashes and
+    header, the latest day replayed and validated, the checkpoint validated, and (when the run
+    has councils) the world rederived from them alone. Raises RuntimeError on any difference."""
+    from sovereign_world.state import validate_world
+
+    result = verify_run(store)
+    replayed = replay_run(store, target_day=result.verified_through_day)
+    validate_world(replayed)
+    if store.state_hash(replayed, fresh=True) != result.state_hash:
+        raise RuntimeError(f"the replayed day {result.verified_through_day} hashes differently")
+    validate_world(store.load_checkpoint())
+    # The recorded councils alone, with no model called, must give the same world.
+    if recorded_councils(store) and rederive_run(store).state_hash != result.state_hash:
+        raise RuntimeError("the world rederived from its councils differs from the journal")
+    return result
