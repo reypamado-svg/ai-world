@@ -707,9 +707,10 @@ class ObserverApp {
     }
     // A later ask took over while this one was in flight: show nothing of it.
     if (asked !== this.dayLoads) return null;
-    // How long fetching and building the day took (for the measurement, O6).
-    (this.dayLoadMs ??= []).push(performance.now() - started);
     this.showDay(populationOf(loaded, this.R));
+    // From the ask to the day shown: fetched, its people placed and the crowd layer replaced
+    // (for the measurement, O6; review fix: it stopped before the population was built).
+    (this.dayLoadMs ??= []).push(performance.now() - started);
     if (this.timeline) {
       const tl = this.timeline;
       tl.dayStartT = carry && this.t - tl.dayStartT >= DAY_S ? tl.dayStartT + DAY_S : this.t;

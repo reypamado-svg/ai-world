@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import random
 import shutil
 import sqlite3
@@ -135,6 +136,9 @@ def test_reading_a_run_writes_nothing(tmp_path: Path) -> None:
     no file changes (bytes or modification time) and SQLite leaves no side file."""
     new = tmp_path / "new"
     _record(new, 35)
+    # The store that wrote the run is freed only by the collector; were that to happen while
+    # reading, SQLite would fold its write-ahead files away and the run would seem changed.
+    gc.collect()
     old = tmp_path / "old"
     shutil.copytree(FIXTURE, old)
     for root in (new, old):

@@ -109,4 +109,6 @@ speed and lookahead.
 | The art manifest lists every key the painters make, and is kept fresh | `art-manifest.test.mjs` › "the committed art manifest equals a fresh one" |
 | An art pack replaces painted sprites key by key, within the asset contract | `art-pack.test.mjs` › "the sample pack draws its sprites from PNG and the painters fill the rest", `art-pack.test.mjs` › "a pack sprite outside its footprint is drawn, and counted on the chip" |
 | A pack that cannot be loaded leaves the painted art and says so | `art-pack.test.mjs` › "a pack that is not there leaves the painted art, and says so" |
+| A pack that reaches outside its folder, or whose sprite is too large for the atlas or the crowd sheet, is not loaded at all, in the page as in the checker | `art-pack.test.mjs` › "a pack whose file lies outside its folder is refused whole", `art-pack.test.mjs` › "a pack whose citizen frame is too large for the crowd sheet is refused whole", `art-pack.test.mjs` › "the pack checker passes the sample and catches a broken pack" |
+| The server timings run on a run of one day | `test_the_route_timings_table_handles_a_run_of_one_day` |
 | The pack checker passes a good pack and names what is wrong with a bad one | `art-pack.test.mjs` › "the pack checker passes the sample and catches a broken pack" |

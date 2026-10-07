@@ -796,14 +796,14 @@ Planned with Fable 5.1 after O5 and its review. The user asked "What is next act
 
 **The tour measures a run** (C2).
 - The tour never resumes a runner the observer started: it measures the display with the runner kept paused, and its banner says so (a test checks the runner stays paused and saves no day).
-- `measurement()` records what was measured: the run (export or live, runner or not, the day of how many, the civilization and as-of), the day loads (count, average, maximum, last) and the last perspective switch. The Measurements panel shows a run line.
+- `measurement()` records what was measured: the run (export or live, runner or not, the day of how many, the civilization and as-of), the day loads, from the ask to the day shown (count, average, maximum, last; review fix: they stopped before the population was built) and the last perspective switch. The Measurements panel shows a run line.
 - `measure.mjs` gains `--run`, `--day` and `--civ`, and times a step to the next day, a jump to the first day and the perspective switch.
 
 **Server timings** (C3). `tests/observer/route_timings.py RUN_DIR | --baseline | --people N` prints each route's first and cached answer through FastAPI's test client, with the walk per day. It strips provider keys from its environment, so it never calls a model.
 
 **Art packs** (C4).
 - **The contract, key by key.** `observer/art/manifest.json` lists every key the renderer can ask the atlas for (2,039: 1,073 sprites, 900 citizen masks, 66 shadows), each with its category, the painted size and anchor in art pixels, how the atlas keeps it, and a static asset's footprint and height. It is generated from the painters (`node tests/art-manifest.mjs`); a test keeps it equal to a fresh one.
-- **Loading.** `?art=NAME` loads `art/packs/NAME/pack.json` and its PNGs into the atlas before the painters run. The atlas keeps the first sprite under a key, so painted art fills every key the pack lacks and no drawing code changes. All images are fetched before any is added, so a pack that fails part way adds nothing. Pack sprites of static assets are checked against their footprint as painted ones are; a citizen frame from a pack takes only the pack's own mask.
+- **Loading.** `?art=NAME` loads `art/packs/NAME/pack.json` and its PNGs into the atlas before the painters run. The atlas keeps the first sprite under a key, so painted art fills every key the pack lacks and no drawing code changes. All images are fetched and checked before any is added, so a pack that fails part way adds nothing. The page and the checker share the rules (`src/render/art/pack-rules.js`) and refuse a pack that breaks any of them, whole (review fix): a file outside the pack's folder; a sprite more than twice its painted size each way, or larger than an atlas page; a mask or shadow without its sprite; a mask that, placed by its anchor, lies outside its frame; an anchor outside its image. Pack sprites of static assets are checked against their footprint as painted ones are; a citizen frame from a pack takes only the pack's own mask. The crowd sheet holds every still at twice its painted size (1,010 of its 1,024 px) and, should a future asset set not fit, is baked again at 2,048.
 - **Saying so.** The chip reads "ART PACK: sample · 3 of 1073 keys from PNG", adding "· N outside their footprint" when the contract fails. A pack that cannot be loaded leaves every sprite painted, and the chip says "PROTOTYPE ARTWORK · art pack "NAME" not loaded" with the reason. `__observer.artPack()` gives the details.
 - **Tools.** `tests/art-pack-check.mjs` checks a pack in Node (PNG files and sizes, anchors, keys the manifest knows, masks and shadows with their sprites, files inside the pack) and prints its coverage; `tests/art-export.mjs` writes painted sprites as a pack, a starting point for an artist.
 - **The sample pack** (`art/packs/sample/`): a well and its shadow, an oak, and a citizen's first idle frame with its mask, exported from the painters; no external assets.
@@ -812,11 +812,19 @@ Planned with Fable 5.1 after O5 and its review. The user asked "What is next act
 1. The checklist is its own document, kept honest by a test.
 2. The exit test runs in process on a 24×24, 12-day run; the subprocess determinism tests stay where they were.
 3. The tour never resumes a runner.
-4. A pack is one PNG per key plus `pack.json`, anchors required; a sprite's size may differ from the painted one (the checker warns); footprints stay fixed by the registry.
+4. A pack is one PNG per key plus `pack.json`, anchors required, files inside the pack's folder; a sprite may be up to twice its painted size each way (any other size draws a warning); footprints stay fixed by the registry.
 5. Building colours stay painted in; buildings have no mask.
 6. The sample pack is a building, a tree and a citizen frame with its mask.
 7. The manifest is committed and checked fresh.
 8. Phase 4 is declared complete with the "Your PC" columns blank, to be filled from the user's numbers.
+
+**Codex review of dcbdf86 (O6): four P2 findings, all real, fixed in the commit that follows it.**
+- An art pack could load files from a sibling pack (`../sample/x.png`), which the checker refused but the page did not. Files are now resolved against the pack's folder and a pack reaching outside it is refused whole.
+- A pack frame of any size was accepted, and a 2048-pixel citizen frame made the crowd sheet overflow so the page did not start. Sprites may now be at most twice their painted size, by rules the page and the checker share, and the crowd sheet grows to 2,048 rather than fail.
+- Day loads were timed before the day's people were built and drawn; they are now timed to the day shown.
+- `route_timings.py` failed on a run of one day; it now leaves out the "changes" row there.
+
+While validating, three tests failed once each. One found a small real bug: the art proof's indoor highlight pulses its building's tint, and at the bottom of each pulse the tint rounded to white, so for about a tenth of the time the highlight blinked out (and a test reading it then saw no highlight); the pulse now keeps a floor. The other two came from timing in the tests themselves. The camera-hold tour test's wheel, drag and click spilled past a 1-second first stop under software GL; it now holds each stop for 3 seconds. The reader's "writes nothing" test could see SQLite fold away the write-ahead files of the store that recorded its run, if the collector freed that store mid-test; it now collects before taking its snapshot, as the exit test does.
 
 ### Performance report
 
@@ -887,7 +895,7 @@ The observer is done to the plan: a read-only window on the world that zooms fro
 | O3 | `observe`: a run served live behind a token, the chronicle placed from history, travellers | 9a9bb6b … 6f3c61b, review 2a4f646 |
 | O4 | The runner started and held by the observer, the replay timeline, each day's hash, following a party | 484b3cb … 54edb84, review d3d5251 |
 | O5 | The world as one civilization's council knows it, with noninterference on what is served | e9bd54f … 1359720, review 817193e |
-| O6 | Acceptance checklist and exit test, run bar, tour on a run, server timings, art packs | 70e5d36, 41d865a, e216c56, 2a702ab, these docs |
+| O6 | Acceptance checklist and exit test, run bar, tour on a run, server timings, art packs | 70e5d36, 41d865a, e216c56, 2a702ab, dcbdf86, and its review fix |
 
 Gate: all observer operations leave the world hash unchanged (the exit test, and the attached-observer and page-driven determinism tests), and the observer's promises each have a test (`docs/observer-acceptance.md`).
 

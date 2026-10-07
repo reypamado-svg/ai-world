@@ -36,7 +36,9 @@ const GRADE_ASSETS = [
 ];
 const ICON_ASSETS = [...new Set([...HOUSE_ASSETS, ...GRADE_ASSETS.flat()])];
 const BADGE_PX = 14;
-const SHEET = 1024; // every design and town piece the atlas has, baked once (see sheetFor)
+// Every design and town piece the atlas has, baked once (see sheetFor): 1,024 px holds them all
+// even with every pack sprite at its largest; a sheet that is full is baked again at 2,048.
+const SHEET_SIZES = [1024, 2048];
 const PAD = 2;
 const DOT_PX = 16;
 const ICON_ART = 0.25; // ward house particles: an eighth of the 2x painting
@@ -57,15 +59,17 @@ export function timeOfDay(t) {
   return (((START_S + t) % DAY_S) + DAY_S) % DAY_S;
 }
 
+class SheetFull extends Error {}
+
 /**
  * One small texture sheet for every particle: still people per civilization,
  * design and facing (accent already tinted), a dot, and ward house icons.
  * Particle containers need a single texture source.
  */
-function bakeSheet(PIXI, atlas, designs, pieceAssets = []) {
+function bakeSheet(PIXI, atlas, designs, pieceAssets = [], sheetPx = SHEET_SIZES[0]) {
   const canvas = document.createElement('canvas');
-  canvas.width = SHEET;
-  canvas.height = SHEET;
+  canvas.width = sheetPx;
+  canvas.height = sheetPx;
   // Kept on the CPU: picking reads its pixels back, which on a GPU canvas waits for every draw.
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const entries = new Map();
@@ -73,12 +77,12 @@ function bakeSheet(PIXI, atlas, designs, pieceAssets = []) {
   let y = PAD;
   let rowH = 0;
   const place = (key, w, h, draw, anchor, art) => {
-    if (x + w + PAD > SHEET) {
+    if (x + w + PAD > sheetPx) {
       x = PAD;
       y += rowH + PAD;
       rowH = 0;
     }
-    if (y + h + PAD > SHEET) throw new Error('crowd sheet full');
+    if (y + h + PAD > sheetPx) throw new SheetFull(`crowd sheet full at ${sheetPx} px`);
     draw(ctx, x, y);
     entries.set(key, { key, x, y, w, h, anchor, art });
     x += w + PAD;
@@ -172,7 +176,7 @@ function bakeSheet(PIXI, atlas, designs, pieceAssets = []) {
   for (const e of entries.values()) {
     e.texture = new PIXI.Texture({ source, frame: new PIXI.Rectangle(e.x, e.y, e.w, e.h) });
   }
-  return { canvas, source, entries, pixels: ctx.getImageData(0, 0, SHEET, SHEET).data };
+  return { canvas, source, entries, size: sheetPx, pixels: ctx.getImageData(0, 0, sheetPx, sheetPx).data };
 }
 
 // A recorded run builds a crowd layer for every day it shows. The sheet holds every citizen design
@@ -202,12 +206,17 @@ function sheetFor(PIXI, atlas, frame, plans) {
   const allDesigns = new Set([...designs, ...(kept?.designs ?? [])]);
   const allPieces = new Set([...pieces, ...(kept?.pieces ?? [])]);
   sheetBakes += 1;
-  const sheet = bakeSheet(
-    PIXI,
-    atlas,
-    [...allDesigns].sort((a, b) => a - b),
-    [...allPieces].sort(),
-  );
+  const designList = [...allDesigns].sort((a, b) => a - b);
+  const pieceList = [...allPieces].sort();
+  let sheet = null;
+  for (const size of SHEET_SIZES) {
+    try {
+      sheet = bakeSheet(PIXI, atlas, designList, pieceList, size);
+      break;
+    } catch (err) {
+      if (!(err instanceof SheetFull) || size === SHEET_SIZES[SHEET_SIZES.length - 1]) throw err;
+    }
+  }
   kept?.sheet.source.destroy();
   SHEETS.set(atlas, { designs: allDesigns, pieces: allPieces, sheet });
   return sheet;
@@ -837,7 +846,7 @@ export class CrowdLayer {
             hits.push({ row: a.row, z: a.sprite.zIndex });
         }
         for (const q of site.crowd.particleChildren) {
-          if (this._hit(q.entry, this.sheet.pixels, SHEET, q.x, q.y, q.flip, q.entry.art, lx, ly))
+          if (this._hit(q.entry, this.sheet.pixels, this.sheet.size, q.x, q.y, q.flip, q.entry.art, lx, ly))
             hits.push({ row: q.row, z: -1 });
         }
       }

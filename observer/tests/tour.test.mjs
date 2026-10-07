@@ -35,9 +35,11 @@ test('the tour holds the camera, labels rows by band and records load times', as
     await page.goto(`http://127.0.0.1:${server.address().port}/index.html?people=5000&citizens=0&quality=low`);
     await page.waitForFunction(() => window.__observer?.ready || window.__observerError, null, { timeout: 600000 });
     assert.equal(await page.evaluate(() => window.__observerError ?? null), null);
-    // tour() sets its hold before its first await, so the camera is held when this returns.
+    // tour() sets its hold before its first await, so the camera is held when this returns. Each
+    // stop lasts 3 s, so the wheel, drag and click below all land in the first one even when
+    // software GL makes them slow (with 1 s stops they could spill into the second).
     await page.evaluate(() => {
-      window.__tour = window.__observer.tour(1);
+      window.__tour = window.__observer.tour(3);
     });
     const camera = () => page.evaluate(() => window.__observer.camera());
     const held = await camera();

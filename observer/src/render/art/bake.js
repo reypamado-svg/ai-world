@@ -5,12 +5,15 @@
 // replaces (see `art/manifest.json` for every key and what it must be). Its sprites are added
 // to the atlas before the painters run; the atlas keeps the first sprite under a key, so the
 // painters then fill in every key the pack does not have, and nothing else changes.
+// A pack keeps to the rules of `pack-rules.js` (files inside its folder, sizes that fit, masks
+// within their frames) or is not loaded at all.
 
 import { project, unproject } from '../../world/coords.js';
 import { CIV_COLORS, checkContract, staticAssetPainters } from './registry.js';
 import { ANIMATIONS, dressLook, envoyFrameCanvas, personFrameCanvas } from './paint/people.js';
 import { paintOx, paintWagon } from './paint/vehicles.js';
 import { GROUND_TILE, buildGroundField, paintGroundTile } from './paint/ground.js';
+import { entryErrors, fileInside } from './pack-rules.js';
 
 /** People, vehicles, nature and props are stored at screen size (1x). */
 const ONE_X = { art: 1 };
@@ -255,24 +258,43 @@ export async function loadArtPack(atlas, name, status = () => {}, { base = 'art'
     report.error = String(err.message ?? err);
     return report;
   }
-  // Every image is fetched before any is added, so a pack that fails part way adds nothing.
+  // Every image is fetched and checked before any is added, so a pack that fails part way, or
+  // breaks a rule of `pack-rules.js` anywhere, adds nothing.
   const sprites = [];
   try {
+    const dir = new URL(`${base}/packs/${name}/`, location.href);
     for (const [key, entry] of Object.entries(pack.entries ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
       const spec = manifest.keys[key];
       if (!spec) {
         report.unknown.push(key);
         continue;
       }
+      // Only files inside the chosen pack's own folder (review fix).
+      const url = fileInside(entry?.file, dir);
+      if (!url) throw new Error(`${key}: file "${entry?.file}" is not inside the pack`);
       status(`Loading ${key} from the ${name} art pack`);
-      const res = await fetch(`${base}/packs/${name}/${entry.file}`);
+      const res = await fetch(url);
       if (!res.ok) throw new Error(`${entry.file}: HTTP ${res.status}`);
       const image = await createImageBitmap(await res.blob());
       const canvas = document.createElement('canvas');
       canvas.width = image.width;
       canvas.height = image.height;
       canvas.getContext('2d').drawImage(image, 0, 0);
-      sprites.push({ key, canvas, anchor: { x: entry.anchor.x, y: entry.anchor.y }, spec });
+      sprites.push({ key, canvas, anchor: { x: entry.anchor?.x, y: entry.anchor?.y }, spec });
+    }
+    // Sized to fit the atlas and the crowd sheet, masks within their frames (review fix).
+    const byKey = new Map(
+      sprites.map((s) => [s.key, { size: { w: s.canvas.width, h: s.canvas.height }, anchor: s.anchor }]),
+    );
+    for (const { key, anchor, spec } of sprites) {
+      const [problem] = entryErrors({
+        key,
+        spec,
+        anchor,
+        size: byKey.get(key).size,
+        sprite: byKey.get(key.split('#')[0]),
+      });
+      if (problem) throw new Error(problem);
     }
   } catch (err) {
     report.error = String(err.message ?? err);

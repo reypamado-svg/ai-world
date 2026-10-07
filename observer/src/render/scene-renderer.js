@@ -439,8 +439,11 @@ export class SceneRenderer {
       const o = this.byId.get(selected);
       if (o && o.hidden && o.state?.inside && this.byId.has(o.state.inside)) {
         const b = this.byId.get(o.state.inside);
-        const g = Math.round(255 - pulse * 70);
-        b.sprite.tint = (255 << 16) | (Math.round(255 - pulse * 25) << 8) | g;
+        // Never quite white: at the bottom of the pulse the building stays tinted (it rounded
+        // to white for about a tenth of each pulse, and the highlight blinked out).
+        const glow = 0.25 + 0.75 * pulse;
+        const g = Math.round(255 - glow * 70);
+        b.sprite.tint = (255 << 16) | (Math.round(255 - glow * 25) << 8) | g;
         this.drawFootprint(ring, b.fp, 0xffd84a, 3, zoom);
         // Marker above the roof: the person is inside this building.
         const top = project((b.fp.minX + b.fp.maxX) / 2, (b.fp.minY + b.fp.maxY) / 2, (b.height ?? 5) + 1.2);

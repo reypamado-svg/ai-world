@@ -12,7 +12,8 @@ the environment, so no model is ever called.
 
 It prints a table: the walk (projecting each day in order, as the server does once on start),
 then each route, first ask and the median of the cached repeats, in milliseconds, through
-FastAPI's test client (no network).
+FastAPI's test client (no network). A run of one day (just initialised) has no "changes from the
+day before" row.
 """
 
 from __future__ import annotations
@@ -114,23 +115,30 @@ def timings(root: Path, repeats: int = 4) -> list[tuple[str, float, float | None
     rows: list[tuple[str, float, float | None]] = [
         ("walk, per day", walk / len(days), None),
     ]
-    for name, path in (
+    measures = [
         ("status", "/api/status"),
         ("manifest", "/api/run/manifest"),
         ("id table", "/api/run/ids"),
         ("a day's record", f"/api/run/days/{last}"),
         ("a day's people", f"/api/run/days/{last}/people"),
-        ("changes from the day before", f"/api/run/days/{last}/changes?from={days[-2]}"),
+    ]
+    if len(days) > 1:
+        measures.append(
+            ("changes from the day before", f"/api/run/days/{last}/changes?from={days[-2]}")
+        )
+    measures += [
         ("routes", f"/api/run/days/{middle}/routes"),
         ("chronicle", f"/api/run/chronicle?day={middle}"),
         ("perspective (civilization 0)", f"/api/run/days/{last}/perspective/0"),
         ("terrain manifest", "/api/run/terrain/manifest.json"),
-    ):
+    ]
+    for name, path in measures:
         first, cached = _timed(get(path), repeats)
         rows.append((name, first, cached))
     # A day no longer in the cache, asked again.
     service._cache.clear()
-    first, _ = _timed(get(f"/api/run/days/{days[1]}"), 0)
+    dropped = days[1] if len(days) > 1 else days[0]
+    first, _ = _timed(get(f"/api/run/days/{dropped}"), 0)
     rows.append(("a day dropped from the cache", first, None))
     return rows
 
