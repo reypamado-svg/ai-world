@@ -6716,7 +6716,8 @@ def _run_councils(
                             *civilization.expeditions,
                             Expedition(
                                 expedition_id=command.expedition_id,
-                                explorer_ids=command.explorer_ids,
+                                # In id order, whatever order the council named them in.
+                                explorer_ids=tuple(sorted(command.explorer_ids)),
                                 route=command.route,
                             ),
                         ),

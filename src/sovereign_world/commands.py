@@ -3165,6 +3165,12 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="invalid_expedition",
                         message="start-expedition order requires an ID, explorers, and route",
                     )
+                elif len(set(command.explorer_ids)) != len(command.explorer_ids):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_expedition",
+                        message="an explorer is named twice",
+                    )
                 elif command.expedition_id in seen_expeditions or any(
                     expedition.expedition_id == command.expedition_id
                     for expedition in state.civilizations[envelope.civilization_id].expeditions
