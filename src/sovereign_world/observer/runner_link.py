@@ -33,13 +33,15 @@ RUNNING = "running"
 DONE = "done"
 EXITED = "exited"
 STOPPED = "stopped"
+SPEND_CAP = "spend_cap"
 
 
 @dataclass(frozen=True, slots=True)
 class RunnerState:
     phase: str
     """starting, paused, running, done (reached its last day), stopped (by the observer: the
-    run's history changed under it) or exited (stopped otherwise)."""
+    run's history changed under it), spend_cap (it stopped before a day that could pass the
+    run's spending cap) or exited (stopped otherwise)."""
     day: int | None = None
     """The last day it saved (or the day it started from)."""
     last_day: int | None = None
@@ -136,6 +138,8 @@ class RunnerLink:
                     day = int(words[1])
                     finished = state.last_day is not None and day >= state.last_day
                     state = replace(state, day=day, phase=DONE if finished else EXITED)
+                elif words[0] == "stopped" and len(words) == 3 and words[2] == SPEND_CAP:
+                    state = replace(state, day=int(words[1]), phase=SPEND_CAP)
                 if self._stopped:
                     # Reports already on their way when it was stopped do not undo that.
                     state = replace(state, phase=STOPPED)
@@ -143,7 +147,7 @@ class RunnerLink:
             self._changed()
         code = self._process.wait()
         with self._lock:
-            phase = self._state.phase if self._state.phase in (DONE, STOPPED) else EXITED
+            phase = self._state.phase if self._state.phase in (DONE, STOPPED, SPEND_CAP) else EXITED
             self._state = replace(self._state, phase=phase, exit_code=code)
         self._changed()
 

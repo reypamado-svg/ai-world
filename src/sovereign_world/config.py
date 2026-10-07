@@ -76,6 +76,33 @@ class BudgetConfig(BaseModel):
     timeout_seconds: float = Field(default=300.0, gt=0)
 
 
+class Price(BaseModel):
+    """What a model's tokens cost, in US dollars per million."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    input_per_million_usd: float = Field(ge=0)
+    output_per_million_usd: float = Field(ge=0)
+
+
+class SpendConfig(BaseModel):
+    """The run's hard spending cap (sealed trial), counted from every council's recorded usage.
+
+    The run stops cleanly before a day whose councils could break any cap, keeping
+    ``reserve_councils`` worst-case council rounds in hand. A reply from a model the price table
+    does not list is priced at the table's dearest rate, or stops the run (``unknown_model``)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    max_cost_usd: float | None = Field(default=None, gt=0)
+    max_input_tokens: int | None = Field(default=None, gt=0)
+    max_output_tokens: int | None = Field(default=None, gt=0)
+    prices: dict[str, Price] = Field(default_factory=dict)
+    """By model name, as the provider reports it."""
+    unknown_model: Literal["highest", "refuse"] = "highest"
+    reserve_councils: int = Field(default=1, ge=1, le=10)
+
+
 _SOVEREIGN_ADDITIONS: dict[str, object] = {"label": ""}
 """Settings added to ``SovereignConfig`` after runs were recorded, and their defaults."""
 
@@ -109,6 +136,9 @@ class RunManifest(BaseModel):
     Balance calibration rotates it to separate a start's quality from who holds it; 0 is the
     world as generated, and keeps the manifest's hash."""
 
+    spend: SpendConfig | None = None
+    """The spending cap, if any (sealed trial); left out of the manifest's hash when unset."""
+
     @model_validator(mode="after")
     def _rotation_within_civilizations(self) -> RunManifest:
         if self.start_rotation >= self.config.civilizations:
@@ -140,6 +170,7 @@ class RunManifest(BaseModel):
             "rules_version": 1,
             "journal_format": 1,
             "start_rotation": 0,
+            "spend": None,
         }
         for key, default in defaults.items():
             if dumped.get(key) == default:

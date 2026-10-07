@@ -23,6 +23,7 @@ from sovereign_world.observer import TOKEN_ENV
 from sovereign_world.observer.runner_link import (
     DONE,
     PAUSED,
+    SPEND_CAP,
     STOPPED,
     RunnerLink,
     RunnerState,
@@ -333,3 +334,19 @@ def test_a_run_driven_from_the_page_saves_what_run_saves(tmp_path: Path) -> None
     assert journal == (plain / "journal.jsonl").read_bytes()
     assert _checkpoints(driven) == _checkpoints(plain)
     assert {p.name for p in driven.iterdir()} == {p.name for p in plain.iterdir()}
+
+
+def test_a_runner_stopped_by_its_spending_cap_says_so() -> None:
+    script = "\n".join(
+        f"print({line!r}, flush=True)" for line in ("start 0 40", "paused", "stopped 31 spend_cap")
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    link = RunnerLink(process)
+    process.wait(timeout=10)
+    deadline = time.monotonic() + 5
+    while link.state().exit_code is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    state = link.state()
+    assert (state.phase, state.day, state.last_day, state.exit_code) == (SPEND_CAP, 31, 40, 0)

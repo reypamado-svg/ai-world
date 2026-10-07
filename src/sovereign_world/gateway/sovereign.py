@@ -28,7 +28,7 @@ from sovereign_world.gateway.provider import (
     ProviderRefused,
     ProviderTimeout,
 )
-from sovereign_world.gateway.records import CouncilOutcome, CouncilRecord
+from sovereign_world.gateway.records import CouncilOutcome, CouncilRecord, ModelUsage
 from sovereign_world.scripted import Sovereign
 
 PromptBuilder = Callable[[CouncilReport, Sequence[CouncilRecord], Budgets], tuple[str, str]]
@@ -75,7 +75,14 @@ class GatewaySovereign:
         records, self._records = tuple(self._records), []
         return records
 
-    def _ask(self, system: str, user: str, purpose: str, replies: list[str]) -> str:
+    def _ask(
+        self,
+        system: str,
+        user: str,
+        purpose: str,
+        replies: list[str],
+        usage: list[ModelUsage] | None = None,
+    ) -> str:
         reply = self.provider.complete(
             ModelRequest(
                 system=system,
@@ -86,6 +93,15 @@ class GatewaySovereign:
             )
         )
         replies.append(reply.text)
+        if usage is not None:
+            usage.append(
+                ModelUsage(
+                    purpose=purpose,
+                    model=reply.model or self.provider.model,
+                    input_tokens=max(0, reply.input_tokens),
+                    output_tokens=max(0, reply.output_tokens),
+                )
+            )
         return reply.text
 
     def decide(self, report: CouncilReport) -> CommandEnvelope:
@@ -93,17 +109,18 @@ class GatewaySovereign:
         system, user = self._build(report, history, self.budgets)
         replies: list[str] = []
         errors: list[str] = []
+        usage: list[ModelUsage] = []
         started = self._clock()
         envelope = no_commands(report)
         try:
-            text = self._ask(system, user, "turn", replies)
+            text = self._ask(system, user, "turn", replies, usage)
             try:
                 envelope = to_envelope(parse_reply(text), report)
                 outcome = CouncilOutcome.ACCEPTED
             except ReplyError as error:
                 errors.append(str(error))
                 repaired = self._ask(
-                    system, f"{user}\n\n{repair_note(error, text)}", "repair", replies
+                    system, f"{user}\n\n{repair_note(error, text)}", "repair", replies, usage
                 )
                 envelope = to_envelope(parse_reply(repaired), report)
                 outcome = CouncilOutcome.REPAIRED
@@ -136,6 +153,7 @@ class GatewaySovereign:
             outcome=outcome,
             envelope=envelope,
             crisis_councils=self.crisis_councils,
+            usage=tuple(usage),
         )
         self._records.append(record)
         self._history.append(record)

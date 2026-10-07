@@ -495,9 +495,11 @@ class ObserverApp {
         ? `RUNNER · finished at day ${day}`
         : phase === 'stopped'
           ? "RUNNER · stopped: the run's history changed (restart observe --run-days to go on)"
-          : phase === 'exited'
-            ? `RUNNER · exited (code ${code ?? '?'}) at day ${day}`
-            : `RUNNER · ${phase} · day ${day ?? '…'} of ${last ?? '…'}${ahead != null ? ` · ${ahead} ahead` : ''}`;
+          : phase === 'spend_cap'
+            ? `RUNNER · stopped at day ${day}: the next day could pass the run's spending cap`
+            : phase === 'exited'
+              ? `RUNNER · exited (code ${code ?? '?'}) at day ${day}`
+              : `RUNNER · ${phase} · day ${day ?? '…'} of ${last ?? '…'}${ahead != null ? ` · ${ahead} ahead` : ''}`;
     chip.title =
       'The run goes on only while the page plays, and at most the set number of days ahead of the day shown.';
   }

@@ -16,12 +16,14 @@ from sovereign_world.config import (
     BudgetConfig,
     RunManifest,
     SovereignConfig,
+    SpendConfig,
     WorldConfig,
 )
 from sovereign_world.gateway.records import recorded_councils
 from sovereign_world.persistence import WorldStore
 from sovereign_world.replay import rederive_run, replay_run, verify_run
-from sovereign_world.runner import controlled, run_days
+from sovereign_world.runner import SpendCapReached, controlled, run_days
+from sovereign_world.spend import Tally, prompt_round, stop_reason, tally, worst_case_round
 from sovereign_world.state import build_initial_state, validate_world
 
 app = typer.Typer(
@@ -35,15 +37,17 @@ def _settings(path: str | None) -> dict[str, object]:
     if path is None:
         return {}
     data = tomllib.loads(Path(path).read_text())
-    unknown = set(data) - {"sovereigns", "budgets"}
+    unknown = set(data) - {"sovereigns", "budgets", "spend"}
     if unknown:
         raise typer.BadParameter(f"unknown settings: {sorted(unknown)}")
     sovereigns = {
         str(civilization_id): SovereignConfig.model_validate(entry)
         for civilization_id, entry in dict(data.get("sovereigns", {})).items()
     }
+    spend = data.get("spend")
     return {
         "sovereigns": sovereigns,
+        **({"spend": SpendConfig.model_validate(spend)} if spend is not None else {}),
         "budgets": BudgetConfig.model_validate(data.get("budgets", {})),
     }
 
@@ -104,14 +108,84 @@ def run(
             " stops the run after the day in progress."
         ),
     ),
+    spend_limit: float | None = typer.Option(
+        None,
+        "--spend-limit",
+        min=0,
+        help=(
+            "Stop before any day that could take the run's model spending past this many US"
+            " dollars. It may lower the run's own cap for this session, never raise it."
+        ),
+    ),
 ) -> None:
-    """Advance the latest verified state under the run's sovereigns, recording every council."""
+    """Advance the latest verified state under the run's sovereigns, recording every council.
+
+    A run with a spending cap stops cleanly, with a checkpoint and exit code 3, before any day
+    whose councils could take it past the cap."""
     store = WorldStore(directory)
-    if controlled_run:
-        controlled(store, days)
-        return
-    state = run_days(store, days)
+    try:
+        if controlled_run:
+            controlled(store, days, spend_limit_usd=spend_limit)
+            return
+        state = run_days(store, days, spend_limit_usd=spend_limit)
+    except SpendCapReached as stop:
+        typer.echo(f"stopped before day {stop.state.day + 1}: {stop.reason}", err=True)
+        raise typer.Exit(3) from None
     typer.echo(f"advanced to day {state.day} ({store.state_hash(state)})")
+
+
+def _spend_lines(title: str, total: Tally) -> list[str]:
+    lines = [
+        f"{title}: ${total.cost_usd:,.4f}, {total.input_tokens:,} tokens in,"
+        f" {total.output_tokens:,} out, {total.councils} councils"
+    ]
+    for label, table in (("civilization", total.by_civilization), ("model", total.by_model)):
+        for key, (tokens_in, tokens_out, cost) in sorted(table.items()):
+            lines.append(
+                f"  {label} {key}: ${cost:,.4f}, {int(tokens_in):,} in, {int(tokens_out):,} out"
+            )
+    return lines
+
+
+@app.command()
+def spend(
+    directory: Path,
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Also size a council round from the latest day's real prompts; no model is asked.",
+    ),
+) -> None:
+    """What the run's councils have spent on models, what remains of its cap, and how many
+    worst-case council rounds that covers. Never asks a model, never writes."""
+    store = WorldStore(directory)
+    manifest = store.manifest()
+    spent = tally(recorded_councils(store), manifest.spend)
+    for line in _spend_lines("spent", spent):
+        typer.echo(line)
+    if spent.unpriced:
+        unpriced = ", ".join(sorted(spent.unpriced))
+        typer.echo(f"unpriced models (charged at the table's highest rate): {unpriced}")
+    worst = worst_case_round(manifest)
+    for line in _spend_lines("worst-case council round", worst):
+        typer.echo(line)
+    cap = manifest.spend.max_cost_usd if manifest.spend is not None else None
+    if cap is None:
+        typer.echo("cost cap: none")
+    else:
+        remaining = max(0.0, cap - spent.cost_usd)
+        rounds = int(remaining // worst.cost_usd) if worst.cost_usd > 0 else None
+        typer.echo(
+            f"cost cap: ${cap:,.2f}; remaining ${remaining:,.4f}"
+            + (f", about {rounds} worst-case rounds" if rounds is not None else "")
+        )
+    reason = stop_reason(manifest, spent)
+    typer.echo(f"next day: {'stops, ' + reason if reason else 'may run'}")
+    if dry_run:
+        state = replay_run(store)
+        sized = prompt_round(manifest, state)
+        for line in _spend_lines(f"prompts of day {state.day} (one call each)", sized):
+            typer.echo(line)
 
 
 @app.command()

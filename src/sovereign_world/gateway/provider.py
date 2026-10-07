@@ -61,6 +61,11 @@ class ScriptedProvider:
     name: str = "scripted"
     model: str = "scripted-model"
     requests: list[ModelRequest] = field(default_factory=list)
+    input_tokens: int = 0
+    """Tokens each reply reports, as a real provider's would (for spending tests)."""
+    output_tokens: int = 0
+    answering_model: str | None = None
+    """The model each reply says answered, when not the configured one (a fallback)."""
 
     def complete(self, request: ModelRequest) -> ModelReply:
         self.requests.append(request)
@@ -71,4 +76,9 @@ class ScriptedProvider:
         if isinstance(entry, ProviderError):
             raise entry
         text = entry(request) if callable(entry) else entry
-        return ModelReply(text=text, model=self.model)
+        return ModelReply(
+            text=text,
+            model=self.answering_model or self.model,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+        )
