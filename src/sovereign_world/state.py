@@ -305,7 +305,12 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
     civilization_ids = IdAllocator("civilization")
     person_ids = IdAllocator("person")
     civilizations: dict[EntityId, CivilizationState] = {}
-    for start in generated.starts:
+    # Civilization i takes the generator's (i + rotation)-th start; its founders are drawn from
+    # that start's own stream, so the whole starting package moves with the start.
+    starts = generated.starts
+    rotation = manifest.start_rotation
+    for index in range(len(starts)):
+        start = starts[(index + rotation) % len(starts)]
         civilization_id = civilization_ids.allocate()
         population = create_founders(
             civilization_id=civilization_id,
@@ -410,7 +415,11 @@ def validate_world(state: WorldState) -> None:
         if any(quantity < 0 for quantity in civilization.inventory.quantities.values()):
             raise ValueError("inventory quantity cannot be negative")
         observation_tiles = tuple(observation.tile for observation in civilization.observations)
-        if observation_tiles != tuple(sorted(set(observation_tiles))):
+        # A founding world (day 0) lists its first sightings in map order, as every recorded
+        # run was founded; from day 1 the engine keeps them sorted by tile.
+        if len(set(observation_tiles)) != len(observation_tiles) or (
+            state.day > 0 and observation_tiles != tuple(sorted(observation_tiles))
+        ):
             raise ValueError("observations must be unique and sorted")
         if civilization.known_tiles != observation_tiles:
             raise ValueError("known tiles must mirror private observations")

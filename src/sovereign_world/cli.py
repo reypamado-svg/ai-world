@@ -12,6 +12,7 @@ from sovereign_world.config import (
     CURRENT_GENERATOR,
     CURRENT_JOURNAL_FORMAT,
     CURRENT_RULES,
+    ENGINE_VERSION,
     BudgetConfig,
     RunManifest,
     SovereignConfig,
@@ -57,17 +58,28 @@ def initialize(
     sovereigns: str | None = typer.Option(
         None, help="TOML file of sovereign assignments and budgets, frozen for the run."
     ),
+    start_rotation: int = typer.Option(
+        0,
+        min=0,
+        help=(
+            "Rotate the starts: civilization i takes the generator's (i + N)-th start, with its"
+            " whole starting package. 0 is the world as generated."
+        ),
+    ),
 ) -> None:
     """Create a locked manifest and day-zero checkpoint."""
     config = WorldConfig(seed=seed, width=width, height=height, civilizations=civilizations)
+    if start_rotation >= civilizations:
+        raise typer.BadParameter("--start-rotation must be below the number of civilizations")
     manifest = RunManifest.model_validate(
         {
             "run_id": uuid4(),
-            "engine_version": "0.2.0",
+            "engine_version": ENGINE_VERSION,
             "config": config,
             "generator_version": CURRENT_GENERATOR,
             "rules_version": CURRENT_RULES,
             "journal_format": CURRENT_JOURNAL_FORMAT,
+            "start_rotation": start_rotation,
             **_settings(sovereigns),
         }
     )
@@ -186,6 +198,8 @@ def fork(
             "rules_version": parent.rules_version,
             # A fork's journal is new, so it is saved in the current format.
             "journal_format": CURRENT_JOURNAL_FORMAT,
+            # Its world was built with the parent's starts.
+            "start_rotation": parent.start_rotation,
             **_settings(sovereigns),
         }
     )

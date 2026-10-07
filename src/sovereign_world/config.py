@@ -7,7 +7,7 @@ import json
 from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CURRENT_GENERATOR = 3
 """The world generator new runs use; see ``RunManifest.generator_version``."""
@@ -15,6 +15,8 @@ CURRENT_RULES = 3
 """The rules new runs use; see ``RunManifest.rules_version``."""
 CURRENT_JOURNAL_FORMAT = 2
 """How new runs save their days; see ``RunManifest.journal_format``."""
+ENGINE_VERSION = "0.2.0"
+"""The engine version new runs record (``RunManifest.engine_version``)."""
 
 
 class WorldConfig(BaseModel):
@@ -56,6 +58,9 @@ class SovereignConfig(BaseModel):
     allow_private_http: bool = False
     max_retries: int = Field(default=2, ge=0, le=5)
     prompt_version: str = "council-7"
+    label: str = ""
+    """Names the vendor behind a compatible endpoint (``gemini``, ``ollama``) in records and
+    reports. Added for the sealed trial; left out of the manifest hash while empty."""
 
 
 class BudgetConfig(BaseModel):
@@ -69,6 +74,10 @@ class BudgetConfig(BaseModel):
     transcript_turns: int = Field(default=3, ge=0, le=12)
     max_output_tokens: int = Field(default=8_000, ge=256)
     timeout_seconds: float = Field(default=300.0, gt=0)
+
+
+_SOVEREIGN_ADDITIONS: dict[str, object] = {"label": ""}
+"""Settings added to ``SovereignConfig`` after runs were recorded, and their defaults."""
 
 
 class RunManifest(BaseModel):
@@ -94,6 +103,17 @@ class RunManifest(BaseModel):
     """How the run's days are saved. Format 1 saves the whole world each day and hashes it
     whole (hash version 1); format 2 saves snapshots and the changes between them, and
     hashes the world in parts (hash version 2). Runs from before formats used 1."""
+    start_rotation: int = Field(default=0, ge=0)
+    """Which start each civilization takes: civilization ``i`` gets the start (and with it the
+    whole starting package: site, regional skill, founders) the generator chose ``(i + r) % n``-th.
+    Balance calibration rotates it to separate a start's quality from who holds it; 0 is the
+    world as generated, and keeps the manifest's hash."""
+
+    @model_validator(mode="after")
+    def _rotation_within_civilizations(self) -> RunManifest:
+        if self.start_rotation >= self.config.civilizations:
+            raise ValueError("start_rotation must be below the number of civilizations")
+        return self
 
     @classmethod
     def new(
@@ -111,7 +131,7 @@ class RunManifest(BaseModel):
     def content_hash(self) -> str:
         dumped = self.model_dump(mode="json")
         # Settings left at their defaults are omitted, so older manifests keep their hash.
-        defaults = {
+        defaults: dict[str, object] = {
             "sovereigns": {},
             "budgets": BudgetConfig().model_dump(mode="json"),
             "parent_run_id": None,
@@ -119,9 +139,15 @@ class RunManifest(BaseModel):
             "generator_version": 1,
             "rules_version": 1,
             "journal_format": 1,
+            "start_rotation": 0,
         }
         for key, default in defaults.items():
             if dumped.get(key) == default:
                 dumped.pop(key)
+        # Settings later added to each sovereign's entry, likewise omitted at their defaults.
+        for entry in dumped.get("sovereigns", {}).values():
+            for key, default in _SOVEREIGN_ADDITIONS.items():
+                if entry.get(key) == default:
+                    entry.pop(key)
         payload = json.dumps(dumped, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()

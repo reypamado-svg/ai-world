@@ -59,3 +59,35 @@ def test_manifest_hash_covers_engine_version() -> None:
     changed = original.model_copy(update={"engine_version": "0.2.0"})
 
     assert changed.content_hash() != original.content_hash()
+
+
+def _pinned_manifest(**extra: object) -> RunManifest:
+    from sovereign_world.config import BudgetConfig, SovereignConfig
+
+    return RunManifest(
+        run_id=UUID("00000000-0000-4000-8000-000000000021"),
+        engine_version="0.2.0",
+        config=WorldConfig(seed=21, width=48, height=48),
+        sovereigns={
+            "civilization:0000000001": SovereignConfig(
+                provider="anthropic", model="claude-opus-5-5"
+            ),
+            "civilization:0000000002": SovereignConfig(
+                provider="compatible", model="llama3", base_url="http://127.0.0.1:11434/v1"
+            ),
+        },
+        budgets=BudgetConfig(timeout_seconds=120.0),
+        generator_version=3,
+        rules_version=3,
+        journal_format=2,
+        **extra,  # type: ignore[arg-type]
+    )
+
+
+def test_a_manifest_with_sovereigns_and_budgets_keeps_its_pinned_hash() -> None:
+    """Pinned before the sealed trial added settings: an existing run's manifest keeps its
+    hash however many settings later versions add, as long as they are left at their defaults."""
+    assert (
+        _pinned_manifest().content_hash()
+        == "89ad1fc59b2b6e468dd4801e7c6b1365654cb5de62bb0581367c88db91cfa4ac"
+    )

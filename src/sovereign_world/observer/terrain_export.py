@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from sovereign_world.config import CURRENT_GENERATOR, RunManifest, WorldConfig
+from sovereign_world.config import CURRENT_GENERATOR, ENGINE_VERSION, RunManifest, WorldConfig
 from sovereign_world.hexmap import COVER_CLASSES, HexCoord, Terrain, Tile, WorldMap
 from sovereign_world.rng import StableRng
 from sovereign_world.state import build_initial_state
@@ -181,7 +181,7 @@ def export_terrain(
     config = WorldConfig(seed=seed, width=width, height=height)
     manifest = RunManifest(
         run_id=uuid5(NAMESPACE_URL, f"ai-world/observer-export/{seed}/{width}x{height}"),
-        engine_version="0.2.0",
+        engine_version=ENGINE_VERSION,
         config=config,
         generator_version=CURRENT_GENERATOR,
     )
