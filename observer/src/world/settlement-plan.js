@@ -165,7 +165,7 @@ export function isPlainPlan(design) {
 /** The institution a place's building needs before it is drawn (the rest are drawn as designed). */
 const PLACE_NEEDS = { keep: 'hall', craft_quarter: 'workshop' };
 /** Buildings drawn for a design's places. */
-const PLACE_ASSETS = {
+export const PLACE_ASSETS = {
   keep: 'building.hall',
   market: 'building.well',
   shrine: 'building.shrine',

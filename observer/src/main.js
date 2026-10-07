@@ -21,7 +21,7 @@ import { TerrainLayer } from './render/terrain-layer.js';
 import { PatchLayer } from './render/patch-layer.js';
 import { DecorLayer } from './render/decor.js';
 import { VillageLayer, bandOf } from './render/village-layer.js';
-import { CrowdLayer } from './render/crowd-layer.js';
+import { CrowdLayer, crowdSheetBakes } from './render/crowd-layer.js';
 import { RunOverlays } from './render/run-overlays.js';
 import { CapitalMarkers, SiteMarkers } from './render/markers.js';
 import { Atlas } from './render/art/atlas.js';
@@ -1348,6 +1348,8 @@ function buildApi(app) {
     atlasKeys: () => [...app.atlas.entries.keys()],
     /** The `?art=` pack: what came from it, why it was not used, and contract failures (O6). */
     artPack: () => app.artPack,
+    /** How many crowd sheets were baked: one per page, however many days are shown. */
+    crowdSheetBakes,
     /** The population feed (?people=N): totals, bytes and each settlement's plan. */
     populationStats: () => {
       const pop = app.population;

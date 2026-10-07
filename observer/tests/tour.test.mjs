@@ -116,6 +116,9 @@ test('the tour measures a recorded run, with its day loads', async () => {
     assert.equal(m.run.civ, null);
     assert.ok(m.dayLoads.count >= 2 && m.dayLoads.maxMs >= m.dayLoads.avgMs, JSON.stringify(m.dayLoads));
     assert.match(await page.locator('#measure-caps').textContent(), /day 18 of \d+ recorded; day loads/);
+    // Every day shares one crowd sheet, though day 18's town has walls and day 0's has none: a
+    // sheet baked again for each day stalled each load on reading the atlas back from the GPU.
+    assert.equal(await page.evaluate(() => window.__observer.crowdSheetBakes()), 1);
     assert.deepEqual(errors, []);
   } finally {
     await page.close();

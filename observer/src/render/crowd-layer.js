@@ -18,8 +18,8 @@ import { project, K } from '../world/coords.js';
 import { BANDS } from './village-layer.js';
 import { CIV_COLORS } from './art/registry.js';
 import { personFrameKey } from './art/bake.js';
-import { ANIMATIONS } from './art/paint/people.js';
-import { BLOCK_M, HOUSES_PER_BLOCK } from '../world/settlement-plan.js';
+import { ANIMATIONS, APPEARANCE_COUNT } from './art/paint/people.js';
+import { BLOCK_M, HOUSES_PER_BLOCK, PLACE_ASSETS } from '../world/settlement-plan.js';
 import { personLabel } from '../data/naming.js';
 import { hash2 } from '../sim/rng.js';
 
@@ -36,7 +36,7 @@ const GRADE_ASSETS = [
 ];
 const ICON_ASSETS = [...new Set([...HOUSE_ASSETS, ...GRADE_ASSETS.flat()])];
 const BADGE_PX = 14;
-const SHEET = 512;
+const SHEET = 1024; // every design and town piece the atlas has, baked once (see sheetFor)
 const PAD = 2;
 const DOT_PX = 16;
 const ICON_ART = 0.25; // ward house particles: an eighth of the 2x painting
@@ -66,7 +66,8 @@ function bakeSheet(PIXI, atlas, designs, pieceAssets = []) {
   const canvas = document.createElement('canvas');
   canvas.width = SHEET;
   canvas.height = SHEET;
-  const ctx = canvas.getContext('2d');
+  // Kept on the CPU: picking reads its pixels back, which on a GPU canvas waits for every draw.
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const entries = new Map();
   let x = PAD;
   let y = PAD;
@@ -174,6 +175,44 @@ function bakeSheet(PIXI, atlas, designs, pieceAssets = []) {
   return { canvas, source, entries, pixels: ctx.getImageData(0, 0, SHEET, SHEET).data };
 }
 
+// A recorded run builds a crowd layer for every day it shows. The sheet holds every citizen design
+// and every town piece the atlas has, whatever the day uses, so it is baked once per atlas: a bake
+// reads the atlas pages back from the GPU, which takes a fraction of a second. A day that needs
+// something more bakes a bigger sheet, and the one it replaces is freed (the layer that used it
+// is destroyed first).
+const SHEETS = new WeakMap();
+let sheetBakes = 0;
+
+/** How many crowd sheets this page has baked (a test checks a run's days share one). */
+export function crowdSheetBakes() {
+  return sheetBakes;
+}
+
+function sheetFor(PIXI, atlas, frame, plans) {
+  const designs = new Set(frame.appearance);
+  for (let a = 0; a < APPEARANCE_COUNT; a += 1)
+    if (atlas.entries.has(personFrameKey(a, 'idle', 'front', 0))) designs.add(a);
+  const pieces = new Set(plans.flatMap((plan) => (plan.pieces ?? []).map((x) => x.asset)));
+  for (const key of atlas.entries.keys()) if (key.startsWith('wall.') && !key.includes('#')) pieces.add(key);
+  for (const key of Object.values(PLACE_ASSETS)) if (atlas.entries.has(key)) pieces.add(key);
+  const kept = SHEETS.get(atlas);
+  if (kept && [...designs].every((a) => kept.designs.has(a)) && [...pieces].every((x) => kept.pieces.has(x))) {
+    return kept.sheet;
+  }
+  const allDesigns = new Set([...designs, ...(kept?.designs ?? [])]);
+  const allPieces = new Set([...pieces, ...(kept?.pieces ?? [])]);
+  sheetBakes += 1;
+  const sheet = bakeSheet(
+    PIXI,
+    atlas,
+    [...allDesigns].sort((a, b) => a - b),
+    [...allPieces].sort(),
+  );
+  kept?.sheet.source.destroy();
+  SHEETS.set(atlas, { designs: allDesigns, pieces: allPieces, sheet });
+  return sheet;
+}
+
 export class CrowdLayer {
   /**
    * @param {{ PIXI: object, atlas: object, population: { frame, plans, layout, origins } }} options
@@ -185,9 +224,7 @@ export class CrowdLayer {
     this.frame = frame;
     this.plans = plans;
     this.layout = layout;
-    const designs = [...new Set(frame.appearance)].sort((a, b) => a - b);
-    const pieceAssets = [...new Set(plans.flatMap((plan) => (plan.pieces ?? []).map((x) => x.asset)))].sort();
-    this.sheet = bakeSheet(PIXI, atlas, designs, pieceAssets);
+    this.sheet = sheetFor(PIXI, atlas, frame, plans);
     this.container = new PIXI.Container();
     this.sites = plans.map((plan, k) => this._site(k, plan, origins[k]));
     this.pin = new PIXI.Graphics();

@@ -1,7 +1,12 @@
 # AI World observer (browser)
 
-Phase 4 observer client. **Current state: O1b visual prototype at 25 km
-tiles** (plus the O1a close-zoom art proof).
+Phase 4 observer client. **Current state: Phase 4 complete (O6).** It shows
+the engine's world at 25 km tiles, a recorded or live run read without ever
+writing to it, a runner held by the page, any recorded day replayed exactly, the
+world as one civilization knows it, and art packs swapped in key by key; every
+promise is mapped to its tests in `docs/observer-acceptance.md`. With no run
+given it opens the O1b prototype: the engine's day-0 world and a SAMPLE village
+(plus the O1a close-zoom art proof at `/proof.html`).
 
 Everything on screen says where it comes from:
 
@@ -311,6 +316,7 @@ npm install                                            # playwright 1.56.1, pixi
 node --test --test-concurrency=1 tests/*.test.mjs      # browser tests, one file at a time
 node tests/measure.mjs captures                        # rendering measurements (400 / 2,000 / 5,000)
 node tests/measure.mjs captures --people=1000,100000   # the same with a synthetic population
+node tests/measure.mjs captures --run=data/runs/NAME --day=180 --civ=0   # a recorded run: day steps, jumps, perspective switch
 node tests/capture-observer.mjs captures --clip        # review stills and zoom-through clip
 node tests/capture.mjs captures --depth --clip         # art-proof stills, depth sheet, clip
 node tests/capture-geography.mjs captures              # terrain stills: world, range, river, desert, lake

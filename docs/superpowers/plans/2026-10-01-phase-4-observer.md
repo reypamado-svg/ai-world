@@ -782,4 +782,121 @@ Not included: stores, research, drills and decrees (council economics, not drawn
 - A small people's report names everyone (up to 40), so in small runs nobody is merely counted.
 - The report cannot tell captives held at home from those marching with its war parties, so with captives at home `counts.at_home + away` exceeds `living` by that many.
 - The first ask at 100,000 people takes most of a second (building the report); later asks are cached.
-- The top bar is one row: at 1440 px wide the day stepper and runner controls run off its right edge (the perspective controls have their own bar for this reason).
+- ~~The top bar is one row: at 1440 px wide the day stepper and runner controls run off its right edge.~~ Fixed in O6: they live in the run bar, with the perspective controls.
+
+## O6 as built: the Phase 4 exit
+
+Planned with Fable 5.1 after O5 and its review. The user asked "What is next activity?" and chose "Start O6". Built in four commits: C0 70e5d36, C3 41d865a, C1–C2 e216c56 and C4 2a702ab, plus these docs with a fix the measurements found (the crowd sheet baked once). The engine is unchanged: golden hashes and parity hold.
+
+**Acceptance** (C0).
+- `docs/observer-acceptance.md` maps every promise of this plan and the roadmap's exit gate to the tests that prove it: the exit gate, the creator covenant, R1–R10, journal safety, the access boundary, "what is shown is what was recorded", the civilization perspective, and O6's own. `tests/acceptance/test_phase_four_checklist.py` checks that every test it names exists, so the list cannot quietly go stale.
+- `tests/acceptance/test_phase_four_exit.py` takes one fresh run end to end, in process: `init` (seed 21, 24×24, the current rules) and `run --days 12`; export with perspectives; serve it. Every `/api` route answers 401 without the token; every answer equals the export's bytes; each day equals its replay, record and hash; each perspective equals the serialized council report of the replay and of `hide_unseen`; changes, routes and chronicle places lie on the map; control answers 409 with no runner; and the run's files and times are unchanged, with `verify` passing.
+
+**The run bar** (C1). The day stepper and runner chip ran off the one-row top bar's right edge at 1440 px. They moved into a run bar under it, with the perspective picker; the bar wraps, and the inspector, chronicle, council news and tour banner start below it however many rows it has. `layout.test.mjs` checks every run control is on screen and uncut at 1440 × 900 and 1280 × 720.
+
+**The tour measures a run** (C2).
+- The tour never resumes a runner the observer started: it measures the display with the runner kept paused, and its banner says so (a test checks the runner stays paused and saves no day).
+- `measurement()` records what was measured: the run (export or live, runner or not, the day of how many, the civilization and as-of), the day loads (count, average, maximum, last) and the last perspective switch. The Measurements panel shows a run line.
+- `measure.mjs` gains `--run`, `--day` and `--civ`, and times a step to the next day, a jump to the first day and the perspective switch.
+
+**Server timings** (C3). `tests/observer/route_timings.py RUN_DIR | --baseline | --people N` prints each route's first and cached answer through FastAPI's test client, with the walk per day. It strips provider keys from its environment, so it never calls a model.
+
+**Art packs** (C4).
+- **The contract, key by key.** `observer/art/manifest.json` lists every key the renderer can ask the atlas for (2,039: 1,073 sprites, 900 citizen masks, 66 shadows), each with its category, the painted size and anchor in art pixels, how the atlas keeps it, and a static asset's footprint and height. It is generated from the painters (`node tests/art-manifest.mjs`); a test keeps it equal to a fresh one.
+- **Loading.** `?art=NAME` loads `art/packs/NAME/pack.json` and its PNGs into the atlas before the painters run. The atlas keeps the first sprite under a key, so painted art fills every key the pack lacks and no drawing code changes. All images are fetched before any is added, so a pack that fails part way adds nothing. Pack sprites of static assets are checked against their footprint as painted ones are; a citizen frame from a pack takes only the pack's own mask.
+- **Saying so.** The chip reads "ART PACK: sample · 3 of 1073 keys from PNG", adding "· N outside their footprint" when the contract fails. A pack that cannot be loaded leaves every sprite painted, and the chip says "PROTOTYPE ARTWORK · art pack "NAME" not loaded" with the reason. `__observer.artPack()` gives the details.
+- **Tools.** `tests/art-pack-check.mjs` checks a pack in Node (PNG files and sizes, anchors, keys the manifest knows, masks and shadows with their sprites, files inside the pack) and prints its coverage; `tests/art-export.mjs` writes painted sprites as a pack, a starting point for an artist.
+- **The sample pack** (`art/packs/sample/`): a well and its shadow, an oak, and a citizen's first idle frame with its mask, exported from the painters; no external assets.
+
+**Defaults taken** (the user can change any of these):
+1. The checklist is its own document, kept honest by a test.
+2. The exit test runs in process on a 24×24, 12-day run; the subprocess determinism tests stay where they were.
+3. The tour never resumes a runner.
+4. A pack is one PNG per key plus `pack.json`, anchors required; a sprite's size may differ from the painted one (the checker warns); footprints stay fixed by the registry.
+5. Building colours stay painted in; buildings have no mask.
+6. The sample pack is a building, a tree and a citizen frame with its mask.
+7. The manifest is committed and checked fresh.
+8. Phase 4 is declared complete with the "Your PC" columns blank, to be filled from the user's numbers.
+
+### Performance report
+
+Measured here: a Linux container, headless Chromium with software GL (so frame times say nothing about a real GPU; JS times, memory and server times do). Your PC's columns are for the commands below.
+
+**A recorded year in the page.** The baseline year (seed 21, 48 × 48, rules 3, 365 days, 141 people), exported with perspectives and opened at day 180 at 1600 × 900: `node tests/measure.mjs OUT --run=data/runs/o6-baseline --day=180 [--civ=0]`. Each figure is the range over the four bands.
+
+| Measure | Target | Here, world | Here, civilization 0 | Your PC, world | Your PC, civilization 0 |
+|---|---|---|---|---|---|
+| A step to the next day (asking to shown) | ≤ 250 ms from an export, ≤ 500 ms live | 16–28 ms | 16–33 ms | | |
+| A jump to day 0 | — | 15–24 ms | 14–23 ms | | |
+| Switching to the perspective | ≤ 1 s first, ≤ 250 ms cached | — | 143 ms | | |
+| JS update (our own frame work, clock paused) | ≤ 8 ms | 0.05–0.11 ms | 0.05–0.19 ms | | |
+| JS heap | ≤ 150 MB | 20–22 MB | 33–42 MB | | |
+| Art atlas | ≤ 60 MB | 50.3 MB | 50.3 MB | | |
+| Ready | ≤ 10 s | 38–41 s (painting the art in software) | 38–41 s | | |
+| Frame interval | ≤ 20 ms p95 | not meaningful here (software GL) | | | |
+
+Measuring this found a real cost, fixed in these docs' commit: every day shown built a new crowd layer, and with it re-baked the crowd's texture sheet. The re-bake drew from the atlas pages and read the sheet's pixels back for picking, which waits for the GPU. It cost about 0.2 s a day with nothing drawing, 0.6–2.9 s under this container's slow frames, and left the old sheet's texture behind each time. The sheet now holds every citizen design and town piece the atlas has. It is baked once per page (1024 px instead of 512) and kept on the CPU for reading. `tour.test.mjs` checks that a run's days share one sheet.
+
+**The server** (`route_timings.py` on the same year, through FastAPI's test client; ms, first ask then the median of cached repeats):
+
+| Measure | Target | Here, first | Here, cached | Your PC, first | Your PC, cached |
+|---|---|---|---|---|---|
+| Walk, per day (once, on start) | ≤ 0.5 s at 100K | 6.0 | | | |
+| Status, manifest, id table, a day's record and people, changes | ≤ 10 ms cached | 2.6–3.6 | 2.7–3.3 | | |
+| Routes | ≤ 10 ms cached | 82.8 | 3.4 | | |
+| Chronicle | ≤ 10 ms cached | 37.2 | 3.3 | | |
+| Perspective (civilization 0) | ≤ 1 s first at 100K | 75.2 | 3.2 | | |
+| Terrain manifest | ≤ 10 ms cached | 1,224 | 3.2 | | |
+| A day dropped from the cache, asked again | — | 12.4 | | | |
+
+At 100,000 people (from the O3 and O5 write-ups, measured here) the walk takes about 0.3 s a day and a first perspective 0.60–0.75 s; cached answers stay about 3 ms.
+
+**100,000 synthetic people** (`?people=100000&measure=auto`): see "S7 as built" in the Phase 5 plan. Your PC's second run met every target (4.3 ms frames in every band, JS update at most 1.3 ms average, heap 44–120 MB, first frame 3.8 s). A third run after O6 checks that nothing has regressed.
+
+**Measure on your PC** (Windows PowerShell, from the repository root, with the venv as before):
+
+```powershell
+# 1. The synthetic 100,000 people again: open the page and let the tour run, hands off.
+node observer\tests\serve.mjs 8765
+#    then open http://127.0.0.1:8765/?people=100000&measure=auto and copy the table.
+
+# 2. A baseline year served live, as the world and as civilization 0.
+& .venv\Scripts\sovereign-world.exe init work\o6 --seed 21 --width 48 --height 48
+& .venv\Scripts\sovereign-world.exe run work\o6 --days 365
+& .venv\Scripts\sovereign-world.exe observe work\o6
+#    It prints "Open http://127.0.0.1:8766/?run=live#token=..."; open it twice, inserting before #token=:
+#      http://127.0.0.1:8766/?run=live&measure=auto#token=...
+#      http://127.0.0.1:8766/?run=live&civ=0&measure=auto#token=...
+#    and copy each table from the Measurements panel.
+
+# 3. The server's own times on that run.
+& .venv\Scripts\python.exe tests\observer\route_timings.py work\o6
+```
+
+## Phase 4 complete
+
+The observer is done to the plan: a read-only window on the world that zooms from the whole map into animated settlements, reads a recorded or live run without ever writing to it, runs the world under the creator's pause and lookahead, replays any recorded day exactly, shows the world as one civilization knows it, and can take an artist's sprites key by key.
+
+| Slice | What it gave | Commits |
+|---|---|---|
+| O1a | Close-zoom art proof: asset contract, painters, atlas, depth order with pinned tests | see "O1a as built" |
+| O1 | Terrain export, streamed hex world in three bands, minimap, sample village, measurements | see "O1 as built" |
+| G1–G5 | World geography: rivers on borders, hills and snow, crossings, bridges, the 25 km world rule | see "Geography G1–G2", "G4 and G5" |
+| O1b | The observer at 25 km tiles: interiors, ground patches, local origins, the courier's walk | see "O1b as built" |
+| O2 | Read-only journal tail and reader, the day projection, run export, the page in run mode | 2ec7624 … 612516f |
+| O3 | `observe`: a run served live behind a token, the chronicle placed from history, travellers | 9a9bb6b … 6f3c61b, review 2a4f646 |
+| O4 | The runner started and held by the observer, the replay timeline, each day's hash, following a party | 484b3cb … 54edb84, review d3d5251 |
+| O5 | The world as one civilization's council knows it, with noninterference on what is served | e9bd54f … 1359720, review 817193e |
+| O6 | Acceptance checklist and exit test, run bar, tour on a run, server timings, art packs | 70e5d36, 41d865a, e216c56, 2a702ab, these docs |
+
+Gate: all observer operations leave the world hash unchanged (the exit test, and the attached-observer and page-driven determinism tests), and the observer's promises each have a test (`docs/observer-acceptance.md`).
+
+### Known limits carried forward
+- Explorers are counted at home in a settlement's residents (the projection follows the engine's residents).
+- The id table is about 3 MB at 100,000 people, sent whole on first load.
+- `WorldStore` extends a journal cut back under it; the observer stops its own runner on a new history, but a writer elsewhere is not stopped (cut a run only while it is paused).
+- A second `sovereign-world run` on the same directory alongside the observer's runner is not prevented: one runner per run.
+- Pausing takes effect between days, so the runner can end one day beyond the lookahead.
+- With captives held at home, a perspective's `at_home + away` exceeds `living` by that many.
+- Building colours are painted in, not a tinted mask, so a pack's buildings keep whatever colours they are drawn in.
+- Format-1 journals' gzip records embed the time they were saved, so two format-1 runs of the same world differ in those bytes (format 2 sets the time to zero).

@@ -3,7 +3,7 @@
 // Usage: node tests/measure.mjs <outdir> [--quality=high] [--citizens=1000,5000] [--people=1000,100000]
 //        node tests/measure.mjs <outdir> --run=tests/fixtures/run-town [--day=18] [--civ=0]
 // With --run, a recorded run's export is measured (seen as civilization K with --civ=K), and a
-// day load and a perspective switch are timed too (O6).
+// step to the next day, a jump to the first day and a perspective switch are timed too (O6).
 //
 // In this container Chromium renders with software GL, so frame times are NOT
 // representative of a real GPU. The JS update time (`jsUpdateMs`, our own frame()
@@ -88,16 +88,22 @@ for (const n of cases) {
         jsUpdateP95: Number(times[Math.floor(times.length * 0.95)].toFixed(2)),
       };
     });
-    // A run: one day load timed (to the first recorded day and back).
-    const dayLoadMs = run
+    // A run: a step to the next recorded day (as playing does) and a jump to the first one, each
+    // timed from asking to the day shown, then back.
+    const dayLoads = run
       ? await page.evaluate(async () => {
           const o = window.__observer;
           const { days, day } = o.timelineInfo();
-          const t = performance.now();
-          await o.loadDay(days[0]);
-          const ms = performance.now() - t;
+          const timed = async (d) => {
+            const t = performance.now();
+            await o.loadDay(d);
+            return Number((performance.now() - t).toFixed(1));
+          };
+          const next = days[Math.min(days.length - 1, days.indexOf(day) + 1)];
+          const dayStepMs = await timed(next);
+          const dayJumpMs = await timed(days[0]);
           await o.loadDay(day);
-          return Number(ms.toFixed(1));
+          return { dayStepMs, dayJumpMs };
         })
       : null;
     rows.push({
@@ -106,7 +112,7 @@ for (const n of cases) {
       loadMs,
       ...m.stats,
       ...js,
-      ...(run ? { dayLoadMs, perspectiveSwitchMs: m.perspectiveSwitchMs, civ: m.run?.civ ?? null } : {}),
+      ...(run ? { ...dayLoads, perspectiveSwitchMs: m.perspectiveSwitchMs, civ: m.run?.civ ?? null } : {}),
     });
     console.log(
       n,
@@ -122,7 +128,7 @@ await browser.close();
 server.close();
 const cols = [
   label,
-  ...(run ? ['civ', 'dayLoadMs', 'perspectiveSwitchMs'] : []),
+  ...(run ? ['civ', 'dayStepMs', 'dayJumpMs', 'perspectiveSwitchMs'] : []),
   'view',
   'frameMsAvg',
   'frameMsP95',
