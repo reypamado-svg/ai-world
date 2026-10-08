@@ -39,6 +39,14 @@ def main(argv: list[str] | None = None) -> int:
     report = commands.add_parser("report", help="write the fairness report")
     report.add_argument("directory", type=Path)
     args = parser.parse_args(argv)
+    try:
+        return _main(args)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+
+def _main(args: argparse.Namespace) -> int:
     if args.command == "run":
         if args.quick:
             for key, value in QUICK.items():

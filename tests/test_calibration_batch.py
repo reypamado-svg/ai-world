@@ -196,3 +196,95 @@ def test_three_civilizations_are_specified_played_and_recorded(tmp_path: Path) -
     # A folder made for three civilizations is not added to with four.
     with pytest.raises(ValueError, match="civilizations 3"):
         run_batch(out, specs_of([0], 24, 60, "0", "builders", interval=28), workers=1)
+
+
+def test_a_folder_played_under_another_engine_is_refused(tmp_path: Path) -> None:
+    out = tmp_path / "batch"
+    specs = specs_of([3], 24, 5, "0", "builders", interval=28)
+    run_batch(out, specs, workers=1)
+    record = json.loads((out / "run.json").read_text())
+    record["engine_hash"] = "0" * 64
+    (out / "run.json").write_text(json.dumps(record))
+    before = (out / "histories.csv").read_bytes(), (out / "run.json").read_bytes()
+    with pytest.raises(ValueError, match="0000000000.*" + engine_hash()[:12] + ".*new folder"):
+        run_batch(out, specs, workers=1)
+    assert ((out / "histories.csv").read_bytes(), (out / "run.json").read_bytes()) == before
+    assert main(["run", "--out", str(out), "--seeds", "3", "--size", "24", "--days", "5"]) == 2
+
+
+def test_rows_without_run_json_are_refused(tmp_path: Path) -> None:
+    out = tmp_path / "batch"
+    specs = specs_of([3], 24, 5, "0", "builders", interval=28)
+    run_batch(out, specs, workers=1)
+    (out / "run.json").unlink()
+    with pytest.raises(ValueError, match=r"no run\.json"):
+        run_batch(out, specs, workers=1)
+
+
+def test_run_json_names_the_engine_before_the_first_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sovereign_world.calibration import batch
+
+    out = tmp_path / "batch"
+    specs = specs_of([3], 24, 5, "0", "builders", interval=28, civilizations=3)
+
+    def stopped(spec: HistorySpec) -> list[Row]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(batch, "run_history", stopped)
+    with pytest.raises(KeyboardInterrupt):
+        run_batch(out, specs, workers=1)
+    record = json.loads((out / "run.json").read_text())
+    assert record["engine_hash"] == engine_hash() and record["finished"] is False
+    assert record["civilizations"] == 3
+    monkeypatch.undo()
+    done = run_batch(out, specs, workers=1)
+    assert done["finished"] is True and done["played_now"] == 1
+
+
+def test_a_history_with_missing_rows_is_played_again_and_its_rows_replaced(
+    tmp_path: Path,
+) -> None:
+    specs = specs_of([1, 2], 24, 5, "0", "builders", interval=28)
+    whole, cut = tmp_path / "whole", tmp_path / "cut"
+    run_batch(whole, specs, workers=1)
+    run_batch(cut, specs, workers=1)
+    lines = (cut / "histories.csv").read_text().splitlines(keepends=True)
+    # The last history lost its last row, and the row before it was torn mid-field.
+    torn = lines[:-1]
+    torn[-1] = torn[-1][: len(torn[-1]) // 2]
+    (cut / "histories.csv").write_text("".join(torn))
+    again = run_batch(cut, specs, workers=1)
+    assert again["played_now"] == 1
+    rows = _rows(cut / "histories.csv")
+    assert len(rows) == 8
+    assert sorted(tuple(row.values()) for row in rows) == sorted(
+        tuple(row.values()) for row in _rows(whole / "histories.csv")
+    )
+
+
+def test_done_keys_counts_only_complete_histories(tmp_path: Path) -> None:
+    path = tmp_path / "histories.csv"
+    rows = _rows_of(run_history(specs_of([4], 24, 5, "0", "builders")[0]))
+    other = _rows_of(run_history(specs_of([5], 24, 5, "0", "builders")[0]))
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerows(rows[:3] + other)
+    assert done_keys(path, 4) == {"builders|5|24|5|0"}
+    assert done_keys(path) == {"builders|4|24|5|0", "builders|5|24|5|0"}
+
+
+def test_the_report_refuses_a_history_with_missing_rows(tmp_path: Path) -> None:
+    out = tmp_path / "batch"
+    main(["run", "--out", str(out), "--quick", "--workers", "1"])
+    lines = (out / "histories.csv").read_text().splitlines(keepends=True)
+    (out / "histories.csv").write_text("".join(lines[:-1]))
+    assert main(["report", str(out)]) == 2
+    report = json.loads((out / "run.json").read_text())
+    assert report["finished"] is True
+
+
+def _rows_of(rows: list[Row]) -> list[dict[str, object]]:
+    return [row.values() for row in rows]

@@ -268,6 +268,12 @@ def test_the_balance_report(tmp_path: Path) -> None:
     assert "contacts are rare in a year" in accepted["balance"].detail
     other = _gate(store, GateOptions(calibration=_report(tmp_path / "other", engine_hash="0" * 64)))
     assert other["balance"].status == "FAIL" and "another engine" in other["balance"].detail
+    unfinished = _gate(
+        store, GateOptions(calibration=_report(tmp_path / "unfinished", batch_finished=False))
+    )
+    assert (
+        unfinished["balance"].status == "FAIL" and "did not finish" in unfinished["balance"].detail
+    )
     small = _gate(store, GateOptions(calibration=_report(tmp_path / "small", histories=8)))
     assert small["balance"].status == "WARN"
     missing = _gate(store, GateOptions(launch=True))

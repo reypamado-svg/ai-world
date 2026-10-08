@@ -7,12 +7,14 @@
 
 ``run`` plays every seed, rotation and assignment and appends one row per civilization to
 ``DIR/histories.csv``; a history whose rows are already there is not played again, so a run
-that was stopped carries on where it left off. One folder holds one council interval and one
-number of civilizations: a run asking for others in a folder made with different ones is
-refused. A history the engine fails on is named in
-``DIR/failures.txt`` and ``run.json`` and the others go on; it is an engine bug to fix, after
-which running again plays it. ``DIR/run.json`` records what was asked, the engine version, the
-engine and rule hashes and how long it took. ``report`` writes the fairness report
+that was stopped carries on where it left off (a history whose rows were cut off part-way is
+dropped and played again). One folder holds one engine, one council interval and one number of
+civilizations: ``run.json`` names them before the first row is written, and a run asking for
+others in a folder made with different ones is refused. A history the engine fails on is named
+in ``DIR/failures.txt`` and ``run.json`` and the others go on; it is an engine bug to fix, and
+since the fix changes the engine hash, the whole batch is then played again in a new folder.
+``DIR/run.json`` records what was asked, the engine version, the engine and rule hashes, how
+long it took and whether the batch finished. ``report`` writes the fairness report
 (``report.py``).
 """
 
@@ -22,6 +24,7 @@ import csv
 import json
 import os
 import time
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -110,15 +113,39 @@ def base_key(spec: HistorySpec) -> str:
     return f"{spec.label}|{spec.seed}|{spec.size}|{spec.days}|{spec.rotation}"
 
 
-def done_keys(path: Path) -> set[str]:
-    """The histories whose rows are already in the file, named as ``base_key`` names them."""
+def _key_of(row: dict[str, str]) -> str:
+    return f"{row['assignment']}|{row['seed']}|{row['size']}|{row['days']}|{row['rotation']}"
+
+
+def done_keys(path: Path, rows_per_history: int | None = None) -> set[str]:
+    """The histories whose rows are already in the file, named as ``base_key`` names them; with
+    ``rows_per_history``, only those with all their rows (one per civilization)."""
     if not path.exists():
         return set()
     with path.open(newline="") as handle:
-        return {
-            f"{row['assignment']}|{row['seed']}|{row['size']}|{row['days']}|{row['rotation']}"
-            for row in csv.DictReader(handle)
-        }
+        counts = Counter(_key_of(row) for row in csv.DictReader(handle))
+    return {key for key, count in counts.items() if rows_per_history in (None, count)}
+
+
+def drop_partial_histories(path: Path, rows_per_history: int) -> int:
+    """Remove the rows of any history cut off part-way (fewer rows than civilizations, or a
+    torn last line), so it is played again; return how many rows were removed."""
+    if not path.exists():
+        return 0
+    with path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    whole = [row for row in rows if None not in row.values() and None not in row]
+    counts = Counter(_key_of(row) for row in whole)
+    kept = [row for row in whole if counts[_key_of(row)] == rows_per_history]
+    if len(kept) == len(rows):
+        return 0
+    spare = path.with_name(f"{path.name}.tmp")
+    with spare.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerows(kept)
+    os.replace(spare, path)
+    return len(rows) - len(kept)
 
 
 def workers_of(text: str) -> int:
@@ -133,12 +160,26 @@ def _one(name: str, values: set[int]) -> dict[str, int]:
 
 
 def _check_folder(out: Path, specs: Sequence[HistorySpec]) -> None:
-    """Refuse to add histories of another council interval or number of civilizations to a
-    folder that already holds some (their rows would be taken for these)."""
+    """Refuse to add histories of another engine, council interval or number of civilizations
+    to a folder that already holds some (their rows would be taken for these)."""
     recorded = out / "run.json"
-    if not recorded.exists() or not specs:
+    if not specs:
+        return
+    if not recorded.exists():
+        if (out / "histories.csv").exists():
+            raise ValueError(
+                f"{out} holds histories but no run.json saying which engine played them;"
+                " use a new folder"
+            )
         return
     before = json.loads(recorded.read_text())
+    old_engine, new_engine = str(before.get("engine_hash", "")), engine_hash()
+    if old_engine != new_engine:
+        raise ValueError(
+            f"{out} holds histories played under engine {old_engine[:12] or '(unknown)'}…, and"
+            f" this engine is {new_engine[:12]}…; use a new folder so one report measures one"
+            " engine"
+        )
     for name, values in (
         ("council_interval_days", {spec.interval for spec in specs}),
         ("civilizations", {len(spec.assignment) for spec in specs}),
@@ -149,6 +190,28 @@ def _check_folder(out: Path, specs: Sequence[HistorySpec]) -> None:
                 f"{out} holds histories with {name} {old}; use another folder for"
                 f" {', '.join(str(value) for value in sorted(values))}"
             )
+
+
+def _summary(specs: Sequence[HistorySpec], **extra: object) -> dict[str, object]:
+    """What ``run.json`` records about the batch and the engine that plays it."""
+    return {
+        "histories": len(specs),
+        **extra,
+        "engine_version": ENGINE_VERSION,
+        "rule_hash": rule_hash(),
+        "engine_hash": engine_hash(),
+        "specs": sorted({(spec.label, spec.size, spec.days) for spec in specs}),
+        "seeds": sorted({spec.seed for spec in specs}),
+        "rotations": sorted({spec.rotation for spec in specs}),
+        **_one("council_interval_days", {spec.interval for spec in specs}),
+        **_one("size", {spec.size for spec in specs}),
+        **_one("days", {spec.days for spec in specs}),
+        **_one("civilizations", {len(spec.assignment) for spec in specs}),
+    }
+
+
+def _write_run(out: Path, summary: dict[str, object]) -> None:
+    (out / "run.json").write_text(json.dumps(summary, indent=2, default=list) + "\n")
 
 
 def _play(spec: HistorySpec) -> tuple[str, list[Row] | str]:
@@ -164,8 +227,13 @@ def run_batch(out: Path, specs: Sequence[HistorySpec], workers: int) -> dict[str
     out.mkdir(parents=True, exist_ok=True)
     _check_folder(out, specs)
     table = out / "histories.csv"
-    done = done_keys(table)
+    rows_per_history = len(specs[0].assignment) if specs else None
+    if rows_per_history is not None:
+        drop_partial_histories(table, rows_per_history)
+    done = done_keys(table, rows_per_history)
     todo = [spec for spec in specs if base_key(spec) not in done]
+    # The engine is named before the first row, so a stopped batch says what played it.
+    _write_run(out, _summary(specs, finished=False))
     started = time.monotonic()
     new_file = not table.exists()
     with table.open("a", newline="") as handle:
@@ -192,25 +260,16 @@ def run_batch(out: Path, specs: Sequence[HistorySpec], workers: int) -> dict[str
                 futures = [pool.submit(_play, spec) for spec in todo]
                 for future in as_completed(futures):
                     write(future.result())
-    summary: dict[str, object] = {
-        "histories": len(specs),
-        "played_now": len(todo),
-        "already_there": len(specs) - len(todo),
-        "workers": workers,
-        "elapsed_seconds": round(time.monotonic() - started, 1),
-        "engine_version": ENGINE_VERSION,
-        "rule_hash": rule_hash(),
-        "engine_hash": engine_hash(),
-        "specs": sorted({(spec.label, spec.size, spec.days) for spec in specs}),
-        "seeds": sorted({spec.seed for spec in specs}),
-        "rotations": sorted({spec.rotation for spec in specs}),
-        **_one("council_interval_days", {spec.interval for spec in specs}),
-        **_one("size", {spec.size for spec in specs}),
-        **_one("days", {spec.days for spec in specs}),
-        **_one("civilizations", {len(spec.assignment) for spec in specs}),
-        "failed": sorted(failures),
-    }
+    summary = _summary(
+        specs,
+        played_now=len(todo),
+        already_there=len(specs) - len(todo),
+        workers=workers,
+        elapsed_seconds=round(time.monotonic() - started, 1),
+        failed=sorted(failures),
+        finished=True,
+    )
     if failures:
         (out / "failures.txt").write_text("".join(f"{line}\n" for line in sorted(failures)))
-    (out / "run.json").write_text(json.dumps(summary, indent=2, default=list) + "\n")
+    _write_run(out, summary)
     return summary

@@ -689,6 +689,8 @@ def _check_balance(options: GateOptions, run: _Run | None) -> Check:
             "FAIL",
             "the report was made under another engine; run the calibration again",
         )
+    if report.get("batch_finished") is False:
+        return Check("balance", "FAIL", "the report's batch did not finish; run the batch again")
     if run is not None:
         # The report must measure worlds like this one (calibration maps are square).
         config = run.manifest.config

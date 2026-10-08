@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import csv
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import fmean
 
@@ -178,15 +178,31 @@ def evaluate(rows: list[dict[str, str]]) -> dict[str, object]:
     }
 
 
+def _check_whole(rows: list[dict[str, str]], civilizations: object) -> None:
+    """Refuse a history with the wrong number of rows (one cut off part-way): the report
+    certifies what it counts, and running the batch again replays it."""
+    if not isinstance(civilizations, int):
+        return
+    counts = Counter((row["assignment"], row["seed"], row["rotation"]) for row in rows)
+    for (assignment, seed, rotation), count in sorted(counts.items()):
+        if count != civilizations:
+            raise ValueError(
+                f"history {assignment}|{seed}|{rotation} has {count} rows, not {civilizations};"
+                " run the batch again (it replays it)"
+            )
+
+
 def write_report(directory: Path) -> dict[str, object]:
     """Write ``report.md``, ``summary.csv`` and ``report.json`` beside ``histories.csv``."""
     rows = _load(directory)
-    result = evaluate(rows)
     run = (
         json.loads((directory / "run.json").read_text())
         if (directory / "run.json").exists()
         else {}
     )
+    _check_whole(rows, run.get("civilizations"))
+    result = evaluate(rows)
+    result["batch_finished"] = bool(run.get("finished", True))
     result["rule_hash"] = run.get("rule_hash")
     result["engine_hash"] = run.get("engine_hash")
     for key in ("council_interval_days", "size", "days", "civilizations"):
