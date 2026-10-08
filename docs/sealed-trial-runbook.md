@@ -419,6 +419,8 @@ used-up allowance costs a civilization that council (`unavailable`), not the run
 
 ## 9. What to send back
 
+Fill in [the year's record](sealed-trial-record.md) from these, and send them:
+
 - the seal's fingerprint;
 - `..\launch-gate.json`;
 - `spend work\trial`;

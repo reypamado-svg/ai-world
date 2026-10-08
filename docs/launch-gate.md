@@ -18,6 +18,9 @@ their values. `--json` prints the same as JSON, to keep outside the run's folder
 3. **Before launch:** `preflight RUN --launch --signer FINGERPRINT --calibration REPORT --probe`.
    It ends with `ready to launch: sealed by … for 365 days` when it passes.
 
+What each part of the phase's exit sentence rests on, and the year's record to fill in, are in
+[the sealed trial's record](sealed-trial-record.md).
+
 ## The checks
 
 | Check | Title | PASS | WARN | FAIL | Maps to |
