@@ -619,7 +619,7 @@ def doctor(
 ) -> None:
     """Check this computer before the trial: Python, uv, PowerShell, the repository's folder
     and drive, Claude Code and Codex signed in, the variables that would replace their
-    sign-ins, Ollama and its model and context, the GPU, disk, sleep settings and the clock.
+    sign-ins, Ollama and its model and context, the GPU, disk, sleep and the clock.
     It writes nothing and shows no variable's value; it exits 1 if any check fails."""
     from sovereign_world.doctor import DOCTOR_TITLES, machine_checks
 
