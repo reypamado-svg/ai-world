@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { HistoryChanged, ServerSource } from '../src/data/server-source.js';
-import { takeTokenFromLocation, tokenFromLocation } from '../src/data/auth.js';
+import { keepTokenInLocation, takeTokenFromLocation, tokenFromLocation } from '../src/data/auth.js';
 
 const BASE = fileURLToPath(new URL('./fixtures/run-small', import.meta.url));
 const file = (path) => readFile(`${BASE}/${path}`);
@@ -25,9 +25,15 @@ function fakeServer() {
     const answer = async () => {
       if (path === 'api/status') {
         const ids = JSON.parse(await file('ids.json'));
-        return JSON.stringify({ history_epoch: server.epoch, ready: manifest.days.length, people: ids.length });
+        return JSON.stringify({
+          history_epoch: server.epoch,
+          ready: manifest.days.length,
+          people: ids.length,
+          ...(server.status ?? {}),
+        });
       }
       if (path === 'api/run/manifest') return file('manifest.json');
+      if (path === 'api/control') return server.control?.(init) ?? null;
       if (path === 'api/run/seal') return JSON.stringify(server.seal ?? { sealed: false });
       if (path === 'api/run/days') return JSON.stringify(manifest.days);
       if (path.startsWith('api/run/ids?from=')) {
@@ -45,6 +51,7 @@ function fakeServer() {
       return null;
     };
     const body = await answer();
+    if (body instanceof Response) return body;
     const headers = { 'X-History-Epoch': String(server.epoch) };
     if (server.after?.path === path) {
       server.epoch = server.after.epoch;
@@ -114,4 +121,50 @@ test('the token is taken from the fragment and dropped from the address', () => 
   assert.equal(takeTokenFromLocation({ hash: '', href: 'http://x/?run=live' }, hist), null);
   assert.equal(calls.length, 1);
   assert.equal(tokenFromLocation({ hash: '#other=1' }), null);
+});
+
+test('a viewing page never asks to steer the runner', async () => {
+  const runner = { phase: 'paused', day: 5, last_day: 9, exit_code: null };
+  const control = { paused: true, lookahead: 3, shown: 5 };
+  const cases = [
+    [{ role: 'owner', public: false }, false, true],
+    [{ role: 'viewer', public: false }, true, false],
+    [{ role: 'owner', public: true }, true, false],
+  ];
+  for (const [who, viewing, mayControl] of cases) {
+    const server = fakeServer();
+    server.status = { ...who, runner, control };
+    const posted = [];
+    server.control = (init) => {
+      posted.push(JSON.parse(init.body));
+      return JSON.stringify({ runner, control: { ...control, paused: false } });
+    };
+    const src = await ServerSource.open('api', { token: 't', fetch: server.fetch });
+    assert.equal(src.role, who.role);
+    assert.equal(src.isPublic, who.public);
+    assert.equal(src.viewing, viewing);
+    assert.equal(src.mayControl, mayControl);
+    const answer = await src.control({ paused: false });
+    assert.equal(answer === null, !mayControl, JSON.stringify(who));
+    assert.equal(posted.length, mayControl ? 1 : 0);
+  }
+  // A refusal the page did not expect (the role changed) is no answer, not an error.
+  const server = fakeServer();
+  server.status = { role: 'owner', public: false, runner, control };
+  server.control = () => new Response('{"detail":"viewers may not control the run"}', { status: 403 });
+  const src = await ServerSource.open('api', { token: 't', fetch: server.fetch });
+  assert.equal(await src.control({ paused: false }), null);
+  // No runner: never steered either.
+  const plain = await ServerSource.open('api', { token: 't', fetch: fakeServer().fetch });
+  assert.equal(plain.role, 'owner');
+  assert.equal(plain.mayControl, false);
+});
+
+test("a viewer's token is put back in the address, in place", () => {
+  const calls = [];
+  const hist = { state: null, replaceState: (state, title, url) => calls.push(String(url)) };
+  keepTokenInLocation('v'.repeat(40), { href: 'http://x.example/?run=live&day=3' }, hist);
+  assert.deepEqual(calls, [`http://x.example/?run=live&day=3#token=${'v'.repeat(40)}`]);
+  keepTokenInLocation(null, { href: 'http://x.example/' }, hist);
+  assert.equal(calls.length, 1);
 });

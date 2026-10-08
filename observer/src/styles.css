@@ -1,3 +1,8 @@
+/* `hidden` always hides, whatever display a class gives (a `.toggle` is a flex box). */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   /* Where the side panels start: below the top bar, or below the run bar when it is shown. */
   --panel-top: 56px;

@@ -154,7 +154,7 @@ export class Inspector {
         <button class="x" data-act="close" aria-label="Close">×</button></header>
         <dl>
           <dt>ID</dt><dd class="mono">${o.id}</dd>
-          <dt>Civilization</dt><dd><span class="swatch" style="background:${CIV_COLORS[civ]}"></span>${civilizationLabel(CIV_NAMES[civ])} <span class="tag">${rec.provenance ?? 'sample'}</span></dd>
+          <dt>Civilization</dt><dd><span class="swatch"></span>${civilizationLabel(CIV_NAMES[civ])} <span class="tag">${rec.provenance ?? 'sample'}</span></dd>
           <dt>Age</dt><dd>${rec.age} (${rec.sex})</dd>
           <dt>Household</dt><dd class="muted">${rec.household}</dd>
           <dt>Family</dt><dd class="muted">Not recorded in this ${rec.provenance ?? 'sample'}</dd>
@@ -167,6 +167,8 @@ export class Inspector {
           <dt>Life events</dt><dd>${rec.events.join('<br>')}</dd>
         </dl>
         <footer><button data-act="follow" class="${following ? 'on' : ''}">${following ? 'Following' : 'Follow person'}</button></footer>`;
+      // Set through the CSSOM, not a style attribute: the server's CSP refuses inline styles.
+      el.querySelector('.swatch').style.background = CIV_COLORS[civ];
     } else {
       const occ = this.hooks.occupancy().get(o.partOf ?? o.id) ?? [];
       el.innerHTML = `

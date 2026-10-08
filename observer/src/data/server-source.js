@@ -141,12 +141,35 @@ export class ServerSource extends RunSource {
     return Boolean(this.lastStatus?.runner);
   }
 
+  /** This page's role on the server (slice H): 'owner', or 'viewer' for a shared link. */
+  get role() {
+    return this.lastStatus?.role ?? 'owner';
+  }
+
+  /** A public observer (`observe --public`): viewing only, for everyone. */
+  get isPublic() {
+    return Boolean(this.lastStatus?.public);
+  }
+
+  /** Viewing only: a viewer's link, or any page of a public observer. */
+  get viewing() {
+    return this.role === 'viewer' || this.isPublic;
+  }
+
+  /** Whether this page may play, pause or pace a runner: there is one, and it is not viewing. */
+  get mayControl() {
+    return this.hasRunner && !this.viewing;
+  }
+
   /**
    * Ask the runner to play or pause, change its lookahead, or say which day is shown.
    * @param {{ paused?: boolean, lookahead?: number, shown?: number }} body
-   * @returns {Promise<object|null>} the runner and control state, or null without a runner
+   * @returns {Promise<object|null>} the runner and control state, or null without a runner or
+   *   when this page is viewing only
    */
   control(body) {
+    // A viewing page never asks: the server would refuse it anyway (403).
+    if (!this.mayControl) return Promise.resolve(null);
     // One at a time: the server may handle two posts in flight in either order, and the last
     // day asked must be the last one the runner is gated on.
     const next = (this._controlling ?? Promise.resolve()).catch(() => {}).then(() => this._control(body));
@@ -160,7 +183,8 @@ export class ServerSource extends RunSource {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (res.status === 409) return null;
+    // No runner (409), or not this page's to steer (403).
+    if (res.status === 409 || res.status === 403) return null;
     if (!res.ok) throw new Error(`control: HTTP ${res.status}`);
     const state = await res.json();
     if (this.lastStatus) Object.assign(this.lastStatus, state);

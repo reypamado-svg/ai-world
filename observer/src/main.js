@@ -39,10 +39,11 @@ import { CrowdLayout, plansFor } from './world/settlement-plan.js';
 import { VILLAGE_RADIUS_M } from './data/sample/village.js';
 import { RunSource } from './data/run-source.js';
 import { HistoryChanged, ServerSource } from './data/server-source.js';
-import { takeTokenFromLocation } from './data/auth.js';
+import { keepTokenInLocation, takeTokenFromLocation } from './data/auth.js';
 import { ChroniclePanel } from './ui/chronicle.js';
 import { CouncilPanel } from './ui/council-panel.js';
 import { PerspectiveLayer } from './render/perspective-layer.js';
+import { allowStrictCsp } from './render/strict-csp.js';
 import { councilDay, perspectiveDay, perspectiveDayFor } from './data/perspective-source.js';
 import { civilizationLabel } from './data/naming.js';
 import { APPEARANCE_COUNT } from './render/art/paint/people.js';
@@ -63,7 +64,7 @@ const ART_PACK = params.get('art');
 // A recorded day lasts this many display seconds when played (14.4 real minutes at 100×).
 const DAY_S = 86400;
 // The live server's token: read from the fragment once and dropped from the address at once,
-// so only this page's memory holds it.
+// so only this page's memory holds it (a viewer's shared link is put back, slice H).
 const LIVE_TOKEN = LIVE ? takeTokenFromLocation() : null;
 
 /** Open the live run afresh after its history changed: the newest day, with the token in
@@ -352,6 +353,7 @@ class ObserverApp {
     $('btn-day-prev').addEventListener('click', () => step(-1));
     $('btn-day-next').addEventListener('click', () => step(1));
     if (run.live) this.followLive(run);
+    if (run.live) this.showRoleChip(run);
     if (run.hasRunner) this.setUpRunner(run);
     this.setUpPerspective(run);
   }
@@ -472,9 +474,26 @@ class ObserverApp {
     this.camera.setZoom(Math.max(this.camera.zoom, 0.6));
   }
 
+  /** A viewing-only page (slice H): a viewer's shared link, or any page of a public observer.
+   * It shows the run and never steers it. */
+  showRoleChip(run) {
+    const chip = $('role-chip');
+    chip.hidden = !run.viewing;
+    if (!run.viewing) return;
+    chip.textContent = `VIEWING ONLY${run.isPublic ? ' · shared' : ''}`;
+    chip.title = run.isPublic
+      ? 'This observer is shared through a link: everyone watches, nobody can pause or steer the run.'
+      : 'This link is for watching: it cannot pause or steer the run.';
+  }
+
   /** The observer started a runner for this live run (O4): the page opens paused, says which
-   * day it shows, and sets how far ahead the run may go. */
+   * day it shows, and sets how far ahead the run may go. A viewing page only shows the chip. */
   setUpRunner(run) {
+    $('runner-chip').hidden = false;
+    if (!run.mayControl) {
+      this.showRunnerChip();
+      return;
+    }
     $('lookahead-group').hidden = false;
     $('runner-chip').hidden = false;
     const control = run.lastStatus?.control;
@@ -525,8 +544,9 @@ class ObserverApp {
             : phase === 'exited'
               ? `RUNNER · exited (code ${code ?? '?'}) at day ${day}`
               : `RUNNER · ${phase} · day ${day ?? '…'} of ${last ?? '…'}${ahead != null ? ` · ${ahead} ahead` : ''}`;
-    chip.title =
-      'The run goes on only while the page plays, and at most the set number of days ahead of the day shown.';
+    chip.title = run.mayControl
+      ? 'The run goes on only while the page plays, and at most the set number of days ahead of the day shown.'
+      : "The observer's own page plays and pauses the run; this one only watches.";
   }
 
   /** Played time reached the end of the shown day: show the next recorded day, if there is one. */
@@ -742,7 +762,7 @@ class ObserverApp {
       const tl = this.timeline;
       tl.dayStartT = carry && this.t - tl.dayStartT >= DAY_S ? tl.dayStartT + DAY_S : this.t;
     }
-    if (this.runSource.hasRunner) this.runSource.control({ shown: loaded.day }).catch((err) => this.liveError(err));
+    if (this.runSource.mayControl) this.runSource.control({ shown: loaded.day }).catch((err) => this.liveError(err));
     const url = new URL(location.href);
     url.searchParams.set('day', String(loaded.day));
     history.replaceState(null, '', url);
@@ -838,7 +858,7 @@ class ObserverApp {
     const b = $('btn-pause');
     if (b) b.textContent = v ? '▶ Resume' : '❚❚ Pause';
     // A runner this observer started plays and pauses with the page.
-    if (this.runSource?.hasRunner) this.runSource.control({ paused: v }).catch((err) => this.liveError(err));
+    if (this.runSource?.mayControl) this.runSource.control({ paused: v }).catch((err) => this.liveError(err));
     this.showLiveChip?.();
   }
 
@@ -1149,7 +1169,7 @@ class ObserverApp {
     this.tourSeconds = seconds;
     // A runner the observer started is never resumed by the tour: playing would run the world
     // (and may cost AI calls). The display is measured paused instead.
-    const runner = Boolean(this.runSource?.hasRunner);
+    const runner = Boolean(this.runSource?.mayControl);
     if (!runner) this.setPaused(false);
     try {
       for (const [i, [band, zoom]] of TOUR.entries()) {
@@ -1818,6 +1838,8 @@ function showArtChip(pack) {
 
 async function main() {
   const stageEl = $('stage');
+  // The observer server's CSP refuses eval: Pixi's own no-eval polyfills stand in (slice H).
+  await allowStrictCsp(PIXI);
   const pixi = new PIXI.Application();
   await pixi.init({
     resizeTo: stageEl,
@@ -1844,6 +1866,8 @@ async function main() {
     if (LIVE) {
       setStatus('Connecting to the observer server');
       run = await ServerSource.open('api', { token: LIVE_TOKEN });
+      // A viewer's link is its credential: it stays in the address for a reload or a bookmark.
+      if (run.role === 'viewer') keepTokenInLocation(LIVE_TOKEN);
       while (run.latest === null) {
         setStatus('Waiting for the run’s first day');
         await new Promise((resolve) => setTimeout(resolve, LIVE_POLL_MS));
@@ -1862,7 +1886,9 @@ async function main() {
     const designs = Array.from({ length: APPEARANCE_COUNT }, (_, a) => ({ appearance: a }));
     await bakeSceneActors(atlas, { people: designs, caravan: null }, setStatus);
     atlas.finalize();
-    const day = run.nearestDay(Number(params.get('day') ?? (LIVE ? run.latest : run.days[0])));
+    // A viewing page opens on the newest day, following it.
+    const asked = LIVE && run.viewing ? null : params.get('day');
+    const day = run.nearestDay(Number(asked ?? (LIVE ? run.latest : run.days[0])));
     setStatus(`Loading engine day ${day}`);
     extras.population = populationOf(await run.day(day), hexRadiusOf(source.manifest));
     Object.assign(extras, { atlas, assetInfo });
@@ -1917,8 +1943,9 @@ async function main() {
       : ' No river borders the capital tile.';
   }
   app.bindInput();
-  // With a runner the page opens paused: playing runs the world (and may cost AI calls).
-  app.setPaused(Boolean(extras.run?.hasRunner));
+  // With a runner the page opens paused: playing runs the world (and may cost AI calls). A
+  // viewing page steers nothing, so it opens playing.
+  app.setPaused(Boolean(extras.run?.mayControl));
   app.run();
   window.__observer = buildApi(app);
   $('loading').hidden = true;

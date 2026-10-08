@@ -4,6 +4,7 @@ its own machine, and every answer carries the limits and security headers."""
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -295,3 +296,23 @@ def test_a_public_observer_runs_no_world_and_stays_on_this_machine(old_run: Path
     for extra in (["--run-days", "3"], ["--host", "0.0.0.0"]):
         result = runner.invoke(cli_app, ["observe", str(old_run), "--public", *extra])
         assert result.exit_code == 2, result.output
+
+
+def test_the_page_needs_nothing_the_security_policy_refuses() -> None:
+    """The CSP refuses inline styles, inline scripts and event-handler attributes: the page's
+    own code uses none (styles are set through the CSSOM)."""
+    files = [UI_ROOT / "index.html", *sorted((UI_ROOT / "src").rglob("*.js"))]
+    patterns = {
+        "a style attribute": re.compile(r"""\sstyle\s*=\s*["'$]"""),
+        "an inline script": re.compile(r"<script(?![^>]*\bsrc=)[^>]*>"),
+        "an event-handler attribute": re.compile(r"""<[a-z][^>]*\son[a-z]+\s*=\s*["']"""),
+        "a javascript: address": re.compile(r"javascript:"),
+    }
+    found = [
+        f"{path.relative_to(UI_ROOT)}: {what}"
+        for path in files
+        for what, pattern in patterns.items()
+        if pattern.search(path.read_text(encoding="utf-8"))
+    ]
+    assert found == []
+    assert len(files) > 50
