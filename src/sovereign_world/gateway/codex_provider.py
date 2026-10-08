@@ -4,9 +4,10 @@ ChatGPT plan.
 Asked as `codex exec -` with the charter replacing Codex's own instructions
 (`model_instructions_file`), a read-only sandbox, no shell, no web search, no AGENTS.md, no
 environment context, no saved session and no user config, reading the papers from standard
-input and answering as JSON events. The answer is the last agent message; the tokens are the
-finished turn's. The variables that would make Codex use an API key instead of the ChatGPT
-sign-in are left out of its environment.
+input and answering as JSON events. The answer is the last agent message of a turn that
+completed, from a program that exited 0; a turn that failed, or never completed, is no answer,
+whatever it said before. The tokens are the completed turn's. The variables that would make
+Codex use an API key instead of the ChatGPT sign-in are left out of its environment.
 """
 
 from __future__ import annotations
@@ -68,6 +69,7 @@ class CodexProvider(CliProvider):
     def read(self, finished: Finished) -> ModelReply:
         text: str | None = None
         failure = ""
+        completed = failed = False
         tokens_in = tokens_out = 0
         for line in finished.stdout.decode("utf-8", errors="replace").splitlines():
             try:
@@ -85,19 +87,28 @@ class CodexProvider(CliProvider):
                 and isinstance(item.get("text"), str)
             ):
                 text = item["text"]
-            elif kind == "turn.completed" and isinstance(event.get("usage"), dict):
-                usage = event["usage"]
+            elif kind == "turn.completed":
+                completed = True
+                usage = event.get("usage")
+                usage = usage if isinstance(usage, dict) else {}
                 tokens_in = max(0, int(usage.get("input_tokens") or 0))
                 tokens_out = max(0, int(usage.get("output_tokens") or 0))
-            elif kind == "turn.failed" and isinstance(event.get("error"), dict):
-                failure = first_line(str(event["error"].get("message") or ""))
-            elif kind == "error":
+            elif kind == "turn.failed":
+                failed = True
+                error = event.get("error")
+                message = error.get("message") if isinstance(error, dict) else None
+                failure = first_line(str(message or "")) or failure
+            elif kind == "error" and not failure:
+                # Kept only to explain a failure: Codex also reports errors it retries.
                 failure = first_line(str(event.get("message") or ""))
-        if text is None:
-            said = failure or first_line(finished.stderr)
-            if said or finished.code != 0:
+        if text is None or failed or not completed or finished.code != 0:
+            said = failure if failed or finished.code != 0 else ""
+            said = said or first_line(finished.stderr)
+            if failed or finished.code != 0:
                 raise classify(self.name, self.program, said)
-            raise ProviderUnavailable(f"{self.name}: the answer holds no text")
+            if text is None:
+                raise ProviderUnavailable(f"{self.name}: the answer holds no text")
+            raise ProviderUnavailable(f"{self.name}: the turn did not complete")
         return ModelReply(
             text=text, model=self.model, input_tokens=tokens_in, output_tokens=tokens_out
         )

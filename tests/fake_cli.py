@@ -1,6 +1,7 @@
 """Stand-ins for Claude Code's `claude` and OpenAI's `codex`, put first on PATH: each answers as
 the real program's documented output does, and logs what it was asked and which sign-in
-variables it could see. Behaviour by ``FAKE_CLI_MODE``: ok, limit, auth, notjson, hang, exit2."""
+variables it could see. Behaviour by ``FAKE_CLI_MODE``: ok, limit, auth, notjson, hang, exit2,
+partial (an answer, then the turn fails), noturn (an answer, but no completed turn)."""
 
 from __future__ import annotations
 
@@ -82,6 +83,9 @@ if program == "claude":
     if mode == "auth":
         print("Invalid API key · Please run /login")
         sys.exit(1)
+    if mode == "noturn":
+        print(json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": False}))
+        sys.exit(0)
     print(json.dumps({
         "type": "result", "subtype": "success", "is_error": False, "result": reply,
         "usage": {"input_tokens": 1000, "cache_creation_input_tokens": 200,
@@ -90,7 +94,7 @@ if program == "claude":
                        "claude-sonnet-fake": {"outputTokens": 50}},
         "total_cost_usd": 0.01, "num_turns": 1,
     }))
-    sys.exit(0)
+    sys.exit(1 if mode == "partial" else 0)
 events = [{"type": "thread.started", "thread_id": "t"}, {"type": "turn.started"}]
 if mode == "limit":
     events.append({"type": "turn.failed", "error": {"message":
@@ -99,6 +103,17 @@ if mode == "limit":
 elif mode == "auth":
     events.append({"type": "error", "message": "Not logged in. Run codex login."})
     code = 1
+elif mode == "partial":
+    events += [
+        {"type": "item.completed", "item": {"id": "i2", "type": "agent_message", "text": reply}},
+        {"type": "turn.failed", "error": {"message": "The turn failed: stream disconnected"}},
+    ]
+    code = 1
+elif mode == "noturn":
+    events.append(
+        {"type": "item.completed", "item": {"id": "i2", "type": "agent_message", "text": reply}}
+    )
+    code = 0
 else:
     events += [
         {"type": "error", "message": "Reconnecting... 1/5"},

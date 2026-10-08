@@ -137,6 +137,8 @@ def test_codex_is_asked_once_with_the_charter_and_no_api_key(log: Path) -> None:
         ("auth", "not signed in"),
         ("notjson", "expected format|holds no text"),
         ("exit2", "failed \\(something broke\\)"),
+        ("partial", "failed"),
+        ("noturn", "did not complete|holds no text"),
     ],
 )
 def test_signed_in_program_failures_become_provider_errors(
@@ -245,3 +247,15 @@ def test_the_gateway_records_what_the_programs_answer(
     logged = json.dumps(calls(log))
     assert "secret-not-to-be-seen" not in logged
     assert os.environ["ANTHROPIC_API_KEY"] == "secret-not-to-be-seen"
+
+
+def test_a_failed_or_unfinished_codex_turn_is_never_taken_for_an_answer(
+    log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_CLI_MODE", "partial")
+    with pytest.raises(ProviderUnavailable, match="stream disconnected"):
+        _codex().complete(_request())
+    monkeypatch.setenv("FAKE_CLI_MODE", "noturn")
+    with pytest.raises(ProviderUnavailable, match="the turn did not complete"):
+        _codex().complete(_request())
+    assert len(calls(log)) == 2
