@@ -12,13 +12,13 @@ recovers from its last checkpoint without a divergent replay.
 
 | Question | Decision |
 |---|---|
-| Players | Four providers: Anthropic, OpenAI, Google Gemini (its OpenAI-compatible endpoint) and a local Ollama model |
+| Players | Planned as four providers (Anthropic, OpenAI, Gemini, Ollama); changed on 2026-10-08 to **three civilizations at no cost**: Claude through Claude Code (Claude Pro sign-in), ChatGPT through Codex (ChatGPT Plus sign-in), and a local Ollama model |
 | Where it runs | The user's Windows PC first; reachable from outside afterwards, as its own slice |
-| Spending | A hard cap per run |
+| Spending | A hard cap per run; for the free trial, in tokens (6,000,000 in, 1,500,000 out), every price zero |
 | Length | One year (365 days) |
 | Sealing | An Ed25519 public-key signature |
 
-The models, the cap, the seed, the size, the rotation and the pace are chosen on launch day.
+Chosen on 2026-10-08: a 32 by 32 map, councils every 28 days, `--pace 600` (about 2.5 days for the year), the calibration made in the cloud session. The exact model names (as the probe reports them) and the seed are chosen on launch day.
 
 ## Slices
 
@@ -30,8 +30,9 @@ The models, the cap, the seed, the size, the rotation and the pace are chosen on
 | D | Sealing | Done (6bbdff1) |
 | E | The launch gate | Done (1b38673) |
 | F | The live run on the user's PC: progress, pace, `councils`, the runbook | Built; the run itself is the user's |
-| G | Reachable from outside | Planned |
-| H | Docs and close | Planned |
+| G | The free three-civilization trial: Claude Code and Codex adapters, 2-4 civilizations in the calibration and the gate, token caps, the runbook | Built (G1-G4); the balance report in G5 |
+| H | Reachable from outside | Planned |
+| I | Docs and close | Planned |
 
 ## A as built
 

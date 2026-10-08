@@ -1,20 +1,31 @@
 # The Sealed Trial: runbook for a Windows PC
 
 This is the step-by-step for running the sealed trial world on your own Windows PC: one world,
-four civilizations, each played by a different AI model (Anthropic, OpenAI, Google Gemini and a
-local Ollama model), for one year (365 days), with a hard spending cap, sealed with your key.
+three civilizations, each played by a different AI, for one year (365 days), sealed with your
+key, at **no cost beyond the subscriptions you already have**:
+
+| Civilization | Played by | Reached through | Paid by |
+|---|---|---|---|
+| 1 | Claude | Claude Code (`claude`), signed in with your Claude plan | your Claude Pro plan |
+| 2 | ChatGPT | Codex (`codex`), signed in with your ChatGPT plan | your ChatGPT Plus plan |
+| 3 | a local model | Ollama on this PC | nothing |
+
+No API key is used anywhere. The run keeps a hard cap on the tokens its councils use, so a
+runaway cannot eat your plans' allowances.
 
 Every command below is for **PowerShell 7** (`pwsh`), run from the project folder. What each
 launch-gate line means, and what to do about a `FAIL`, is in [the launch gate](launch-gate.md).
 What the commands do in general is in [the operator guide](rules-laboratory.md).
 
 **The rules that never bend:**
-- Keys live only in the PowerShell window's environment. They are typed in with
-  `Read-Host -MaskInput`, never written to a file, never pasted into a command line, never
-  echoed. They die with the window.
+- No API key is set in the window that runs the world: Claude Code and Codex would use a key
+  instead of your sign-in (and bill it). The run leaves such variables out of the programs'
+  environment anyway, and the launch gate warns when one is set.
+- The only secret you type is the seal key, with `Read-Host -MaskInput`, never into a file,
+  never echoed, and only for the seal step.
 - The world can be watched (`observe`) but not edited. Nothing here changes a run except `run`.
-- Once the run is sealed, do not update the code on this PC (`git pull`) until the year is over:
-  a sealed run refuses other code (exit code 4).
+- Once the run is sealed, do not update the project's code on this PC (`git pull`) until the
+  year is over: a sealed run refuses other code (exit code 4).
 
 ## 1. Before the day
 
@@ -50,189 +61,208 @@ Set `$env:PYTHONUTF8 = "1"` in **every** new window: it makes Python read and wr
 Windows console. (Without it nothing breaks: a character the console cannot show is printed as
 `?`.)
 
+**Claude Code.** Install it, sign in once with your Claude account (the subscription, not an
+API key), and keep it from updating itself during the year:
+
+```powershell
+winget install Anthropic.ClaudeCode
+claude
+[Environment]::SetEnvironmentVariable("DISABLE_AUTOUPDATER", "1", "User")
+claude auth status
+```
+
+In `claude`, type `/login`, choose your Claude account and finish in the browser, then `/exit`.
+`claude auth status` must show `"authMethod": "claude.ai"`. (If it shows an API key, remove
+that variable; see "No API keys" below.)
+
+**Codex.** Install it with OpenAI's own installer (the native `codex.exe`) and sign in with
+ChatGPT:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+codex login
+codex login status
+```
+
+`codex login` opens the browser; choose "Sign in with ChatGPT". `codex login status` must say
+you are logged in using ChatGPT. Open a new PowerShell window afterwards so both programs are on
+PATH.
+
+**No API keys.** Make sure none is set, for this window and for your user:
+
+```powershell
+Remove-Item Env:ANTHROPIC_API_KEY, Env:ANTHROPIC_AUTH_TOKEN, Env:ANTHROPIC_BASE_URL, Env:CLAUDE_CODE_OAUTH_TOKEN, Env:CODEX_API_KEY, Env:CODEX_ACCESS_TOKEN, Env:OPENAI_API_KEY -ErrorAction SilentlyContinue
+[Environment]::GetEnvironmentVariable("ANTHROPIC_API_KEY", "User")
+[Environment]::GetEnvironmentVariable("CODEX_API_KEY", "User")
+```
+
+The last two lines must print nothing.
+
 **Ollama.** Install it from ollama.com, then give it a context large enough for a council. A
 council's papers run to 25,000-30,000 tokens; Ollama's default context is far smaller and it
-cuts a longer prompt **silently**, which shows up as `malformed` councils. Set it for your user
-and restart Ollama (quit it from the tray and start it again):
+cuts a longer prompt **silently**, which shows up as `malformed` councils. Set it for your user,
+restart Ollama (quit it from the tray and start it again), and fetch the model:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("OLLAMA_CONTEXT_LENGTH", "32768", "User")
-ollama pull YOUR-LOCAL-MODEL
+ollama pull gemma3:12b
 ollama ps
 ```
 
-`ollama ps` (while the model is loaded, for example after the probe in step 2) shows the
-context it holds. Choose a local model your PC can answer with in time: each council is up to
-30,000 tokens in and up to `max_output_tokens` out, within `timeout_seconds`; a reply after
-the time is up is thrown away (`late`). The rehearsal (step 3) shows whether it copes. If it
-is too slow, pick a smaller model or raise `timeout_seconds` before sealing (the budgets are
-sealed, and a larger `max_output_tokens` raises the worst-case cost).
+`gemma3:12b` fits a 16 GB card with a 32,768-token context and answers in JSON well. An
+alternative is `qwen2.5:14b-instruct`; with it, also set `OLLAMA_KV_CACHE_TYPE` to `q8_0` the
+same way, so its context fits on the card. Avoid "thinking" models (Qwen3, DeepSeek-R1): they
+spend the answer's budget on thought and run past the time limit. `ollama ps` (while the model
+is loaded, for example after the probe in step 2) must show `100% GPU` and the context size.
+The rehearsal (step 3) shows whether it copes.
 
 ## 2. The settings file
 
-Write `work\trial.toml` with your choices. It holds no secrets: only the names of the
-variables that hold the keys.
+Write `work\trial.toml`. It holds no secrets.
 
 ```toml
 [sovereigns."civilization:0000000001"]
-provider = "anthropic"
-model = "ANTHROPIC-MODEL"
+provider = "claude-code"
+label = "claude"
+model = "claude-sonnet-5-5"
 
 [sovereigns."civilization:0000000002"]
-provider = "openai"
-model = "OPENAI-MODEL"
+provider = "codex"
+label = "chatgpt"
+model = "gpt-6.1-sol"
+effort = "medium"
 
 [sovereigns."civilization:0000000003"]
 provider = "compatible"
-label = "gemini"
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
-token_env = "GEMINI_API_KEY"
-model = "GEMINI-MODEL"
-
-[sovereigns."civilization:0000000004"]
-provider = "compatible"
 label = "ollama"
 base_url = "http://127.0.0.1:11434/v1"
-model = "OLLAMA-MODEL"
+model = "gemma3:12b"
 
 [budgets]
-timeout_seconds = 300
+timeout_seconds = 600
 max_output_tokens = 8000
 
 [spend]
-max_cost_usd = 100
+max_input_tokens = 6000000
+max_output_tokens = 1500000
 reserve_councils = 1
-unknown_model = "highest"
 
-[spend.prices."ANTHROPIC-MODEL"]
-input_per_million_usd = 3
-output_per_million_usd = 15
+[spend.prices."claude-sonnet-5-5"]
+input_per_million_usd = 0
+output_per_million_usd = 0
 
-[spend.prices."OPENAI-MODEL"]
-input_per_million_usd = 3
-output_per_million_usd = 15
+[spend.prices."gpt-6.1-sol"]
+input_per_million_usd = 0
+output_per_million_usd = 0
 
-[spend.prices."GEMINI-MODEL"]
-input_per_million_usd = 3
-output_per_million_usd = 15
-
-[spend.prices."OLLAMA-MODEL"]
+[spend.prices."gemma3:12b"]
 input_per_million_usd = 0
 output_per_million_usd = 0
 ```
 
-Replace every `...-MODEL` with the model's name and every price with the provider's current
-price per million tokens (the figures above are placeholders, not prices). `max_cost_usd` is
-your cap in US dollars.
-
-- **Price names must match what answers.** The table is looked up by the model name the
-  provider reports in its reply, which can differ from the name you asked for (a dated name, or
-  a fallback). The probe in step 4 prints it; a model missing from the table is charged at the
-  table's dearest rate (`unknown_model = "refuse"` stops the run instead). Claude may fall back
-  to another model when a request is refused; list that model too.
-- **Thinking models** spend part of `max_output_tokens` on thinking. If replies come back empty
-  or cut off in the rehearsal, raise `max_output_tokens`.
-- `reserve_councils` is how many worst-case council rounds the cap keeps in hand; the run stops
-  cleanly before a day that could break the cap (exit code 3).
+- **The model names.** Claude Pro is best spent on Sonnet; the ChatGPT models offered to Codex
+  depend on your account. The probe in step 2 prints the name each model answers with: if it
+  differs from what the file says, put the probe's name in both places (the sovereign's `model`
+  and its `[spend.prices."..."]` row) and make the world again.
+- **Prices are zero**, because nothing is billed per token. Every model still needs its row.
+- **The cap is in tokens:** 6,000,000 in and 1,500,000 out for the year, about 31 worst-case
+  council rounds (the 14 regular councils and room for crises). Real councils use far less; the
+  run stops cleanly (exit code 3) only if something runs away.
+- **`effort`** is how hard ChatGPT thinks (`low`, `medium`, `high`); medium keeps each council
+  within its time and your plan's allowance.
+- **`timeout_seconds`** is how long one model may take; 600 leaves room for the programs to
+  start and the local model to write. A reply after that is thrown away (`late`).
+- The output budget (`max_output_tokens`) is passed to the local model; Claude Code and Codex
+  take no such setting, so for them the time limit and the reply's size limit bound a council.
 
 ## 3. The balance report
 
 The launch gate wants a balance calibration made under this code, at the trial's council
-interval, map size and number of civilizations. Thousands of scripted histories, no model:
+interval, map size and number of civilizations. It is already made: 1,500 scripted histories of
+three civilizations on 32 by 32 maps, councils every 28 days, in
+`docs\calibration\2026-10-trial-3civ`. Make it again only if the gate's `balance` line says
+"another engine" (the engine changed since):
 
 ```powershell
-& .venv\Scripts\python.exe -m sovereign_world.calibration run --out docs\calibration\2026-10-trial --council-interval 28 --size 32 --quick
-& .venv\Scripts\python.exe -m sovereign_world.calibration run --out docs\calibration\2026-10-trial --council-interval 28 --size 32 --seeds 0-249 --workers auto
-& .venv\Scripts\python.exe -m sovereign_world.calibration report docs\calibration\2026-10-trial
+& .venv\Scripts\python.exe -m sovereign_world.calibration run --out docs\calibration\2026-10-trial-3civ-again --civilizations 3 --council-interval 28 --size 32 --seeds 0-249 --workers auto
+& .venv\Scripts\python.exe -m sovereign_world.calibration report docs\calibration\2026-10-trial-3civ-again
 ```
 
-The `--quick` run (a minute) checks everything works; delete its folder before the real one,
-or give the real one another `--out`. The real run takes hours (about 2.4 hours at 32 by 32 on
-three cores; more for a larger map). It can be stopped and run again: it carries on. Use the
-trial's own `--size` (the map must be square) and `--council-interval`. It must be made again
-if the engine changes before launch. It can also be made elsewhere and copied here.
+It takes a few hours, and can be stopped and run again: it carries on.
 
 ## 4. Keys
 
-In the window that will run the world:
-
-```powershell
-$env:ANTHROPIC_API_KEY = Read-Host -MaskInput "Anthropic key"
-$env:OPENAI_API_KEY = Read-Host -MaskInput "OpenAI key"
-$env:GEMINI_API_KEY = Read-Host -MaskInput "Gemini key"
-Test-Path Env:ANTHROPIC_API_KEY
-```
-
-`Test-Path` says `True` without showing the key. To keep a record of the window, start a
-transcript **after** typing the keys (masked input never shows in it):
+There are none to type for the models: Claude Code and Codex use your sign-in, and Ollama needs
+none. The only secret is the seal key, in step 4. To keep a record of the window, start a
+transcript:
 
 ```powershell
 Start-Transcript -Path ..\trial-console-1.txt
 ```
-
-Ollama on this computer needs no key.
 
 ## 5. The steps
 
 ### Step 1: make the world
 
 ```powershell
-& .venv\Scripts\sovereign-world.exe init work\trial --seed SEED --width 32 --height 32 --council-interval 28 --sovereigns work\trial.toml
+& .venv\Scripts\sovereign-world.exe init work\trial --seed SEED --width 32 --height 32 --civilizations 3 --council-interval 28 --sovereigns work\trial.toml
 ```
 
 Choose the seed. `--start-rotation N` rotates the starts if you want another assignment of
 start sites (0 is the world as generated). `--crisis-gap` is 7 by default.
 
-### Step 2: the first gate, and the cost
+### Step 2: the first gate, and the token cap
 
 ```powershell
-& .venv\Scripts\sovereign-world.exe preflight work\trial --calibration docs\calibration\2026-10-trial --probe
+& .venv\Scripts\sovereign-world.exe preflight work\trial --calibration docs\calibration\2026-10-trial-3civ --probe
 & .venv\Scripts\sovereign-world.exe spend work\trial --dry-run
 ```
 
-`--probe` asks each model one tiny question (pennies; nothing is recorded). Fix every `FAIL`
-([the launch gate](launch-gate.md) says what each means) and read every `WARN`. `spend
---dry-run` shows the worst-case council round and how many the cap covers: a year at 28 days
-holds 14 regular councils, plus crisis councils.
+`--probe` asks each model one tiny question (nothing is recorded); for Claude Code and Codex it
+also shows the program's version and how it is signed in. Fix every `FAIL`
+([the launch gate](launch-gate.md) says what each means) and read every `WARN`: a `keys` warning
+names an API-key variable to remove. `spend --dry-run` shows the worst-case council round and
+how many the token cap covers: a year at 28 days holds 14 regular councils, plus crisis
+councils.
 
 ### Step 3: the rehearsal
 
-A second world with the same settings, run for 31 days with real models and a small cap, to see
-every provider hold two councils with real prompts. It is not sealed and is thrown away after.
+A second world with the same settings, run for 29 days with the real models, so each
+civilization holds two councils (days 0 and 28) with real prompts and real time limits. It is
+not sealed and is thrown away after.
 
 ```powershell
-& .venv\Scripts\sovereign-world.exe init work\rehearsal --seed SEED --width 32 --height 32 --council-interval 28 --sovereigns work\trial.toml
+& .venv\Scripts\sovereign-world.exe init work\rehearsal --seed SEED --width 32 --height 32 --civilizations 3 --council-interval 28 --sovereigns work\trial.toml
 & .venv\Scripts\sovereign-world.exe preflight work\rehearsal --probe
-& .venv\Scripts\sovereign-world.exe run work\rehearsal --days 31 --spend-limit 10
+& .venv\Scripts\sovereign-world.exe run work\rehearsal --days 29
 & .venv\Scripts\sovereign-world.exe spend work\rehearsal
 & .venv\Scripts\sovereign-world.exe councils work\rehearsal --errors
 & .venv\Scripts\sovereign-world.exe verify work\rehearsal
 ```
 
-(The rehearsal's `preflight` has no balance report, so its `balance` line is a `WARN`.) The
-`--spend-limit` must cover at least two worst-case rounds as `spend --dry-run` showed them, or
-the rehearsal stops before its second council day (exit code 3); raise the 10 if it does not.
+(The rehearsal's `preflight` has no balance report, so its `balance` line is a `WARN`.)
 
 While it runs, `run` prints a line as each council is saved:
 
 ```
-run 3f2a9c1e day 0 -> 31, councils every 28 days, cap $10.00
-  day 0: civilization:0000000001 anthropic ANTHROPIC-MODEL accepted, 24,512 in, 1,830 out, $0.1010, 41.2 s
+run 3f2a9c1e day 0 -> 29, councils every 28 days, cap 6,000,000 input tokens, 1,500,000 output tokens
+  day 0: civilization:0000000001 claude claude-sonnet-5-5 accepted, 24,512 in, 1,830 out, $0.0000, 41.2 s
 ...
-day 0 councils: 4 in 212.4 s; spent $0.31 of $10.00 (97,120 in, 7,004 out)
-checkpoint saved at day 30
-advanced to day 31 (...)
+day 0 councils: 3 in 212.4 s; spent $0.0000 (73,120 in of 6,000,000, 5,004 out of 1,500,000)
+advanced to day 29 (...)
 ```
 
 What to look for in `councils --errors`:
 - every civilization `accepted` (or `repaired`: the first reply could not be read, the second
   could);
-- no `timeout`, `late` or `malformed` from Gemini or Ollama. `malformed` from Ollama usually
-  means the context is too small (section 1); `late` or `timeout` means the model is too slow
-  for `timeout_seconds`;
-- no `answered by` or `unpriced` lines: if there are, add those names to the price table;
-- the council times on the `run` lines, against `timeout_seconds`;
-- the cost of a round, times 14, against your cap.
+- `unavailable` with "usage limit reached": your plan's allowance ran out for now; the
+  civilization does nothing that council and carries on at the next. If it happens in the
+  rehearsal, choose a lighter model or effort;
+- `unavailable` with "not signed in": sign the program in again (section 1);
+- `malformed` from Ollama usually means the context is too small (section 1); `late` or
+  `timeout` means the model is too slow for `timeout_seconds`;
+- no `answered by` lines: if there are, the probe's model names were not used (section 2);
+- the council times on the `run` lines, against `timeout_seconds`.
 
 If any of this changes `work\trial.toml`, make the trial world again (it is still on day 0 and
 costs nothing to remake):
@@ -259,8 +289,8 @@ code on this PC.
 ### Step 5: the launch gate
 
 ```powershell
-& .venv\Scripts\sovereign-world.exe preflight work\trial --launch --signer FINGERPRINT --days 365 --calibration docs\calibration\2026-10-trial --probe
-& .venv\Scripts\sovereign-world.exe preflight work\trial --launch --signer FINGERPRINT --days 365 --calibration docs\calibration\2026-10-trial --json > ..\launch-gate.json
+& .venv\Scripts\sovereign-world.exe preflight work\trial --launch --signer FINGERPRINT --days 365 --calibration docs\calibration\2026-10-trial-3civ --probe
+& .venv\Scripts\sovereign-world.exe preflight work\trial --launch --signer FINGERPRINT --days 365 --calibration docs\calibration\2026-10-trial-3civ --json > ..\launch-gate.json
 ```
 
 The first must end with `ready to launch: sealed by ...`. The second keeps the record, outside
@@ -272,9 +302,9 @@ the run's folder.
 & .venv\Scripts\sovereign-world.exe run work\trial --days 365 --pace 600
 ```
 
-`--pace` is how many seconds to wait between days (section 8); leave it out to run as fast as
-the models answer. To watch, open a **second** window (no keys needed there) and serve the run
-to your browser:
+`--pace` is how many seconds to wait between days (section 8). At 600, a council falls every 4.7
+hours, which spreads the councils over your plans' 5-hour allowance windows. To watch, open a
+**second** window and serve the run to your browser:
 
 ```powershell
 $env:PYTHONUTF8 = "1"
@@ -293,21 +323,19 @@ open a new window and:
 ```powershell
 cd C:\ai-world
 $env:PYTHONUTF8 = "1"
-$env:ANTHROPIC_API_KEY = Read-Host -MaskInput "Anthropic key"
-$env:OPENAI_API_KEY = Read-Host -MaskInput "OpenAI key"
-$env:GEMINI_API_KEY = Read-Host -MaskInput "Gemini key"
 & .venv\Scripts\sovereign-world.exe verify work\trial --signer FINGERPRINT
 & .venv\Scripts\sovereign-world.exe run work\trial --days 365 --pace 600
 ```
 
-`run` carries on from what was saved and stops at the seal's 365 days, whatever `--days` says.
-A council already answered before the stop is reused: its model is not asked again.
+There are no keys to type again: the programs stay signed in. `run` carries on from what was
+saved and stops at the seal's 365 days, whatever `--days` says. A council already answered
+before the stop is reused: its model is not asked again.
 
 | `run` exit code | Meaning | What to do |
 |---|---|---|
 | 0 | done, or stopped by Ctrl+C | run again to go on |
 | 1 | `cannot resume: ...` | the journal is not this run's or was changed; send the message back |
-| 3 | stopped before a day that could break the spending cap | the cap is sealed; the trial ends there |
+| 3 | stopped before a day that could break the token cap | the cap is sealed; the trial ends there |
 | 4 | `seal refused: ...` | the settings, code or addresses changed since sealing; undo the change |
 
 ## 6. Keeping the PC awake
@@ -332,23 +360,26 @@ Copy-Item -Recurse work\trial ..\backups\trial-day-N
 
 Copying the folder while `run` is writing can copy a half-written database.
 
-## 8. Time and pace
+## 8. Time, pace and your plans' allowances
 
 Dubai time is UTC+4 all year (no daylight saving); `Get-Date` shows your local time, and the
 launch gate's clock line is in UTC. Quiet days take well under a second; a council day takes as
-long as the four models take to answer (a few minutes). With a pace the year takes about
+long as the three models take to answer (a few minutes). With a pace the year takes about
 364 times the pace, plus the council days:
 
 | `--pace` | A day every | The year takes about | A council every |
 |---|---|---|---|
 | 0 | as fast as possible | 1-2 hours (the 14 council days) | a few minutes |
-| 60 | minute | 6 hours | 28 minutes |
 | 600 | 10 minutes | 2.5 days | 4.7 hours |
 | 3600 | hour | 15 days | 28 hours |
-| 86400 | day | a year | 4 weeks |
 
 For example, started at 09:00 Dubai time with `--pace 600`, councils fall at about 09:00, 13:40,
 18:20 and 23:00 on the first day, and the year ends about two and a half days later.
+
+Claude Pro and ChatGPT Plus each give an allowance per 5-hour window and per week. One council
+is one or two large messages per program, so at `--pace 600` each window holds at most one or
+two councils. Using Claude or ChatGPT yourself during the run draws on the same allowance. A
+used-up allowance costs a civilization that council (`unavailable`), not the run.
 
 ## 9. What to send back
 
@@ -358,15 +389,18 @@ For example, started at 09:00 Dubai time with `--pace 600`, councils fall at abo
 - `councils work\trial --json` and `councils work\trial --errors`;
 - `verify work\trial --signer FINGERPRINT` after every interruption and at the end;
 - the console transcripts (`..\trial-console-*.txt`), with their exit codes;
+- `claude --version` and `codex --version` at the start and the end;
 - the size of the run's folder (`Get-ChildItem -Recurse work\trial | Measure-Object -Sum Length`).
 
 ## 10. Checks only your PC can make
 
-The test suite runs on Linux; these Windows details are confirmed by the steps above:
-- `Read-Host -MaskInput` works (PowerShell 7.1 or later);
+The test suite runs on Linux with stand-ins for the two programs; these are confirmed by the
+probe and the rehearsal:
+- `claude -p` and `codex exec` answer as their documentation says (the probe's line for each);
+- what a used-up allowance looks like (`unavailable` with "usage limit" in `councils --errors`);
+- Windows finds `claude.exe` and `codex.exe` (the gate's `endpoints` line names the paths);
+- `DISABLE_AUTOUPDATER` keeps Claude Code's version for the year (compare `claude --version`);
 - one Ctrl+C during a `--pace` wait ends with `stopped at day N`, and `verify` passes after;
 - `preflight` and `run` print cleanly in the console and into `launch-gate.json`;
-- Ollama and Gemini accept the council requests (`response_format` JSON, `max_tokens`), report
-  their token use and a model name in the price table, and answer in time (the probe and the
-  rehearsal);
+- Ollama holds its 32,768-token context on the card (`ollama ps`) and answers in time;
 - the run folder is on a local NTFS drive.
