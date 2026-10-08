@@ -213,7 +213,7 @@ def scrub(text: str, secrets: Iterable[str]) -> str:
     return line
 
 
-def _token_values(environ: Mapping[str, str], pins: Mapping[str, Any]) -> list[str]:
+def token_values(environ: Mapping[str, str], pins: Mapping[str, Any]) -> list[str]:
     names = {pin.token_env for pin in pins.values() if pin.token_env}
     return [environ[name] for name in sorted(names) if environ.get(name)]
 
@@ -544,7 +544,7 @@ def _check_probe(
     if not options.probe or prober is None:
         return Check("probe", "SKIP", "not asked (--probe makes one tiny call per provider)")
     spend = run.manifest.spend
-    secrets = _token_values(environ, run.pins)
+    secrets = token_values(environ, run.pins)
     timeout = min(PROBE_TIMEOUT_SECONDS, run.manifest.budgets.timeout_seconds)
     failed: list[str] = []
     warned: list[str] = []

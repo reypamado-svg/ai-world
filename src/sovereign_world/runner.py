@@ -12,6 +12,12 @@ council, and the journal ends as an unbroken run's would. Saved councils that ca
 day's refuse the resume (`ResumeRefused`) before anything is asked or written. The first Ctrl+C
 (`interruptible`) stops the loop after the day under way.
 
+Two hooks let `sovereign-world run` show its progress: `on_council` hears each council the moment
+it is saved (with the seconds since its day began), and `on_progress` each saved day (its new
+councils, what the run has spent, how long the day took, and whether a checkpoint was saved).
+Neither reaches the world, its random streams or its journal; the times they hear are measured
+here and recorded nowhere. A pace (`pace_seconds`) waits between days; a stop ends the wait.
+
 A sealed run (`seal.py`) is checked against its seal before anything else: a changed manifest,
 seal, code or provider refuses it (`SealRefused`), hosted models are reached only at their
 sealed addresses, and the loop stops at the seal's planned days.
@@ -32,7 +38,10 @@ import os
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping
+from copy import deepcopy
+from dataclasses import dataclass
 from types import FrameType
 from typing import TextIO
 
@@ -56,7 +65,7 @@ from sovereign_world.rng import StableRng
 from sovereign_world.rulehash import rule_hash
 from sovereign_world.scripted import Sovereign
 from sovereign_world.seal import SealRefused, check_seal, stored_seal
-from sovereign_world.spend import stop_reason, tally
+from sovereign_world.spend import Tally, stop_reason, tally
 from sovereign_world.state import WorldState
 
 PAUSE = "pause"
@@ -107,6 +116,36 @@ class RunControl:
                 # A timed wait lets Ctrl+C through on every platform.
                 self._changed.wait(timeout=0.5)
             return not self._stopped
+
+    def wait_pace(self, seconds: float) -> bool:
+        """Wait `seconds` between days, or less if stopped; whether the loop may go on."""
+        deadline = time.monotonic() + seconds
+        with self._changed:
+            while not self._stopped:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                # Short steps, as in `wait_to_advance`, so Ctrl+C reaches it on Windows too.
+                self._changed.wait(timeout=min(0.5, left))
+            return not self._stopped
+
+
+@dataclass(frozen=True)
+class DayProgress:
+    """One saved day, as `run` shows it: never recorded."""
+
+    day: int
+    councils: tuple[CouncilRecord, ...]
+    """The councils held and saved for this day (none reused from an interrupted run)."""
+    spent: Tally
+    """What the run has spent in all, this day included."""
+    elapsed_seconds: float
+    checkpoint: bool
+    """Whether a checkpoint was saved after this day."""
+
+
+CouncilHook = Callable[[CouncilRecord, float], None]
+ProgressHook = Callable[[DayProgress], None]
 
 
 class SpendCapReached(Exception):
@@ -165,6 +204,9 @@ def run_days(
     on_start: Callable[[WorldState, int], None] | None = None,
     on_day: Callable[[WorldState], None] | None = None,
     spend_limit_usd: float | None = None,
+    on_council: CouncilHook | None = None,
+    on_progress: ProgressHook | None = None,
+    pace_seconds: float = 0.0,
 ) -> WorldState:
     """Advance the run's latest verified state by up to `days` days, saving each day and its
     councils, then a checkpoint. A control may hold or stop the loop between days; a run
@@ -172,7 +214,10 @@ def run_days(
 
     With a spending cap (``manifest.spend``), the loop stops cleanly before any day that could
     take the run past it, saves a checkpoint, and raises ``SpendCapReached``. ``spend_limit_usd``
-    may lower the cost cap for this session; it never raises it."""
+    may lower the cost cap for this session; it never raises it.
+
+    ``pace_seconds`` waits that long after each saved day but the last; a stop ends the wait,
+    and the loop then stops as it would between days."""
     crash = _crash_point()
     stored = store.manifest()
     seal = stored_seal(store)
@@ -201,10 +246,13 @@ def run_days(
     # Every council saved counts once, those of the interrupted day included.
     spent = tally(records, manifest.spend)
     written: list[CouncilRecord] = []
+    day_started = time.perf_counter()
 
     def save(record: CouncilRecord) -> None:
         store.append_record(COUNCIL_RECORD, record.model_dump(mode="json"))
         written.append(record)
+        if on_council is not None:
+            on_council(record, time.perf_counter() - day_started)
         _crash_if(crash, "after_council", record.day, len(written))
 
     for sovereign in sovereigns.values():
@@ -213,8 +261,10 @@ def run_days(
             sovereign.resume_from(resumed)
     if on_start is not None:
         on_start(state, days)
+    if pace_seconds > 0 and control is None:
+        control = RunControl()
     advanced = 0
-    for _ in range(days):
+    for index in range(days):
         if control is not None and not control.wait_to_advance():
             break
         _crash_if(crash, "before_day", state.day)
@@ -224,6 +274,7 @@ def run_days(
                 store.save_checkpoint(state)
             raise SpendCapReached(reason, state)
         written.clear()
+        day_started = time.perf_counter()
         transition = advance_day(state, rng, sovereigns=sovereigns)
         _crash_if(crash, "after_councils", state.day)
         if resumed.refused is not None:
@@ -240,9 +291,22 @@ def run_days(
         advanced += 1
         if on_day is not None:
             on_day(state)
-        if state.day % CHECKPOINT_INTERVAL == 0:
+        checkpoint = state.day % CHECKPOINT_INTERVAL == 0
+        if checkpoint:
             store.save_checkpoint(state)
             _crash_if(crash, "after_checkpoint", state.day)
+        if on_progress is not None:
+            on_progress(
+                DayProgress(
+                    day=state.day,
+                    councils=tuple(written),
+                    spent=deepcopy(spent),
+                    elapsed_seconds=time.perf_counter() - day_started,
+                    checkpoint=checkpoint,
+                )
+            )
+        if pace_seconds > 0 and index < days - 1 and control is not None:
+            control.wait_pace(pace_seconds)
     if advanced:
         store.save_checkpoint(state)
     return state
@@ -297,6 +361,7 @@ def controlled(
     out: TextIO = sys.stdout,
     spend_limit_usd: float | None = None,
     control: RunControl | None = None,
+    pace_seconds: float = 0.0,
 ) -> WorldState:
     """`run_days` held by `pause` and `resume` lines on `commands`, reporting on `out`. A run
     stopped by its spending cap says `stopped <day> spend_cap` instead of `done <day>`."""
@@ -332,6 +397,7 @@ def controlled(
             on_start=started,
             on_day=lambda day: say(f"day {day.day}"),
             spend_limit_usd=spend_limit_usd,
+            pace_seconds=pace_seconds,
         )
     except SpendCapReached as stop:
         say(f"stopped {stop.state.day} spend_cap")

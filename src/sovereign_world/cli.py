@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import sys
 import tomllib
 from pathlib import Path
 from uuid import uuid4
@@ -23,15 +25,24 @@ from sovereign_world.config import (
     SpendConfig,
     WorldConfig,
 )
-from sovereign_world.gateway.records import ResumeRefused, recorded_councils
+from sovereign_world.gateway.records import CouncilRecord, ResumeRefused, recorded_councils
 from sovereign_world.persistence import WorldStore
-from sovereign_world.preflight import GateOptions, launch_gate, offline_checks, render
+from sovereign_world.preflight import (
+    GateOptions,
+    launch_gate,
+    offline_checks,
+    render,
+    scrub,
+    token_values,
+)
 from sovereign_world.preflight import passed as gate_passed
 from sovereign_world.replay import replay_run, verify_whole
 from sovereign_world.rulehash import engine_hash, rule_hash
 from sovereign_world.runner import (
+    DayProgress,
     RunControl,
     SpendCapReached,
+    _with_limit,
     controlled,
     interruptible,
     run_days,
@@ -46,10 +57,20 @@ from sovereign_world.seal import (
     grouped,
     load_key,
     make_seal,
+    pins_of,
     stored_seal,
 )
-from sovereign_world.spend import Tally, prompt_round, stop_reason, tally, worst_case_round
-from sovereign_world.state import build_initial_state, validate_world
+from sovereign_world.spend import (
+    Tally,
+    cost_of,
+    council_summary,
+    outcome_word,
+    prompt_round,
+    stop_reason,
+    tally,
+    worst_case_round,
+)
+from sovereign_world.state import WorldState, build_initial_state, validate_world
 
 app = typer.Typer(
     help="Create, run, inspect, checkpoint, replay, and verify a sovereign world.",
@@ -57,11 +78,25 @@ app = typer.Typer(
 )
 
 
+def utf8_or_replace(stream: object) -> None:
+    """Let a console that cannot show every character print a stand-in instead of failing."""
+    encoding = str(getattr(stream, "encoding", "") or "").lower().replace("-", "")
+    if encoding != "utf8" and isinstance(stream, io.TextIOWrapper):
+        stream.reconfigure(errors="replace")
+
+
+@app.callback()
+def _console() -> None:
+    """Create, run, inspect, checkpoint, replay, and verify a sovereign world."""
+    utf8_or_replace(sys.stdout)
+    utf8_or_replace(sys.stderr)
+
+
 def _settings(path: str | None) -> dict[str, object]:
     """Sovereign assignments and budgets from a TOML file, checked before they are frozen."""
     if path is None:
         return {}
-    data = tomllib.loads(Path(path).read_text())
+    data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     unknown = set(data) - {"sovereigns", "budgets", "spend"}
     if unknown:
         raise typer.BadParameter(f"unknown settings: {sorted(unknown)}")
@@ -162,6 +197,15 @@ def run(
             " dollars. It may lower the run's own cap for this session, never raise it."
         ),
     ),
+    pace: float = typer.Option(
+        0.0,
+        "--pace",
+        min=0,
+        help=(
+            "Seconds to wait between days, so a year runs over days or weeks instead of hours."
+            " The world records nothing about it."
+        ),
+    ),
 ) -> None:
     """Advance the latest verified state under the run's sovereigns, recording every council.
 
@@ -169,7 +213,11 @@ def run(
     whose councils could take it past the cap. Ctrl+C stops it after the day under way. After a
     crash or a kill, running it again carries on from what was saved, asking no model again
     about a council already saved. A sealed run is refused (exit code 4) if it no longer
-    matches its seal, and stops at its planned days."""
+    matches its seal, and stops at its planned days.
+
+    It prints a line for each council as it is saved (who held it, which model, the outcome,
+    tokens, cost and seconds into the day), a line for each council day and each checkpoint,
+    and nothing on quiet days. No hash, setting or key is printed but the final state hash."""
     # Only `seal` uses the seal key; nothing that runs a world keeps it.
     os.environ.pop(SEAL_KEY_ENV, None)
     store = WorldStore(directory)
@@ -177,9 +225,21 @@ def run(
     try:
         with interruptible(control):
             if controlled_run:
-                controlled(store, days, spend_limit_usd=spend_limit, control=control)
+                controlled(
+                    store, days, spend_limit_usd=spend_limit, control=control, pace_seconds=pace
+                )
                 return
-            state = run_days(store, days, control=control, spend_limit_usd=spend_limit)
+            shown = _Progress(_with_limit(store.manifest(), spend_limit))
+            state = run_days(
+                store,
+                days,
+                control=control,
+                spend_limit_usd=spend_limit,
+                on_start=shown.start,
+                on_council=shown.council,
+                on_progress=shown.day,
+                pace_seconds=pace,
+            )
     except SpendCapReached as stop:
         typer.echo(f"stopped before day {stop.state.day + 1}: {stop.reason}", err=True)
         raise typer.Exit(3) from None
@@ -191,6 +251,50 @@ def run(
         raise typer.Exit(4) from None
     verb = "stopped at" if control.stopped else "advanced to"
     typer.echo(f"{verb} day {state.day} ({store.state_hash(state)})")
+
+
+class _Progress:
+    """What `run` prints as it goes: plain ASCII lines, councils and checkpoints only."""
+
+    def __init__(self, manifest: RunManifest) -> None:
+        self.manifest = manifest
+        self.spend = manifest.spend or SpendConfig()
+
+    def start(self, state: WorldState, planned: int) -> None:
+        cap = self.spend.max_cost_usd
+        typer.echo(
+            f"run {str(self.manifest.run_id)[:8]} day {state.day} -> {state.day + planned},"
+            f" councils every {state.config.council_interval_days} days,"
+            + (" no cost cap" if cap is None else f" cap ${cap:,.2f}")
+        )
+
+    def council(self, record: CouncilRecord, seconds: float) -> None:
+        config = self.manifest.sovereigns.get(str(record.civilization_id))
+        who = (config.label or config.provider) if config is not None else record.provider
+        tokens_in = sum(usage.input_tokens for usage in record.usage)
+        tokens_out = sum(usage.output_tokens for usage in record.usage)
+        cost = sum(
+            cost_of(usage.model, usage.input_tokens, usage.output_tokens, self.spend)[0]
+            for usage in record.usage
+        )
+        outcome = outcome_word(record)
+        typer.echo(
+            f"  day {record.day}: {record.civilization_id} {who} {record.model} {outcome},"
+            f" {tokens_in:,} in, {tokens_out:,} out, ${cost:,.4f}, {seconds:.1f} s"
+        )
+
+    def day(self, progress: DayProgress) -> None:
+        if progress.councils:
+            cap = self.spend.max_cost_usd
+            spent = progress.spent
+            typer.echo(
+                f"day {progress.councils[0].day} councils: {len(progress.councils)} in"
+                f" {progress.elapsed_seconds:.1f} s; spent ${spent.cost_usd:,.4f}"
+                + ("" if cap is None else f" of ${cap:,.2f}")
+                + f" ({spent.input_tokens:,} in, {spent.output_tokens:,} out)"
+            )
+        if progress.checkpoint:
+            typer.echo(f"checkpoint saved at day {progress.day}")
 
 
 def _spend_lines(title: str, total: Tally) -> list[str]:
@@ -245,6 +349,86 @@ def spend(
         sized = prompt_round(manifest, state)
         for line in _spend_lines(f"prompts of day {state.day} (one call each)", sized):
             typer.echo(line)
+
+
+@app.command()
+def councils(
+    directory: Path,
+    as_json: bool = typer.Option(False, "--json", help="Print the summary as JSON."),
+    errors: bool = typer.Option(
+        False, "--errors", help="Also list every council whose model's reply was not accepted."
+    ),
+) -> None:
+    """How each civilization's councils went: which model held them, the outcomes, tokens and
+    cost. Never asks a model, never writes; key values never appear in what it prints."""
+    store = WorldStore(directory)
+    manifest = store.manifest()
+    records = recorded_councils(store)
+    rows = council_summary(records, manifest)
+    secrets = token_values(os.environ, pins_of(manifest))
+    failed = [
+        {
+            "day": record.day,
+            "civilization": str(record.civilization_id),
+            "outcome": outcome_word(record),
+            "error": scrub(record.errors[0], secrets),
+        }
+        for record in records
+        if record.errors
+    ]
+    if as_json:
+        document: dict[str, object] = {
+            "civilizations": [
+                {
+                    "civilization": row.civilization,
+                    "who": row.who,
+                    "model": row.model,
+                    "councils": row.councils,
+                    "asked": row.asked,
+                    "outcomes": dict(sorted(row.outcomes.items())),
+                    "input_tokens": row.input_tokens,
+                    "output_tokens": row.output_tokens,
+                    "cost_usd": round(row.cost_usd, 6),
+                    "answering_models": sorted(row.answering),
+                    "unpriced_models": sorted(row.unpriced),
+                }
+                for row in rows
+            ]
+        }
+        if errors:
+            document["errors"] = failed
+        typer.echo(json.dumps(document, indent=2))
+        return
+    total: dict[str, int] = {}
+    for row in rows:
+        for word, count in row.outcomes.items():
+            total[word] = total.get(word, 0) + count
+        outcomes = ", ".join(f"{word} {count}" for word, count in sorted(row.outcomes.items()))
+        line = f"{row.civilization} {row.who} {row.model}: {row.councils} councils"
+        line += f" ({outcomes})" if outcomes else ""
+        if row.asked:
+            line += (
+                f"; mean {row.input_tokens // row.asked:,} in, {row.output_tokens // row.asked:,}"
+                f" out; ${row.cost_usd:,.4f}"
+            )
+        typer.echo(line)
+        if row.answering:
+            typer.echo(f"  answered by: {', '.join(sorted(row.answering))}")
+        if row.unpriced:
+            unpriced = ", ".join(sorted(row.unpriced))
+            typer.echo(f"  unpriced (charged at the dearest rate): {unpriced}")
+    cost = sum(row.cost_usd for row in rows)
+    outcomes = ", ".join(f"{word} {count}" for word, count in sorted(total.items()))
+    typer.echo(
+        f"total: {sum(row.councils for row in rows)} councils"
+        + (f" ({outcomes})" if outcomes else "")
+        + f"; ${cost:,.4f}"
+    )
+    if errors:
+        typer.echo(f"councils with errors: {len(failed)}")
+        for entry in failed:
+            where = f"day {entry['day']}: {entry['civilization']}"
+            typer.echo(f"  {where} {entry['outcome']}: {entry['error']}")
 
 
 @app.command()

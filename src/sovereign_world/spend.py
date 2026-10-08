@@ -192,3 +192,68 @@ def prompt_round(manifest: RunManifest, state: WorldState) -> Tally:
         round_.add(str(civilization_id), sovereign.model, tokens_in, tokens_out, cost)
         round_.councils += 1
     return round_
+
+
+@dataclass
+class CouncilSummary:
+    """One civilization's councils as recorded: who held them, how they went, what they cost."""
+
+    civilization: str
+    who: str
+    """The vendor label, or the provider kind (``baseline`` for the scripted sovereign)."""
+    model: str
+    """The configured model."""
+    councils: int = 0
+    asked: int = 0
+    """Councils that called a model (and so used tokens)."""
+    outcomes: dict[str, int] = field(default_factory=dict)
+    """Councils by outcome: accepted, repaired, timeout, late, malformed, refused, unavailable."""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    answering: set[str] = field(default_factory=set)
+    """Models that answered in place of the configured one (a fallback, or a dated name)."""
+    unpriced: set[str] = field(default_factory=set)
+
+
+def outcome_word(record: CouncilRecord) -> str:
+    """A council's outcome in one word: ``accepted``, ``timeout`` and so on."""
+    return record.outcome.value.removeprefix("no_commands:")
+
+
+def council_summary(
+    records: Iterable[CouncilRecord], manifest: RunManifest
+) -> list[CouncilSummary]:
+    """Every civilization's councils, in civilization order (those that held none included)."""
+    spend = manifest.spend or SpendConfig()
+    rows: dict[str, CouncilSummary] = {}
+
+    def row(civilization: str, record: CouncilRecord | None) -> CouncilSummary:
+        if civilization not in rows:
+            config = manifest.sovereigns.get(civilization)
+            if config is not None and config.provider != "baseline":
+                who, model = config.label or config.provider, config.model
+            else:
+                who = "baseline"
+                model = record.model if record is not None else "BaselineSovereign"
+            rows[civilization] = CouncilSummary(civilization, who, model)
+        return rows[civilization]
+
+    for civilization in sorted(manifest.sovereigns):
+        row(civilization, None)
+    for record in records:
+        summary = row(str(record.civilization_id), record)
+        summary.councils += 1
+        word = outcome_word(record)
+        summary.outcomes[word] = summary.outcomes.get(word, 0) + 1
+        summary.asked += bool(record.usage)
+        for usage in record.usage:
+            cost, priced = cost_of(usage.model, usage.input_tokens, usage.output_tokens, spend)
+            summary.input_tokens += usage.input_tokens
+            summary.output_tokens += usage.output_tokens
+            summary.cost_usd += cost
+            if usage.model != summary.model:
+                summary.answering.add(usage.model)
+            if not priced:
+                summary.unpriced.add(usage.model)
+    return [rows[key] for key in sorted(rows)]

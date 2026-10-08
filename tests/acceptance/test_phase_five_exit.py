@@ -168,7 +168,7 @@ def test_the_sealed_trial_world_passes_its_gate_and_recovers(
     assert _saved_day(run) == 3 * INTERVAL
     resumed = _run(run, DAYS - _saved_day(run))
     assert resumed.returncode == 0, resumed.stderr
-    assert resumed.stdout.startswith(f"advanced to day {DAYS}")
+    assert resumed.stdout.splitlines()[-1].startswith(f"advanced to day {DAYS}")
     verified = cli.invoke(app, ["verify", str(run), "--signer", fingerprint])
     assert verified.exit_code == 0, verified.output
     assert f"verified through day {DAYS}" in verified.output

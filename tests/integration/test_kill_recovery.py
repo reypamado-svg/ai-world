@@ -153,8 +153,10 @@ def test_random_kills_resume_to_the_same_journal(
     chance = random.Random(seed)
     kills = 0
     while kills < 8 and _saved_day(killed) < DAYS:
+        # A pace keeps each run alive across the random kill times (unpaced, the 35 days can end
+        # before a second kill lands); it records nothing, and kills during its waits count too.
         process = subprocess.Popen(
-            [*RUN, str(killed), "--days", str(DAYS - _saved_day(killed))],
+            [*RUN, str(killed), "--days", str(DAYS - _saved_day(killed)), "--pace", "0.2"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -192,8 +194,9 @@ def test_ctrl_c_stops_a_running_world_after_the_day_under_way(
     out, err = process.communicate(timeout=120)
     assert process.returncode == 0, err
     assert "stopping after the day under way" in err
-    assert out.startswith("stopped at day ")
-    day = int(out.split()[3])
+    last = out.splitlines()[-1]
+    assert last.startswith("stopped at day ")
+    day = int(last.split()[3])
     assert 2 <= day < 3000
     assert WorldStore(killed).load_checkpoint().day == day
     _verify(killed)
