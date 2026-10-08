@@ -11,8 +11,9 @@ that was stopped carries on where it left off (a history whose rows were cut off
 dropped and played again). One folder holds one engine, one council interval and one number of
 civilizations: ``run.json`` names them before the first row is written, and a run asking for
 others in a folder made with different ones is refused. A history the engine fails on is named
-in ``DIR/failures.txt`` and ``run.json`` and the others go on; it is an engine bug to fix, and
-since the fix changes the engine hash, the whole batch is then played again in a new folder.
+in ``DIR/failures.txt`` and ``run.json`` and the others go on, but the batch is not finished: it
+is an engine bug to fix, and since the fix changes the engine hash, the whole batch is then
+played again in a new folder.
 ``DIR/run.json`` records what was asked, the engine version, the engine and rule hashes, how
 long it took and whether the batch finished. ``report`` writes the fairness report
 (``report.py``).
@@ -21,13 +22,16 @@ long it took and whether the batch finished. ``report`` writes the fairness repo
 from __future__ import annotations
 
 import csv
+import io
 import json
+import math
 import os
 import time
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 from sovereign_world.calibration.histories import FIELDS, HistorySpec, Row, run_history
 from sovereign_world.calibration.policies import POLICIES
@@ -127,16 +131,114 @@ def done_keys(path: Path, rows_per_history: int | None = None) -> set[str]:
     return {key for key, count in counts.items() if rows_per_history in (None, count)}
 
 
+_INTEGERS = (
+    "seed",
+    "size",
+    "days",
+    "rotation",
+    "civilization",
+    "position",
+    "living",
+    "peak",
+    "births",
+    "deaths",
+    "settlements",
+    "tiles",
+    "wars_declared",
+    "battles",
+    "rejected_orders",
+)
+SHARE_TOLERANCE = 1e-9
+
+
+def row_of(raw: Mapping[Any, object]) -> Row | None:
+    """A history's row as read back from the table, or None when a field is missing, extra or
+    does not parse (a line cut off part-way)."""
+    if None in raw or set(raw) != set(FIELDS):
+        return None
+    text = {name: raw[name] for name in FIELDS}
+    if not all(isinstance(value, str) for value in text.values()):
+        return None
+    values: dict[str, str] = {name: str(value) for name, value in text.items()}
+    try:
+        numbers = {name: int(values[name]) for name in _INTEGERS}
+        eliminated = None if values["eliminated_day"] == "" else int(values["eliminated_day"])
+        homeless = {"True": True, "False": False}[values["homeless"]]
+        share = float(values["winner_share"])
+    except (KeyError, ValueError):
+        return None
+    if (
+        values["assignment"] not in ASSIGNMENTS
+        or values["policy"] not in POLICIES
+        or not values["realm_rank"]
+        or not math.isfinite(share)
+    ):
+        return None
+    return Row(
+        assignment=values["assignment"],
+        policy=values["policy"],
+        realm_rank=values["realm_rank"],
+        eliminated_day=eliminated,
+        homeless=homeless,
+        winner_share=share,
+        **numbers,
+    )
+
+
+def history_is_whole(rows: Sequence[Row], civilizations: int) -> bool:
+    """Whether a history's rows are all there and agree with one another: one per civilization,
+    and each winner's share what the living counts give (a share cut short shows here)."""
+    if len(rows) != civilizations:
+        return False
+    if sorted(row.civilization for row in rows) != list(range(civilizations)):
+        return False
+    most = max(row.living for row in rows)
+    leaders = sum(row.living == most for row in rows)
+    return all(
+        abs(row.winner_share - (1 / leaders if row.living == most and most > 0 else 0.0))
+        <= SHARE_TOLERANCE
+        for row in rows
+    )
+
+
+def _read_table(path: Path) -> list[tuple[dict[str | None, object], Row | None]]:
+    """The table's rows, raw and parsed; a last line without its line end is taken as torn."""
+    data = path.read_bytes()
+    raws: list[dict[str | None, object]] = list(
+        csv.DictReader(io.StringIO(data.decode("utf-8", errors="replace"), newline=""))
+    )
+    parsed = [row_of(raw) for raw in raws]
+    if raws and not data.endswith(b"\n"):
+        parsed[-1] = None
+    return list(zip(raws, parsed, strict=True))
+
+
+def _raw_key(raw: dict[str | None, object]) -> str | None:
+    try:
+        return _key_of({str(name): str(value) for name, value in raw.items() if name is not None})
+    except KeyError:
+        return None
+
+
 def drop_partial_histories(path: Path, rows_per_history: int) -> int:
-    """Remove the rows of any history cut off part-way (fewer rows than civilizations, or a
-    torn last line), so it is played again; return how many rows were removed."""
+    """Remove the rows of any history cut off part-way (fewer rows than civilizations, a torn
+    line, or rows that do not agree with one another), so it is played again; return how many
+    rows were removed."""
     if not path.exists():
         return 0
-    with path.open(newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    whole = [row for row in rows if None not in row.values() and None not in row]
-    counts = Counter(_key_of(row) for row in whole)
-    kept = [row for row in whole if counts[_key_of(row)] == rows_per_history]
+    rows = _read_table(path)
+    broken = {_raw_key(raw) for raw, row in rows if row is None}
+    histories: dict[str, list[Row]] = {}
+    for raw, row in rows:
+        key = _raw_key(raw)
+        if row is not None and key is not None and key not in broken:
+            histories.setdefault(key, []).append(row)
+    whole = {key for key, held in histories.items() if history_is_whole(held, rows_per_history)}
+    kept = [
+        {str(name): value for name, value in raw.items()}
+        for raw, row in rows
+        if row is not None and (key := _raw_key(raw)) is not None and key in whole
+    ]
     if len(kept) == len(rows):
         return 0
     spare = path.with_name(f"{path.name}.tmp")
@@ -267,7 +369,8 @@ def run_batch(out: Path, specs: Sequence[HistorySpec], workers: int) -> dict[str
         workers=workers,
         elapsed_seconds=round(time.monotonic() - started, 1),
         failed=sorted(failures),
-        finished=True,
+        # A history the engine failed on is missing from the table: the batch is not whole.
+        finished=not failures,
     )
     if failures:
         (out / "failures.txt").write_text("".join(f"{line}\n" for line in sorted(failures)))

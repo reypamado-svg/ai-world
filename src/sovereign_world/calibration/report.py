@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import csv
 import json
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from statistics import fmean
 
@@ -179,17 +179,28 @@ def evaluate(rows: list[dict[str, str]]) -> dict[str, object]:
 
 
 def _check_whole(rows: list[dict[str, str]], civilizations: object) -> None:
-    """Refuse a history with the wrong number of rows (one cut off part-way): the report
-    certifies what it counts, and running the batch again replays it."""
+    """Refuse a history with the wrong number of rows, a row that does not parse, or rows that
+    do not agree with one another (one cut off part-way): the report certifies what it counts,
+    and running the batch again replays it."""
+    from sovereign_world.calibration.batch import history_is_whole, row_of
+
     if not isinstance(civilizations, int):
         return
-    counts = Counter((row["assignment"], row["seed"], row["rotation"]) for row in rows)
-    for (assignment, seed, rotation), count in sorted(counts.items()):
-        if count != civilizations:
+    histories: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        histories[(row["assignment"], row["seed"], row["rotation"])].append(row)
+    for (assignment, seed, rotation), held in sorted(histories.items()):
+        name = f"history {assignment}|{seed}|{rotation}"
+        if len(held) != civilizations:
             raise ValueError(
-                f"history {assignment}|{seed}|{rotation} has {count} rows, not {civilizations};"
+                f"{name} has {len(held)} rows, not {civilizations};"
                 " run the batch again (it replays it)"
             )
+        parsed = [row_of(dict(row)) for row in held]
+        if any(row is None for row in parsed) or not history_is_whole(
+            [row for row in parsed if row is not None], civilizations
+        ):
+            raise ValueError(f"{name} has a broken row; run the batch again (it replays it)")
 
 
 def write_report(directory: Path) -> dict[str, object]:
@@ -202,7 +213,9 @@ def write_report(directory: Path) -> dict[str, object]:
     )
     _check_whole(rows, run.get("civilizations"))
     result = evaluate(rows)
-    result["batch_finished"] = bool(run.get("finished", True))
+    # A batch with histories the engine failed on is missing them: not finished.
+    result["batch_finished"] = bool(run.get("finished", True)) and not run.get("failed")
+    result["failed"] = list(run.get("failed") or [])
     result["rule_hash"] = run.get("rule_hash")
     result["engine_hash"] = run.get("engine_hash")
     for key in ("council_interval_days", "size", "days", "civilizations"):

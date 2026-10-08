@@ -13,13 +13,14 @@ only from the observer's own machine. Both tokens are always compared, in consta
 
 The guard, an ASGI middleware in front of every route and file, refuses request bodies over a
 few kilobytes (413) or without a declared length (411), limits how often each client and all
-clients together may ask (429, with `Retry-After`; the owner on its own machine is exempt), and
-puts the security headers on every answer: a strict Content-Security-Policy, no sniffing, no
-referrer, no framing.
+clients together may ask (429, with `Retry-After`; requests straight from this machine, the
+owner's page and its files, are exempt), and puts the security headers on every answer: a strict
+Content-Security-Policy, no sniffing, no referrer, no framing.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import secrets
@@ -178,6 +179,18 @@ class RateLimiter:
             return max(waits)
 
 
+def _on_this_machine(host: str, headers: list[tuple[bytes, bytes]]) -> bool:
+    """A request straight from this machine: a loopback address and no proxy's headers. The
+    owner's own page asks for its files without a token, so it is never held back either; a
+    tunnel's requests carry the proxy's headers, and uvicorn gives them the visitor's address."""
+    if from_outside(headers):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 class Guard:
     """The ASGI middleware in front of the observer: body limits, request limits, and the
     security headers on every answer."""
@@ -223,9 +236,10 @@ class Guard:
             if declared > self.limits.body_bytes:
                 await _refuse(with_headers, 413, "the request body is too large")
                 return
-        if self.tokens.role_of(headers) is not Role.OWNER:
-            client = scope.get("client")
-            wait = self.limiter.take(str(client[0]) if client else "unknown")
+        client = scope.get("client")
+        host = str(client[0]) if client else "unknown"
+        if not _on_this_machine(host, headers) and self.tokens.role_of(headers) is not Role.OWNER:
+            wait = self.limiter.take(host)
             if wait > 0:
                 seconds = max(1, math.ceil(wait))
                 await _refuse(

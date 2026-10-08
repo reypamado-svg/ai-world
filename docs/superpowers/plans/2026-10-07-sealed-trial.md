@@ -551,3 +551,21 @@ run.
 - A quick tunnel changes its address when it restarts; a named tunnel keeps one.
 - On a 32×32 map, model-played civilizations may meet rarely in one year (calibration: contact
   is rare with scripted explorers).
+
+### Codex's ninth review (d460a6a): three findings, all fixed
+
+- **P1, a batch with failed histories counted as finished** (batch.py): a history the engine
+  fails on is missing from the table, so the batch is now left unfinished (`finished: false`)
+  and the report carries the failures; `batch_finished` is false when any history failed, and
+  the gate's `balance` check fails it.
+- **P2, a last share cut short taken for a whole history** (batch.py, report.py): a torn last
+  field could still parse (`0.3` for a third). Every row is now parsed field by field, a last
+  line without its line end is taken as torn, and a history counts only with one row per
+  civilization and each winner's share what the living counts give. The report refuses a
+  history that fails the same check. The committed three-civilization table passes it.
+- **P2, the owner's own page held back by visitors** (access.py): the page's files are asked for
+  without a token, so visitors using up everyone's allowance could hold back the owner's
+  reload. Requests straight from this machine (a loopback address, no proxy's headers) are now
+  never held back; through the tunnel the same machine is a visitor like any other.
+
+None of these files is in the engine hash: the three-civilization report stays valid.

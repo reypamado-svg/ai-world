@@ -316,3 +316,25 @@ def test_the_page_needs_nothing_the_security_policy_refuses() -> None:
     ]
     assert found == []
     assert len(files) > 50
+
+
+def test_requests_straight_from_this_machine_are_never_held_back(service: RunService) -> None:
+    """The owner's page asks for its files without a token: from this machine, with no proxy's
+    headers, nothing is held back, even when visitors have used up everyone's allowance."""
+    clock = Clock()
+    limits = Limits(client_burst=2, client_rate=1, global_burst=3, global_rate=1, clock=clock)
+    app = build_app(service, OWNER, viewer_token=VIEWER, limits=limits)
+    visitor = TestClient(app, client=("203.0.113.5", 5000))
+    for _ in range(2):
+        assert visitor.get("/api/status", headers=AS_VIEWER).status_code == 200
+    held = TestClient(app, client=("198.51.100.9", 5000))
+    assert held.get("/api/status", headers=AS_VIEWER).status_code == 200
+    assert held.get("/api/status", headers=AS_VIEWER).status_code == 429
+    for host in ("127.0.0.1", "::1"):
+        local = TestClient(app, client=(host, 5000))
+        for path in ("/", "/src/main.js", "/api/status"):
+            for _ in range(5):
+                assert local.get(path).status_code != 429, (host, path)
+        # The same machine through the tunnel is a visitor like any other.
+        through = local.get("/", headers=OUTSIDE[2])
+        assert through.status_code == 429

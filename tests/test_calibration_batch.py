@@ -10,8 +10,15 @@ from pathlib import Path
 import pytest
 
 from sovereign_world.calibration.__main__ import main
-from sovereign_world.calibration.batch import done_keys, run_batch, seeds_of, specs_of
+from sovereign_world.calibration.batch import (
+    done_keys,
+    drop_partial_histories,
+    run_batch,
+    seeds_of,
+    specs_of,
+)
 from sovereign_world.calibration.histories import FIELDS, HistorySpec, Row, run_history
+from sovereign_world.calibration.report import write_report
 from sovereign_world.rulehash import engine_hash, rule_hash
 
 
@@ -147,6 +154,10 @@ def test_a_history_the_engine_fails_on_is_named_and_the_others_go_on(
     assert (tmp_path / "failures.txt").read_text().startswith(broken)
     run = json.loads((tmp_path / "run.json").read_text())
     assert run["engine_hash"] == engine_hash() and run["rule_hash"] == rule_hash()
+    # A batch missing a history is not finished, and neither is its report.
+    assert summary["finished"] is False and run["finished"] is False
+    report = write_report(tmp_path)
+    assert report["batch_finished"] is False and report["failed"] == summary["failed"]
 
 
 def test_a_batch_records_the_cadence_and_size_it_measured(tmp_path: Path) -> None:
@@ -288,3 +299,53 @@ def test_the_report_refuses_a_history_with_missing_rows(tmp_path: Path) -> None:
 
 def _rows_of(rows: list[Row]) -> list[dict[str, object]]:
     return [row.values() for row in rows]
+
+
+def test_a_last_share_cut_short_is_not_taken_for_a_whole_history(tmp_path: Path) -> None:
+    out = tmp_path / "batch"
+    specs = specs_of([1], 24, 5, "0", "builders", interval=28, civilizations=3)
+    run_batch(out, specs, workers=1)
+    table = out / "histories.csv"
+    rows = _rows(table)
+    # A three-way tie: each holds a third of the win, written as a long fraction.
+    for row in rows:
+        row["living"] = rows[0]["living"]
+        row["winner_share"] = repr(1 / 3)
+    with table.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    lines = table.read_text().splitlines(keepends=True)
+    assert drop_partial_histories(table, 3) == 0
+    # The last field cut short, its line end still written: the value parses, but is wrong.
+    lines[-1] = lines[-1].replace(repr(1 / 3), "0.3")
+    table.write_text("".join(lines))
+    assert main(["report", str(out)]) == 2
+    assert drop_partial_histories(table, 3) == 3
+    assert done_keys(table, 3) == set()
+    assert run_batch(out, specs, workers=1)["played_now"] == 1
+
+
+def test_a_torn_last_line_is_dropped_and_rows_must_name_each_civilization(tmp_path: Path) -> None:
+    out = tmp_path / "batch"
+    specs = specs_of([1, 2], 24, 5, "0", "builders", interval=28, civilizations=3)
+    run_batch(out, specs, workers=1)
+    table = out / "histories.csv"
+    whole = table.read_text()
+    # The last line lost only its line end: it reads whole, but cannot be trusted.
+    table.write_text(whole.rstrip("\r\n"))
+    assert drop_partial_histories(table, 3) == 3
+    assert len(done_keys(table, 3)) == 1
+    # A history whose rows name one civilization twice is not whole either.
+    lines = whole.splitlines(keepends=True)
+    twice = lines[1].split(",")
+    other = lines[2].split(",")
+    other[5] = twice[5]
+    lines[2] = ",".join(other)
+    table.write_text("".join(lines))
+    assert drop_partial_histories(table, 3) == 3
+    again = run_batch(out, specs, workers=1)
+    assert again["played_now"] == 1 and again["finished"] is True
+    assert sorted(_rows(table), key=lambda row: tuple(row.values())) == sorted(
+        csv.DictReader(whole.splitlines()), key=lambda row: tuple(row.values())
+    )

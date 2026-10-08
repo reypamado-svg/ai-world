@@ -54,7 +54,8 @@ Every request passes one guard before any route:
 | Requests from all visitors together | a burst of 3,000, then 150 a second | 429 with `Retry-After` |
 | Request body | 4 KB, with a declared length | 413 (too large), 411 (no length) |
 
-Your own window on this PC is never held back. Visitors are told apart by the address
+Requests straight from this PC (your own window, its page and files, not through the tunnel)
+are never held back. Visitors are told apart by the address
 Cloudflare forwards (the server trusts that header only from the tunnel on 127.0.0.1); visitors
 behind one shared connection share an allowance.
 
