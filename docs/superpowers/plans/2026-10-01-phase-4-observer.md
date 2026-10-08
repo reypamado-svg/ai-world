@@ -902,8 +902,7 @@ Gate: all observer operations leave the world hash unchanged (the exit test, and
 ### Known limits carried forward
 - Explorers are counted at home in a settlement's residents (the projection follows the engine's residents).
 - The id table is about 3 MB at 100,000 people, sent whole on first load.
-- `WorldStore` extends a journal cut back under it; the observer stops its own runner on a new history, but a writer elsewhere is not stopped (cut a run only while it is paused).
-- A second `sovereign-world run` on the same directory alongside the observer's runner is not prevented: one runner per run.
+- ~~`WorldStore` extends a journal cut back under it~~ and ~~a second `sovereign-world run` alongside the observer's runner is not prevented~~: both closed by the sealed trial's slice J (a cut-back journal is refused, and a run has one writer, held by a lock).
 - Pausing takes effect between days, so the runner can end one day beyond the lookahead.
 - With captives held at home, a perspective's `at_home + away` exceeds `living` by that many.
 - Building colours are painted in, not a tinted mask, so a pack's buildings keep whatever colours they are drawn in.

@@ -207,6 +207,38 @@ Start-Transcript -Path ..\trial-console-1.txt
 
 ## 5. The steps
 
+### Step 0: the readiness check
+
+Before making anything, let the program look the computer over. It changes nothing and shows
+no variable's value:
+
+```powershell
+cd C:\ai-world
+$env:PYTHONUTF8 = "1"
+& .venv\Scripts\sovereign-world.exe doctor --settings work\trial.toml
+```
+
+Every line should read PASS (or SKIP); fix each FAIL before going on, and read each WARN. It
+ends with exit code 1 while anything fails.
+
+| Line | What it checks | If it fails |
+|---|---|---|
+| `python` | Python 3.12 or later | install Python 3.12 (section 1) |
+| `uv` | uv is installed (a WARN only) | `winget install astral-sh.uv` |
+| `powershell` | PowerShell 7.1 or later | install PowerShell 7 (section 1) |
+| `path` | the repository is not in OneDrive or on a network share; a short path without spaces | move it, e.g. to `C:\ai-world` |
+| `drive` | a fixed local drive formatted NTFS | move the repository to such a drive |
+| `claude` | Claude Code found and signed in with your Claude plan | install it and `/login` (section 1) |
+| `codex` | Codex found and signed in with ChatGPT | install it and `codex login` (section 1) |
+| `keys` | no variable that would replace a sign-in (a WARN; names only) | remove the named variables (section 1) |
+| `autoupdater` | `DISABLE_AUTOUPDATER` is 1 (a WARN) | set it at User level (section 1) |
+| `ollama` | Ollama answers, with the settings' model pulled | start Ollama; `ollama pull` the model |
+| `ollama_context` | `OLLAMA_CONTEXT_LENGTH` is 32768 or more | set it (section 1) and restart Ollama |
+| `gpu` | an NVIDIA card answers `nvidia-smi` (a WARN) | install the NVIDIA driver |
+| `disk` | 10 GiB or more free (FAIL under 2 GiB) | free some space |
+| `power` | sleep and hibernate are off on mains (a WARN) | the `powercfg` lines in section 6 |
+| `clock` | the date is plausible | set the clock |
+
 ### Step 1: make the world
 
 ```powershell
@@ -320,7 +352,8 @@ $env:PYTHONUTF8 = "1"
 
 It prints an address with `#token=...` once: open it in the browser. The page drops the token
 from the address after reading it, so a reload (F5) needs the printed address again. Do not use
-`observe --run-days` for the trial: the window running `run` is the run's only writer.
+`observe --run-days` for the trial: the window running `run` is the run's only writer (a second
+writer is refused, exit code 5).
 
 ### Step 6b: share it (optional)
 
@@ -373,6 +406,7 @@ before the stop is reused: its model is not asked again.
 | 1 | `cannot resume: ...` | the journal is not this run's or was changed; send the message back |
 | 3 | stopped before a day that could break the token cap | the cap is sealed; the trial ends there |
 | 4 | `seal refused: ...` | the settings, code or addresses changed since sealing; undo the change |
+| 5 | `another writer holds this run: ...` | another window is already running this world (`run`, or `observe --run-days`); stop it first |
 
 ## 6. Keeping the PC awake
 
@@ -394,7 +428,8 @@ Copy-Item -Recurse work\trial ..\backups\trial-day-N
 & .venv\Scripts\sovereign-world.exe verify ..\backups\trial-day-N --signer FINGERPRINT
 ```
 
-Copying the folder while `run` is writing can copy a half-written database.
+Copying the folder while `run` is writing can copy a half-written database. The empty
+`writer.lock` in the folder is the run's writer lock; it copies harmlessly.
 
 ## 8. Time, pace and your plans' allowances
 
@@ -441,4 +476,7 @@ probe and the rehearsal:
 - one Ctrl+C during a `--pace` wait ends with `stopped at day N`, and `verify` passes after;
 - `preflight` and `run` print cleanly in the console and into `launch-gate.json`;
 - Ollama holds its 32,768-token context on the card (`ollama ps`) and answers in time;
-- the run folder is on a local NTFS drive.
+- the run folder is on a local NTFS drive;
+- `doctor` reads PowerShell, the drive and the sleep settings correctly;
+- a second `run` on the same folder in another window is refused with exit code 5 while the
+  first runs, and goes once the first has stopped.

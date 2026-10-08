@@ -34,6 +34,7 @@ Chosen on 2026-10-08: a 32 by 32 map, councils every 28 days, `--pace 600` (abou
 | G | The free three-civilization trial: Claude Code and Codex adapters, 2-4 civilizations in the calibration and the gate, token caps, the runbook, the balance report | Done; the run itself is the user's |
 | H | Watching from outside: viewer links through a tunnel, viewing only, with limits and security headers | Done; the PC check is the user's |
 | I | Docs and close: the exit mapping and the year's record | Done |
+| J | Hardening for the year: one writer per run, and the readiness check | Done |
 
 ## A as built
 
@@ -539,7 +540,8 @@ run.
 | F | Progress, pace, `councils`, the runbook | 70cb0cd, 0d70bf7 |
 | G | The free three-civilization trial | da56ec4, 53da12a, e2529bd, 1926725, 142f860; review fixes 8bc54db, 0722afc, 3af3c4c |
 | H | Watching from outside | 4829add, 0ff9113, 7c4c19d, f0c6e26 |
-| I | The exit mapping and the year's record | this slice's commits |
+| I | The exit mapping and the year's record | 89fd13e, d460a6a |
+| J | One writer per run, and the readiness check | dc5ff41, 5e09b1c, a7ea4d2, and the docs |
 
 **Known limits carried forward:**
 - No live record yet: the year runs on the user's PC by `docs/sealed-trial-runbook.md`.
@@ -569,3 +571,50 @@ run.
   never held back; through the tunnel the same machine is a visitor like any other.
 
 None of these files is in the engine hash: the three-civilization report stays valid.
+
+## J as built: hardening for the year (planned by Fable 5.1 at 286d298)
+
+The user asked "what's next?" and chose to harden the trial before sealing.
+
+- **One writer per run.** Whatever saves days or seals a run first takes its writer lock:
+  `writer.lock` in the run's folder, an empty file the operating system locks while the
+  writer's process holds it open (`flock` on POSIX, a byte-range lock on Windows) and frees
+  when that process ends, however it ends. `run_days` (plain `run`, `run --controlled` and the
+  observer's runner) and `seal` take it before reading anything. A second writer is refused
+  with `RunLocked`, and `run` and `seal` exit with **code 5**. Readers (`observe`, `verify`,
+  `inspect`, `spend`, `councils`, `replay`, `preflight`, exports) never take it or make the
+  file, so their "writes nothing" tests still hold. The file is never inherited by the
+  `claude` and `codex` children.
+- **A cut-back journal is refused.** `WorldStore.append_record` raises `JournalCorruption`
+  when the journal is shorter than what it verified, instead of extending it with zeros; a
+  torn last line from a crash is still dropped before writing.
+- **The gate's `writer` check** (now 18 checks), after `day`: it probes the lock without
+  taking it or creating anything. A held lock is a WARN, and a FAIL under `--launch`.
+- **`sovereign-world doctor`** looks the computer over before the trial, in the gate's PASS,
+  WARN, FAIL and SKIP lines: Python and uv, PowerShell 7, the repository's folder (not
+  OneDrive or a share) and drive (fixed NTFS), Claude Code and Codex installed and signed in
+  with the plans, variables that would replace a sign-in (names only), `DISABLE_AUTOUPDATER`,
+  Ollama answering with the settings' model pulled, `OLLAMA_CONTEXT_LENGTH` of 32,768 or more,
+  an NVIDIA card, disk, sleep and hibernate off on mains, and the clock. It writes nothing and
+  never shows a variable's value; Windows-only lines are SKIP elsewhere. The runbook's new
+  **Step 0** runs it and explains every line.
+- **The engine hash is unchanged** (`16b24380…`): `persistence.py`, `runner.py`, `cli.py` and
+  `preflight.py` are outside it, and the new `doctor.py` is added to `ENGINE_EXCLUDED` in the
+  commit that makes it. A new test holds the engine hash to the committed balance report's,
+  so a change to the engine cannot slip past the calibration. The seal's code hash moves, as
+  it does with every change: be on the final commit before `seal`.
+
+**Tests.** `tests/test_run_lock.py` (a second writer refused before reading anything, with
+the journal unchanged; the lock freed when a killed holder dies; the observer's runner refused
+too; readers creating nothing; probing changing nothing; a cut-back journal not extended; the
+lock file not inherited), the gate's `writer` lines in `test_preflight.py`,
+`tests/test_doctor.py` (a ready computer; each failure and warning; the Windows lines through
+injected outputs; the command writes nothing and shows no value), and the engine-hash guard.
+
+**Defaults taken.** The lock file inside the run's folder; exit code 5; the gate's `writer` a
+WARN before `--launch`; the sign-in variables a WARN (the programs leave them out); no GPU a
+WARN; the command named `doctor`.
+
+**Left for the user's PC:** Windows byte-range locking of the empty lock file (the rehearsal
+shows it: a second `run` in another window must exit 5), and `doctor`'s reading of
+PowerShell, the drive and `powercfg`.

@@ -61,7 +61,17 @@ def test_every_command_and_option_the_runbook_names_exists() -> None:
         for word in words:
             if word.startswith("--"):
                 assert word in known, f"{name} has no option {word}"
-    expected = {"init", "preflight", "spend", "run", "councils", "verify", "keygen", "seal"}
+    expected = {
+        "doctor",
+        "init",
+        "preflight",
+        "spend",
+        "run",
+        "councils",
+        "verify",
+        "keygen",
+        "seal",
+    }
     assert expected | {"observe"} <= used
 
 
@@ -162,3 +172,11 @@ def test_sharing_is_viewing_only_through_a_tunnel_to_this_machine() -> None:
     # The viewer token is made fresh by each start (so a restart takes links back): the runbook
     # never sets it.
     assert VIEWER_TOKEN_ENV not in DOC.read_text()
+
+
+def test_every_line_of_the_readiness_check_is_explained() -> None:
+    from sovereign_world.doctor import DOCTOR_CHECKS
+
+    text = DOC.read_text()
+    for check_id, _ in DOCTOR_CHECKS:
+        assert f"| `{check_id}` |" in text, check_id

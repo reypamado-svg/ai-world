@@ -101,6 +101,8 @@ limits show as `unavailable` with "usage limit").
 - [ ] `preflight` and `run` print cleanly in the console and into `launch-gate.json`
 - [ ] Ollama holds its 32,768-token context on the card (`ollama ps`) and answers in time
 - [ ] the run's folder is on a local NTFS drive
+- [ ] `doctor` passed before the rehearsal (every line PASS or SKIP, each WARN read)
+- [ ] a second `run` in another window was refused (exit code 5)
 - [ ] (if shared) a phone off the home Wi-Fi opens the viewer link, which shows **VIEWING ONLY · shared**, and your own link through the tunnel is refused
 
 ### What happened

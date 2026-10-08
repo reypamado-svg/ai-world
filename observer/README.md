@@ -179,7 +179,8 @@ days ahead of the page it is.
   starts again with **RUNNER · stopped: the run's history changed**. Restart
   `observe --run-days` to run the new history. Cut a run only while it is paused: a day
   that finishes in the half second before the observer notices is still saved.
-- One runner per run: do not run `sovereign-world run` on the same run at the same time.
+- One runner per run: a second `sovereign-world run` or `observe --run-days` on the same run
+  is refused (exit code 5) while one is going.
 - The run is started with the observer's environment (so AI keys set there are used) but
   without the observer's token; the observer tells it only "pause" and "resume".
 

@@ -13,7 +13,7 @@ run (window 1) ──writes──▶ work\trial ◀──reads── observe --p
                                      cloudflared tunnel (window 3) ◀── HTTPS ── viewers
 ```
 
-- `run` is the only writer of the run, as before.
+- `run` is the only writer of the run, as before; a second writer is refused (exit code 5).
 - `observe work\trial --public` serves the run read-only on this PC only (127.0.0.1). It refuses
   `--run-days` (it runs no world) and any other `--host`.
 - `cloudflared tunnel --url http://127.0.0.1:8766` gives it a public `https://` address. No
