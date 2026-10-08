@@ -1,4 +1,10 @@
-"""Checksummed journals and compressed SQLite checkpoints."""
+"""Checksummed journals and compressed SQLite checkpoints.
+
+A run has one writer at a time: whatever saves days or seals the run first takes the run's
+writer lock (``writer.lock`` in its folder, an empty file the operating system locks while
+the writer's process holds it open, and frees when that process ends, however it ends). A
+second writer is refused with ``RunLocked`` before it reads anything. Readers never take it.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +13,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 from base64 import b64encode
 from collections.abc import Iterator
 from pathlib import Path
@@ -28,6 +35,94 @@ from sovereign_world.journal import (
     split_parts,
 )
 from sovereign_world.state import WorldState, state_hash, state_hash_v2
+
+LOCK_FILE = "writer.lock"
+"""The run's writer lock: empty, made by the first writer, never removed."""
+
+
+class RunLocked(RuntimeError):
+    """Another process is writing this run."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        super().__init__(
+            f"another writer holds this run: {root} (a 'run' or 'observe --run-days' is already"
+            " going); stop it first"
+        )
+
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _unlock(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _lock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+class WriterLock:
+    """The run's writer lock, held from ``acquire`` (or ``with``) to ``release``; the
+    operating system frees it when the holding process ends."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._fd: int | None = None
+
+    def acquire(self) -> None:
+        fd = os.open(self.root / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            _lock(fd)
+        except OSError as error:
+            os.close(fd)
+            raise RunLocked(self.root) from error
+        self._fd = fd
+
+    def release(self) -> None:
+        fd, self._fd = self._fd, None
+        if fd is None:
+            return
+        try:
+            _unlock(fd)
+        finally:
+            os.close(fd)
+
+    def __enter__(self) -> WriterLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.release()
+
+
+def writer_held(root: Path) -> bool:
+    """Whether another process holds the run's writer lock. Creates nothing: with no lock file,
+    nothing has ever written the run under a lock, and the answer is no."""
+    path = root / LOCK_FILE
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            _lock(fd)
+        except OSError:
+            return True
+        _unlock(fd)
+        return False
+    finally:
+        os.close(fd)
 
 
 class JournalCorruption(RuntimeError):
@@ -197,9 +292,18 @@ class WorldStore:
         document: dict[str, Any] = json.loads(row[0])
         return document
 
+    def writer_lock(self) -> WriterLock:
+        """The run's writer lock, for ``with``: a second writer is refused with ``RunLocked``."""
+        return WriterLock(self.root)
+
     def write_seal(self, document: dict[str, Any]) -> None:
         """Save the seal once, in SQLite and as the journal's record after its header; only a
-        run that has saved nothing but its header may be sealed."""
+        run that has saved nothing but its header may be sealed, and only while no other
+        writer holds it."""
+        with self.writer_lock():
+            self._write_seal(document)
+
+    def _write_seal(self, document: dict[str, Any]) -> None:
         records = self.read_records()
         if [record.type for record in records] != [HEADER]:
             raise RuntimeError("only a run that has saved nothing yet can be sealed")
@@ -261,7 +365,13 @@ class WorldStore:
             self.read_records()
         if self._tail_sequence is None or self._tail_hash is None or self._verified_length is None:
             raise RuntimeError("journal tail was not initialized")
-        if self.journal_path.stat().st_size != self._verified_length:
+        size = self.journal_path.stat().st_size
+        if size < self._verified_length:
+            # Cut back under this store (another process): extending it would write zeros
+            # and append to a history that is no longer there.
+            raise JournalCorruption(size, "the journal was shortened under this run")
+        if size != self._verified_length:
+            # A torn last line from a crash: drop it before writing.
             with self.journal_path.open("r+b") as journal:
                 journal.truncate(self._verified_length)
         sequence = self._tail_sequence + 1

@@ -26,7 +26,7 @@ from sovereign_world.config import (
     WorldConfig,
 )
 from sovereign_world.gateway.records import CouncilRecord, ResumeRefused, recorded_councils
-from sovereign_world.persistence import WorldStore
+from sovereign_world.persistence import RunLocked, WorldStore
 from sovereign_world.preflight import (
     GateOptions,
     launch_gate,
@@ -216,7 +216,8 @@ def run(
     whose councils could take it past the cap. Ctrl+C stops it after the day under way. After a
     crash or a kill, running it again carries on from what was saved, asking no model again
     about a council already saved. A sealed run is refused (exit code 4) if it no longer
-    matches its seal, and stops at its planned days.
+    matches its seal, and stops at its planned days. A run already being written by another
+    process (another `run`, or `observe --run-days`) is refused with exit code 5.
 
     It prints a line for each council as it is saved (who held it, which model, the outcome,
     tokens, cost and seconds into the day), a line for each council day and each checkpoint,
@@ -252,6 +253,9 @@ def run(
     except SealRefused as refused:
         typer.echo(f"seal refused: {refused}", err=True)
         raise typer.Exit(4) from None
+    except RunLocked as locked:
+        typer.echo(str(locked), err=True)
+        raise typer.Exit(5) from None
     verb = "stopped at" if control.stopped else "advanced to"
     typer.echo(f"{verb} day {state.day} ({store.state_hash(state)})")
 
@@ -581,7 +585,11 @@ def seal(
         engine_hash=engine_hash(),
     )
     del key
-    store.write_seal(sealed.model_dump(mode="json"))
+    try:
+        store.write_seal(sealed.model_dump(mode="json"))
+    except RunLocked as locked:
+        typer.echo(f"cannot seal: {locked}", err=True)
+        raise typer.Exit(5) from None
     typer.echo(f"sealed run {sealed.run_id} for {days} days")
     typer.echo(f"fingerprint: {grouped(sealed.fingerprint)}")
     typer.echo(f"manifest hash: {sealed.manifest_hash}")

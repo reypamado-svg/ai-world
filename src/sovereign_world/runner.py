@@ -217,7 +217,36 @@ def run_days(
     may lower the cost cap for this session; it never raises it.
 
     ``pace_seconds`` waits that long after each saved day but the last; a stop ends the wait,
-    and the loop then stops as it would between days."""
+    and the loop then stops as it would between days.
+
+    The run's writer lock is held throughout: a second writer (another ``run``, or an
+    ``observe --run-days`` runner) is refused with ``RunLocked`` before anything is read."""
+    with store.writer_lock():
+        return _run_days(
+            store,
+            days,
+            control=control,
+            on_start=on_start,
+            on_day=on_day,
+            spend_limit_usd=spend_limit_usd,
+            on_council=on_council,
+            on_progress=on_progress,
+            pace_seconds=pace_seconds,
+        )
+
+
+def _run_days(
+    store: WorldStore,
+    days: int,
+    *,
+    control: RunControl | None,
+    on_start: Callable[[WorldState, int], None] | None,
+    on_day: Callable[[WorldState], None] | None,
+    spend_limit_usd: float | None,
+    on_council: CouncilHook | None,
+    on_progress: ProgressHook | None,
+    pace_seconds: float,
+) -> WorldState:
     crash = _crash_point()
     stored = store.manifest()
     seal = stored_seal(store)
