@@ -1,12 +1,15 @@
 """Thousands of scripted histories for balance calibration, on every core.
 
     python -m sovereign_world.calibration run --out DIR [--seeds 0-249] [--size 32]
-        [--days 365] [--rotations all] [--assignments builders,mixed] [--workers auto] [--quick]
+        [--days 365] [--rotations all] [--assignments builders,mixed] [--civilizations 4]
+        [--council-interval 28] [--workers auto] [--quick]
     python -m sovereign_world.calibration report DIR
 
 ``run`` plays every seed, rotation and assignment and appends one row per civilization to
 ``DIR/histories.csv``; a history whose rows are already there is not played again, so a run
-that was stopped carries on where it left off. A history the engine fails on is named in
+that was stopped carries on where it left off. One folder holds one council interval and one
+number of civilizations: a run asking for others in a folder made with different ones is
+refused. A history the engine fails on is named in
 ``DIR/failures.txt`` and ``run.json`` and the others go on; it is an engine bug to fix, after
 which running again plays it. ``DIR/run.json`` records what was asked, the engine version, the
 engine and rule hashes and how long it took. ``report`` writes the fairness report
@@ -28,10 +31,7 @@ from sovereign_world.calibration.policies import POLICIES
 from sovereign_world.config import ENGINE_VERSION
 from sovereign_world.rulehash import engine_hash, rule_hash
 
-ASSIGNMENTS: dict[str, tuple[str, ...]] = {
-    "builders": ("builder",) * 4,
-    "mixed": POLICIES,
-}
+ASSIGNMENTS = ("builders", "mixed")
 """Who plays which civilization. ``builders``: everyone the same, so only the start differs;
 ``mixed``: one of each policy, which rotation moves round every start."""
 QUICK = {
@@ -42,7 +42,16 @@ QUICK = {
     "assignments": "builders,mixed",
 }
 """A small preset for tests: 8 histories of 60 days on 24 by 24 maps."""
-CIVILIZATIONS = 4
+
+
+def assignment_of(label: str, civilizations: int) -> tuple[str, ...]:
+    """The policies of civilization 0, 1, ... for an assignment. With fewer than four
+    civilizations, ``mixed`` keeps the last policies (the builder is what ``builders`` plays)."""
+    if label == "builders":
+        return ("builder",) * civilizations
+    if label == "mixed":
+        return POLICIES[-civilizations:]
+    raise ValueError(f"unknown assignment {label!r}; choose from {', '.join(ASSIGNMENTS)}")
 
 
 def seeds_of(text: str) -> list[int]:
@@ -64,12 +73,17 @@ def specs_of(
     rotations: str,
     assignments: str,
     interval: int = 30,
+    civilizations: int = 4,
 ) -> list[HistorySpec]:
+    if not 2 <= civilizations <= len(POLICIES):
+        raise ValueError(f"a world holds 2 to {len(POLICIES)} civilizations")
     turns = (
-        list(range(CIVILIZATIONS))
+        list(range(civilizations))
         if rotations == "all"
         else sorted({int(item) for item in rotations.split(",") if item})
     )
+    if any(not 0 <= turn < civilizations for turn in turns):
+        raise ValueError(f"rotations must be 0 to {civilizations - 1}")
     chosen = [item for item in assignments.split(",") if item]
     unknown = [item for item in chosen if item not in ASSIGNMENTS]
     if unknown:
@@ -80,7 +94,7 @@ def specs_of(
             size=size,
             days=days,
             rotation=rotation,
-            assignment=ASSIGNMENTS[label],
+            assignment=assignment_of(label, civilizations),
             label=label,
             interval=interval,
         )
@@ -90,8 +104,14 @@ def specs_of(
     ]
 
 
+def base_key(spec: HistorySpec) -> str:
+    """A history's name as its rows can show it (the folder's interval and number of
+    civilizations are its own; see ``_check_folder``)."""
+    return f"{spec.label}|{spec.seed}|{spec.size}|{spec.days}|{spec.rotation}"
+
+
 def done_keys(path: Path) -> set[str]:
-    """The histories whose rows are already in the file."""
+    """The histories whose rows are already in the file, named as ``base_key`` names them."""
     if not path.exists():
         return set()
     with path.open(newline="") as handle:
@@ -112,6 +132,25 @@ def _one(name: str, values: set[int]) -> dict[str, int]:
     return {name: next(iter(values))} if len(values) == 1 else {}
 
 
+def _check_folder(out: Path, specs: Sequence[HistorySpec]) -> None:
+    """Refuse to add histories of another council interval or number of civilizations to a
+    folder that already holds some (their rows would be taken for these)."""
+    recorded = out / "run.json"
+    if not recorded.exists() or not specs:
+        return
+    before = json.loads(recorded.read_text())
+    for name, values in (
+        ("council_interval_days", {spec.interval for spec in specs}),
+        ("civilizations", {len(spec.assignment) for spec in specs}),
+    ):
+        old = before.get(name, 30 if name == "council_interval_days" else 4)
+        if values != {old}:
+            raise ValueError(
+                f"{out} holds histories with {name} {old}; use another folder for"
+                f" {', '.join(str(value) for value in sorted(values))}"
+            )
+
+
 def _play(spec: HistorySpec) -> tuple[str, list[Row] | str]:
     """One history's rows, or what stopped it (so one engine bug does not stop the batch)."""
     try:
@@ -123,9 +162,10 @@ def _play(spec: HistorySpec) -> tuple[str, list[Row] | str]:
 def run_batch(out: Path, specs: Sequence[HistorySpec], workers: int) -> dict[str, object]:
     """Play every spec not already in ``out/histories.csv``; return what ``run.json`` holds."""
     out.mkdir(parents=True, exist_ok=True)
+    _check_folder(out, specs)
     table = out / "histories.csv"
     done = done_keys(table)
-    todo = [spec for spec in specs if spec.key not in done]
+    todo = [spec for spec in specs if base_key(spec) not in done]
     started = time.monotonic()
     new_file = not table.exists()
     with table.open("a", newline="") as handle:

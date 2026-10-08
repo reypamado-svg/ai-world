@@ -47,7 +47,9 @@ def test_the_quick_preset_writes_every_row_and_carries_on_where_it_stopped(tmp_p
     run = json.loads((out / "run.json").read_text())
     assert run["played_now"] == 8 and run["rule_hash"] == rule_hash()
     # Played again: nothing new to play, and no row twice.
-    again = run_batch(out, specs_of([0, 1], 24, 60, "0,1", "builders,mixed"), workers=1)
+    again = run_batch(
+        out, specs_of([0, 1], 24, 60, "0,1", "builders,mixed", interval=28), workers=1
+    )
     assert again["played_now"] == 0
     assert len(_rows(out / "histories.csv")) == 8 * 4
     assert len(done_keys(out / "histories.csv")) == 8
@@ -164,3 +166,33 @@ def test_a_batch_records_the_cadence_and_size_it_measured(tmp_path: Path) -> Non
     report = json.loads((tmp_path / "report.json").read_text())
     assert report["council_interval_days"] == 7 and report["size"] == 24
     assert "councils every 7 days" in (tmp_path / "report.md").read_text()
+
+
+def test_three_civilizations_are_specified_played_and_recorded(tmp_path: Path) -> None:
+    specs = specs_of([1, 2], 24, 30, "all", "builders,mixed", interval=28, civilizations=3)
+    assert len(specs) == 2 * 3 * 2
+    assert {spec.rotation for spec in specs} == {0, 1, 2}
+    assert {spec.assignment for spec in specs} == {
+        ("builder",) * 3,
+        ("expander", "trader", "raider"),
+    }
+    with pytest.raises(ValueError, match="rotations must be 0 to 2"):
+        specs_of([1], 24, 30, "3", "builders", civilizations=3)
+    first = run_history(specs[1])
+    assert [row.position for row in first] == [1, 2, 0]
+    out = tmp_path / "three"
+    args = ["run", "--out", str(out), "--quick", "--civilizations", "3", "--workers", "1"]
+    assert main(args) == 0
+    assert len(_rows(out / "histories.csv")) == 8 * 3
+    run = json.loads((out / "run.json").read_text())
+    assert run["civilizations"] == 3
+    # Run again: nothing played twice, even at another council interval than 30.
+    paced = ["--council-interval", "28"]
+    again = tmp_path / "again"
+    assert main(["run", "--out", str(again), "--quick", "--civilizations", "3", *paced]) == 0
+    assert main(["run", "--out", str(again), "--quick", "--civilizations", "3", *paced]) == 0
+    assert json.loads((again / "run.json").read_text())["played_now"] == 0
+    assert len(_rows(again / "histories.csv")) == 8 * 3
+    # A folder made for three civilizations is not added to with four.
+    with pytest.raises(ValueError, match="civilizations 3"):
+        run_batch(out, specs_of([0], 24, 60, "0", "builders", interval=28), workers=1)

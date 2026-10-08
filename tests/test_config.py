@@ -3,7 +3,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from sovereign_world.config import RunManifest, WorldConfig
+from sovereign_world.config import RunManifest, SovereignConfig, WorldConfig
 
 
 def test_world_config_has_locked_civilization_shape() -> None:
@@ -91,3 +91,10 @@ def test_a_manifest_with_sovereigns_and_budgets_keeps_its_pinned_hash() -> None:
         _pinned_manifest().content_hash()
         == "89ad1fc59b2b6e468dd4801e7c6b1365654cb5de62bb0581367c88db91cfa4ac"
     )
+
+
+def test_signed_in_programs_are_provider_kinds() -> None:
+    for kind in ("claude-code", "codex"):
+        assert SovereignConfig(provider=kind, model="m").provider == kind
+    with pytest.raises(ValidationError):
+        SovereignConfig.model_validate({"provider": "gemini", "model": "m"})

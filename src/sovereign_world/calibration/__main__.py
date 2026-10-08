@@ -27,6 +27,13 @@ def main(argv: list[str] | None = None) -> int:
         choices=(7, 14, 21, 28, 30),
         help="days between councils, as in the world to be launched",
     )
+    run.add_argument(
+        "--civilizations",
+        type=int,
+        default=4,
+        choices=(2, 3, 4),
+        help="civilizations in each world, as in the world to be launched",
+    )
     run.add_argument("--workers", default="auto")
     run.add_argument("--quick", action="store_true", help="a small preset, for a quick check")
     report = commands.add_parser("report", help="write the fairness report")
@@ -43,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
             args.rotations,
             args.assignments,
             args.council_interval,
+            args.civilizations,
         )
         summary = run_batch(args.out, specs, workers_of(args.workers))
         print(

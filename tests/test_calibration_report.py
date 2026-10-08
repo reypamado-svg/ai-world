@@ -75,3 +75,23 @@ def test_mixed_checks_each_policy_across_starts() -> None:
     assert isinstance(checks, list)
     failed = {check["check"] for check in checks if not check["passed"]}
     assert failed == {"mixed: raider at position 3 within ±20%"}
+
+
+def test_the_win_share_band_follows_the_number_of_starts() -> None:
+    even = [_row("builders", position, 40, win=1 / 3) for position in range(3) for _ in range(5)]
+    result = evaluate(even)
+    assert result["passed"] is True
+    thresholds = result["thresholds"]
+    assert isinstance(thresholds, dict) and thresholds["win_share"] == [0.2, 0.4667]
+    favoured = [
+        _row("builders", position, 40, win=0.5 if position == 0 else 0.25)
+        for position in range(3)
+        for _ in range(5)
+    ]
+    checks = evaluate(favoured)["checks"]
+    assert isinstance(checks, list)
+    failed = {check["check"] for check in checks if not check["passed"]}
+    assert failed == {"builders: position 0 win share in 20% to 47%"}
+    four = evaluate([_row("builders", position, 40) for position in range(4)])["checks"]
+    assert isinstance(four, list)
+    assert "builders: position 0 win share in 15% to 35%" in {check["check"] for check in four}

@@ -68,7 +68,9 @@ class WorldConfig(BaseModel):
         return dumped
 
 
-ProviderKind = Literal["baseline", "anthropic", "openai", "compatible"]
+ProviderKind = Literal["baseline", "anthropic", "openai", "compatible", "claude-code", "codex"]
+"""``claude-code`` and ``codex`` are the vendors' own programs on this computer, signed in with
+the user's subscription; the others are reached over HTTP."""
 
 
 class SovereignConfig(BaseModel):
@@ -82,6 +84,7 @@ class SovereignConfig(BaseModel):
 
     provider: ProviderKind = "baseline"
     model: str = ""
+    """The model asked for; for a signed-in program, the full name its probe reports."""
     effort: str = "high"
     """Claude's effort level."""
     fallbacks: bool = True

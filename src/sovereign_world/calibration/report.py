@@ -4,7 +4,8 @@ It asks whether a start, rather than the play, decides how a civilization fares:
 
 - **builders** (everyone plays the same): each start position's mean final population within
   ±15% of the mean of all, at least 95% of civilizations alive at the end, and each position's
-  share of wins between 15% and 35% (25% is even);
+  share of wins between 0.6 and 1.4 times the even share (15% to 35% with four civilizations,
+  20% to 47% with three);
 - **mixed** (one of each policy, rotated round the starts): for each policy, its mean final
   population at every position within ±20% of that policy's mean.
 
@@ -24,7 +25,16 @@ from statistics import fmean
 
 POSITION_SPREAD = 0.15
 SURVIVAL = 0.95
-WIN_SHARE = (0.15, 0.35)
+WIN_SHARE = (0.6, 1.4)
+"""A position's share of wins, as a multiple of the even share (one in the number of starts)."""
+
+
+def win_share_band(civilizations: int) -> tuple[float, float]:
+    """The win shares a start may have with this many civilizations: 15% to 35% with four."""
+    low, high = WIN_SHARE
+    return low / civilizations, high / civilizations
+
+
 POLICY_SPREAD = 0.20
 COLUMNS = (
     "n",
@@ -97,6 +107,7 @@ def evaluate(rows: list[dict[str, str]]) -> dict[str, object]:
     builders = [row for row in rows if row["assignment"] == "builders"]
     mixed = [row for row in rows if row["assignment"] == "mixed"]
     tables: dict[str, dict[str, dict[str, float]]] = {}
+    band = win_share_band(4)
     if builders:
         by_position = {key[0]: _stats(group) for key, group in _group(builders, "position").items()}
         tables["builders by start position"] = by_position
@@ -104,6 +115,7 @@ def evaluate(rows: list[dict[str, str]]) -> dict[str, object]:
             key[0]: _stats(group) for key, group in _group(builders, "civilization").items()
         }
         mean = _stats(builders)["living"]
+        band = win_share_band(len(by_position))
         for position, stats in by_position.items():
             spread = (stats["living"] - mean) / mean if mean else 0.0
             checks.append(
@@ -121,7 +133,7 @@ def evaluate(rows: list[dict[str, str]]) -> dict[str, object]:
                     "passed": stats["survival"] >= SURVIVAL,
                 }
             )
-            low, high = WIN_SHARE
+            low, high = band
             checks.append(
                 {
                     "check": f"builders: position {position} win share in {low:.0%} to {high:.0%}",
@@ -158,7 +170,7 @@ def evaluate(rows: list[dict[str, str]]) -> dict[str, object]:
         "thresholds": {
             "position_spread": POSITION_SPREAD,
             "survival": SURVIVAL,
-            "win_share": list(WIN_SHARE),
+            "win_share": [round(edge, 4) for edge in band],
             "policy_spread": POLICY_SPREAD,
         },
         "rows": len(rows),
