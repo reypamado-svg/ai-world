@@ -38,7 +38,7 @@ their values. `--json` prints the same as JSON, to keep outside the run's folder
 | `balance` | the balance report passed under this engine | passed, under this engine hash, for this run's council interval, map size and number of civilizations | none given (before `--launch`); another engine version; under 1,000 histories; failed but accepted | none given under `--launch`; unreadable; failed; its batch did not finish; another engine hash; another council interval, map size or number of civilizations | §19 every start is viable |
 | `seal` | the run is sealed and matches its seal | the seal checks pass, by the named signer, for the planned days | no signer named under `--launch` | any difference; not sealed under `--launch` | roadmap: the signed manifest is immutable |
 | `seal_key` | the seal key is out of the environment | absent | present, before `--launch` | present under `--launch` | only `seal` reads the key |
-| `observer_token` | the observer token, and a public observer's viewer token when set | 32 characters or more (each) | not present (`observe` makes one each time it starts); the viewer token equal to the observer's | shorter | the observer's access boundary |
+| `observer_token` | the observer token | 32 characters or more (each) | not present (`observe` makes one each time it starts); the viewer token equal to the observer's | shorter | the observer's access boundary |
 
 A `SKIP` means a check was not asked for: `probe` without `--probe`, `seal` before the run is
 sealed (without `--launch`).

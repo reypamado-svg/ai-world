@@ -3,6 +3,7 @@ writes nothing and never prints a secret."""
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import threading
@@ -367,9 +368,15 @@ def test_preflight_writes_nothing_prints_no_secret_and_drops_the_seal_key(tmp_pa
         return {
             path.name: (path.read_bytes(), path.stat().st_mtime_ns)
             for path in sorted(store.root.iterdir())
-            if path.is_file() and not path.name.endswith("-shm")
+            if path.is_file()
+            and not path.name.endswith("-shm")
+            # Opening the database in WAL mode makes an empty log: that holds nothing.
+            and not (path.name.endswith("-wal") and path.stat().st_size == 0)
         }
 
+    # The store's connections close only when collected, and the last one to close folds the
+    # write-ahead log into the database: close them now, so only what preflight does is seen.
+    gc.collect()
     before = stamps()
     result = cli.invoke(
         app,
