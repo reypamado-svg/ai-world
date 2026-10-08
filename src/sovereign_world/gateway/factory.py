@@ -49,6 +49,16 @@ def provider_for(
             allow_private_http=config.allow_private_http,
             max_retries=min(config.max_retries, 1),
         )
+    if config.provider == "claude-code":
+        from sovereign_world.gateway.claude_code_provider import ClaudeCodeProvider
+
+        return ClaudeCodeProvider(name=f"claude-code:{civilization_id}", model=config.model)
+    if config.provider == "codex":
+        from sovereign_world.gateway.codex_provider import CodexProvider
+
+        return CodexProvider(
+            name=f"codex:{civilization_id}", model=config.model, effort=config.effort
+        )
     raise ValueError(f"{civilization_id}: {config.provider} is not a model provider")
 
 
