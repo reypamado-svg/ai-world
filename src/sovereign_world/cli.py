@@ -710,17 +710,35 @@ def observe(
             " page plays; it waits, paused, until then."
         ),
     ),
+    public: bool = typer.Option(
+        False,
+        "--public",
+        help=(
+            "Also serve viewers holding the shared link (through a tunnel): viewing only, for"
+            " everyone, with request limits."
+        ),
+    ),
 ) -> None:
     """Serve a run to the observer, live and read-only, behind a token (needs the
     'observer' extra)."""
     try:
-        from sovereign_world.observer.server import serve
+        from sovereign_world.observer.server import check_public, serve
     except ImportError as error:
         raise typer.BadParameter(
             "the observer server needs FastAPI and uvicorn: install the 'observer' extra"
         ) from error
+    if public:
+        try:
+            check_public(host=host, run_days=run_days)
+        except ValueError as error:
+            raise typer.BadParameter(str(error)) from error
     os.environ.pop(SEAL_KEY_ENV, None)
-    serve(directory, host=host, port=port, run_days=run_days)
+    try:
+        serve(directory, host=host, port=port, run_days=run_days, public=public)
+    except ValueError as error:
+        if not public:
+            raise
+        raise typer.BadParameter(str(error)) from error
 
 
 if __name__ == "__main__":

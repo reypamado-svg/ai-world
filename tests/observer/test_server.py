@@ -293,6 +293,8 @@ def test_the_page_is_served_without_the_token_but_not_the_runs_or_tests(
         "/data/runs",
         "/tests/serve.mjs",
         "/tests",
+        "/node_modules/playwright/package.json",
+        "/node_modules",
         "/../pyproject.toml",
         "/%2e%2e/pyproject.toml",
         "/src/../../pyproject.toml",

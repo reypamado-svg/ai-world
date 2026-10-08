@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 from format_one import FIXTURE
 
-from sovereign_world.observer import TOKEN_ENV
+from sovereign_world.observer import TOKEN_ENV, VIEWER_TOKEN_ENV
 from sovereign_world.observer.runner_link import (
     DONE,
     PAUSED,
@@ -175,12 +175,14 @@ def test_the_control_route_checks_what_it_is_given(old_run: Path) -> None:
 def test_the_runner_never_sees_the_token() -> None:
     environ = {
         TOKEN_ENV: "secret",
+        VIEWER_TOKEN_ENV: "viewer-secret",
         SEAL_KEY_ENV: "swseal1:secret",
         "ANTHROPIC_API_KEY": "key",
         "PATH": "/bin",
     }
     child = child_environment(environ)
     assert TOKEN_ENV not in child and SEAL_KEY_ENV not in child
+    assert VIEWER_TOKEN_ENV not in child
     assert child == {"ANTHROPIC_API_KEY": "key", "PATH": "/bin"}
     source = (SOURCE / "runner_link.py").read_text()
     assert "WorldStore(" not in source and "persistence import" not in source

@@ -1,6 +1,6 @@
 """The observer's server (O3): a run served live over HTTP, read-only, behind a token.
 
-    sovereign-world observe RUN_DIR [--host 127.0.0.1] [--port 8766]
+    sovereign-world observe RUN_DIR [--host 127.0.0.1] [--port 8766] [--public]
 
 Every `/api` route sits behind one router-level check of `Authorization: Bearer <token>`,
 so no route can be added without it. The token comes from the observer's own environment
@@ -8,6 +8,11 @@ so no route can be added without it. The token comes from the observer's own env
 a file, and it travels only in that header (the browser reads it once from the page
 address's fragment, which is never sent, and drops it from the address). The runner and
 the sovereigns never see it.
+
+A public observer (`--public`, slice H) also has a viewer token, for a link shared through a
+tunnel: it may look at everything the owner may, but never pause or resume, and on a public
+observer nobody may (`access.py` holds the roles, the request limits and the security headers
+on every answer). A public observer listens only on this machine and runs no world.
 
 The observer's own page and code are served without the token, but not the static run
 exports under `data/runs` or the browser tests.
@@ -19,6 +24,8 @@ the terrain export's.
 
 from __future__ import annotations
 
+import ipaddress
+import json
 import mimetypes
 import os
 import secrets
@@ -29,13 +36,16 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from sovereign_world.observer import TOKEN_ENV
+from sovereign_world.observer import TOKEN_ENV, VIEWER_TOKEN_ENV
+from sovereign_world.observer.access import Guard, Limits, Role, Tokens, make_tokens
+from sovereign_world.observer.run_export import encode_json
 from sovereign_world.observer.runner_link import RunnerLink
 from sovereign_world.observer.service import MAX_LOOKAHEAD, NoRunner, NotReady, RunService, Served
 
 DEFAULT_PORT = 8766
-REFUSED_PREFIXES = ("data/runs", "tests")
-"""Static paths never served: run exports (the API serves runs) and the browser tests."""
+REFUSED_PREFIXES = ("data/runs", "tests", "node_modules")
+"""Static paths never served: run exports (the API serves runs), the browser tests and the
+test tools."""
 UI_ROOT = Path(__file__).resolve().parents[3] / "observer"
 """The observer's page and code in a source checkout."""
 TYPES = {
@@ -77,19 +87,55 @@ class ControlRequest(BaseModel):
     shown: int | None = Field(default=None, ge=0)
 
 
-def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT) -> FastAPI:
-    if not token:
-        raise ValueError("the observer needs a token")
-    expected = f"Bearer {token}".encode()
+def is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def check_public(*, host: str, run_days: int | None) -> None:
+    """Refuse what a public observer may not do: run the world, or listen beyond this
+    machine (the tunnel reaches it here)."""
+    if run_days is not None:
+        raise ValueError("a public observer runs no world: run it with `run` in another window")
+    if not is_loopback(host):
+        raise ValueError(
+            "a public observer listens only on this machine (127.0.0.1); the tunnel brings"
+            " viewers to it"
+        )
+
+
+def build_app(
+    service: RunService,
+    token: str,
+    *,
+    viewer_token: str | None = None,
+    public: bool = False,
+    limits: Limits | None = None,
+    ui_root: Path | None = UI_ROOT,
+) -> FastAPI:
+    tokens = Tokens(token, viewer_token)
+
+    def role_of(request: Request) -> Role | None:
+        return tokens.role_of(list(request.scope.get("headers", [])))
 
     def authorised(request: Request) -> None:
-        given = request.headers.get("authorization", "").encode()
-        if not secrets.compare_digest(given, expected):
+        if role_of(request) is None:
             raise HTTPException(
                 status_code=401,
                 detail="this observer needs its token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+    def owner_only(request: Request) -> None:
+        # Runs after the router's check, so the request holds a token.
+        if public:
+            raise HTTPException(status_code=403, detail="this observer is for viewing only")
+        if role_of(request) is not Role.OWNER:
+            raise HTTPException(status_code=403, detail="viewers may not control the run")
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     api = APIRouter(prefix="/api", dependencies=[Depends(authorised)])
@@ -107,11 +153,11 @@ def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT
             # The run cannot be shown this way (a map edited away from its seed's).
             raise HTTPException(status_code=409, detail=str(error)) from error
 
-    @api.get("/control")
+    @api.get("/control", dependencies=[Depends(owner_only)])
     def control() -> Response:
         return _json(day_or_error(service.control))
 
-    @api.post("/control")
+    @api.post("/control", dependencies=[Depends(owner_only)])
     def set_control(request: ControlRequest) -> Response:
         return _json(
             day_or_error(
@@ -122,8 +168,15 @@ def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT
         )
 
     @api.get("/status")
-    def status() -> Response:
-        return _json(service.status())
+    def status(request: Request) -> Response:
+        served = service.status()
+        role = role_of(request)
+        body = {
+            **json.loads(served.body),
+            "role": role.value if role is not None else None,
+            "public": public,
+        }
+        return _json(Served(served.epoch, encode_json(body)))
 
     @api.get("/run/manifest")
     def manifest() -> Response:
@@ -201,6 +254,7 @@ def build_app(service: RunService, token: str, *, ui_root: Path | None = UI_ROOT
                 headers={"Cache-Control": "no-store"},
             )
 
+    app.add_middleware(Guard, tokens=tokens, limits=limits or Limits())
     return app
 
 
@@ -210,13 +264,19 @@ def serve(
     host: str = "127.0.0.1",
     port: int = DEFAULT_PORT,
     run_days: int | None = None,
+    public: bool = False,
 ) -> None:
     """Serve a run until interrupted (the `observe` command); with `run_days`, also run it
-    that many days further, as the page plays."""
+    that many days further, as the page plays; with `public`, also to viewers with the shared
+    link."""
     import uvicorn
 
+    if public:
+        check_public(host=host, run_days=run_days)
     from_env = bool(os.environ.get(TOKEN_ENV))
-    token = make_token()
+    viewer_from_env = bool(os.environ.get(VIEWER_TOKEN_ENV))
+    tokens = make_tokens(make_token(), os.environ.get(VIEWER_TOKEN_ENV), public=public)
+    token = tokens.owner
     service = RunService(root)
     if run_days is not None:
         service.attach(RunnerLink.spawn(root, run_days, on_change=service.runner_changed))
@@ -234,7 +294,24 @@ def serve(
         print(f"Open {address} and give the token from {TOKEN_ENV}.")
     else:
         print(f"Open {address}#token={token}")
+    if public:
+        print("This observer is public and viewing only: nobody can pause or steer the run here.")
+        if viewer_from_env:
+            print(
+                "Share https://<your tunnel address>/?run=live#token= followed by the viewer"
+                f" token from {VIEWER_TOKEN_ENV}."
+            )
+        else:
+            print(f"Share https://<your tunnel address>/?run=live#token={tokens.viewer}")
     try:
-        uvicorn.run(build_app(service, token), host=host, port=port, log_level="warning")
+        uvicorn.run(
+            build_app(service, token, viewer_token=tokens.viewer, public=public),
+            host=host,
+            port=port,
+            log_level="warning",
+            server_header=False,
+            proxy_headers=True,
+            forwarded_allow_ips="127.0.0.1",
+        )
     finally:
         service.stop()
