@@ -9,7 +9,7 @@ every test named here exists, so this list cannot quietly go stale.
 Run them:
 
 ```sh
-.venv/bin/pytest -m "not soak"                                   # Python, about 18 minutes
+.venv/bin/pytest -m "not soak"                                   # Python, about 28 minutes
 cd observer && node --test --test-concurrency=1 tests/*.test.mjs # browser, about 23 minutes
 ```
 

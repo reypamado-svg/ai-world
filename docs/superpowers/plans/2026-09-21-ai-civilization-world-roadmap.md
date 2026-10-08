@@ -32,7 +32,7 @@ Exit condition: all observer operations leave the authoritative world hash uncha
 
 ## Phase 5: Sealed Trial World
 
-Run balance calibration with rotated starting packages and thousands of scripted histories. Freeze the run manifest, rule hash, provider assignments, prompts, budgets, and remote endpoint policy. Launch one real four-sovereign world and monitor only integrity and infrastructure.
+Run balance calibration with rotated starting packages and thousands of scripted histories. Freeze the run manifest, rule hash, provider assignments, prompts, budgets, and remote endpoint policy. Launch one real model-played world (planned with four sovereigns; run with three) and monitor only integrity and infrastructure.
 
 Exit condition: the signed manifest is immutable, all launch-gate checks pass, and the live world can recover from the last checkpoint without divergent replay.
 
@@ -41,3 +41,11 @@ Exit condition: the signed manifest is immutable, all launch-gate checks pass, a
 Phase 1 defines deterministic state and event contracts. Phase 2 extends only those contracts. Phase 3 consumes Phase 2 reports and commands without gaining state access. Phase 4 reads committed state and events without becoming a writer. Phase 5 deploys the tested outputs of all earlier phases.
 
 The detailed plan for each later phase is written only after its predecessor passes its completion gate. This keeps its file paths, signatures, migrations, and tests grounded in the interfaces that actually shipped rather than guessed in advance.
+
+## Status
+
+- **Phase 1, Rules Laboratory:** complete (`docs/superpowers/plans/2026-09-21-rules-laboratory.md`; exit test `tests/acceptance/test_rules_laboratory.py`).
+- **Phase 2, Civilization Society:** complete (`docs/superpowers/plans/2026-09-30-phase-2-society.md`; exit test `tests/acceptance/test_phase_two_exit.py`).
+- **Phase 3, Sovereign Gateway:** complete (`docs/superpowers/plans/2026-10-01-phase-3-sovereign-gateway.md`; exit test `tests/acceptance/test_phase_three_exit.py`).
+- **Phase 4, Observer Experience:** complete (`docs/superpowers/plans/2026-10-01-phase-4-observer.md`; exit test `tests/acceptance/test_phase_four_exit.py`; checklist `docs/observer-acceptance.md`).
+- **Phase 5, Sealed Trial World:** built; the live year is pending. Plan `docs/superpowers/plans/2026-10-07-sealed-trial.md`; exit tests `tests/acceptance/test_phase_five_exit.py` and `tests/acceptance/test_free_trial_exit.py` prove the gate on stand-ins. The year runs on the user's PC by `docs/sealed-trial-runbook.md`; its record goes in `docs/sealed-trial-record.md`, which closes the phase when filled in.

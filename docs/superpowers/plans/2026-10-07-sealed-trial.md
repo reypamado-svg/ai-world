@@ -2,7 +2,8 @@
 
 Planned with Fable 5.1 at 3cb7cd0. The roadmap's last phase: calibrate the starts' balance
 with rotated starting packages and thousands of scripted histories, freeze and sign the run's
-settings, and launch one real world with four model-played sovereigns, watching only its
+settings, and launch one real world of model-played sovereigns (planned as four, run with three
+since 2026-10-08), watching only its
 integrity and infrastructure.
 
 **Exit:** the signed manifest is immutable, every launch-gate check passes, and the live world
@@ -29,10 +30,10 @@ Chosen on 2026-10-08: a 32 by 32 map, councils every 28 days, `--pace 600` (abou
 | C | Crash-safe recovery | Done (bcc35ad) |
 | D | Sealing | Done (6bbdff1) |
 | E | The launch gate | Done (1b38673) |
-| F | The live run on the user's PC: progress, pace, `councils`, the runbook | Built; the run itself is the user's |
+| F | The live run on the user's PC: progress, pace, `councils`, the runbook | Done; the run itself is the user's |
 | G | The free three-civilization trial: Claude Code and Codex adapters, 2-4 civilizations in the calibration and the gate, token caps, the runbook, the balance report | Done; the run itself is the user's |
 | H | Watching from outside: viewer links through a tunnel, viewing only, with limits and security headers | Done; the PC check is the user's |
-| I | Docs and close | Planned |
+| I | Docs and close: the exit mapping and the year's record | Done |
 
 ## A as built
 
@@ -78,7 +79,7 @@ mean, survival 100%, win shares 24.7–25.4%. Mixed: every policy within 0.6% ac
 - **Contact is rare.** A raider declares war in about 1 history in 10 and fights 0.16 battles a
   year; nobody else fights at all. Explorers on a 32×32 map met another people in about 1 of 16
   civilizations in the probes. On the planned 64×64 trial map, four model-played civilizations
-  would very likely never meet in a year.
+  would very likely never meet in a year (the trial is now 32×32, with three).
 - **Start position 0 holds less land.** Builders at position 0 hold 46 tiles at year end against
   51–54 at the others (14% below position 3). Territory is not one of the thresholds, and in a
   year it does not turn into people, but over a longer run it could.
@@ -248,7 +249,8 @@ the rest, instead of stopping at the first and silently playing on.
 - **What it checks:**
   - the run itself (`verify`'s checks, now `replay.verify_whole`), day 0, a pinned engine
     self-test (a fixed 24 by 24 world, 10 scripted days, under a second) and the code hashes;
-  - four civilizations played by models on four distinct (kind, host) providers, all on this
+  - four civilizations played by models on four distinct (kind, host) providers (since G: the
+    world's own 2 to 4, one distinct provider each), all on this
     engine's prompt version;
   - the cost cap set, every model priced (an unpriced model would be priced at the table's
     dearest rate, nothing on an empty table), and room for a year's 13 worst-case rounds;
@@ -339,9 +341,10 @@ and the year itself are run by the user.
   keeping the PC awake, backups, pace in Dubai time, and what to send back.
   `tests/acceptance/test_sealed_trial_runbook.py` keeps it honest: every command and option it
   names exists, it sets only known variables and types keys only masked, and its example
-  settings make a four-provider world with every model priced and a cap.
-- **The rehearsal** is a second world made with the same settings and run 31 days with a small
-  `--spend-limit`: two council days with real models, real prompts and real time limits, read
+  settings make a four-provider world with every model priced and a cap (since G: the free
+  three-provider world at zero prices, with token caps).
+- **The rehearsal** (superseded by G: 29 days under the token caps) is a second world made with
+  the same settings and run 31 days with a small `--spend-limit`: two council days with real models, real prompts and real time limits, read
   with `spend`, `councils --errors` and `verify`.
 - **The engine hash is unchanged**: the new code lives in files outside it (`cli.py`,
   `runner.py`, `spend.py`, `preflight.py`). The rule (code) hash moves, so the code on the PC
@@ -351,20 +354,21 @@ and the year itself are run by the user.
   now paced (0.2 s), which records nothing and keeps each run alive across the kill window.
 
 **Left for the user's PC** (the Linux suite cannot check them): `Read-Host -MaskInput` in
-PowerShell 7.1+; Ctrl+C during a pace; the console output; Ollama and Gemini accepting the
+PowerShell 7.1+; Ctrl+C during a pace; the console output; Ollama, Claude Code and Codex (since
+G; Gemini was skipped) accepting the
 council requests, reporting usage and a priced model name, and answering in time; the run on a
 local NTFS drive.
 
 **Defaults taken:** progress on standard output; quiet days silent; council times in seconds
 since the day began; `councils` includes baseline-played civilizations (no cost); the rehearsal
-uses the trial's settings for 31 days with `--spend-limit 10`.
+uses the trial's settings for 31 days with `--spend-limit 10` (since G: 29 days, token caps).
 
 ## G as built: the free three-civilization trial (planned by Fable 5.1 at 0d70bf7)
 
 On 2026-10-08 the user chose to keep the trial free: three civilizations on a 32 by 32 map,
 councils every 28 days, `--pace 600`, played by Claude through Claude Code (Claude Pro sign-in),
 ChatGPT through Codex (ChatGPT Plus sign-in) and a local Ollama model on a 16 GB NVIDIA card;
-Gemini skipped. Commits G1 (da56ec4), G2 (53da12a), G3 (e2529bd), G4 (1926725), G5 (the report).
+Gemini skipped. Commits G1 (da56ec4), G2 (53da12a), G3 (e2529bd), G4 (1926725), G5 (142f860, the report).
 
 - **Signed-in programs** (`gateway/cli_provider.py`, `claude_code_provider.py`,
   `codex_provider.py`): provider kinds `claude-code` and `codex`. Each council runs the vendor's
@@ -417,7 +421,7 @@ on Windows; `DISABLE_AUTOUPDATER`; Ollama's 32K context on the card within 600 s
 allowances at one council every 4.7 hours. The probe and the 29-day rehearsal check them before
 sealing.
 
-### Codex's review of the sealed trial (142f860): five findings, all fixed
+### Codex's review of the sealed trial (142f860): five findings, all fixed (8bc54db, 0722afc, 3af3c4c)
 
 - **P1, the worst case at the configured rate** (spend.py): a fallback or a dated model name can
   answer, and is charged at its own rate, up to the table's dearest. The worst-case round is now
@@ -495,3 +499,55 @@ the newest day whatever `?day=` says.
 **Left for the user's PC:** a phone off the home Wi-Fi opening the link, and Cloudflare's
 forwarded header names (`curl` lines in `docs/observer-remote.md`). Quick tunnels are offered by
 Cloudflare for testing and change address on restart; a named tunnel is the stable option.
+
+## I as built: the exit mapping and the year's record (planned by Fable 5.1 at f0c6e26)
+
+The original plan named the outside access "G" and the close "H"; the free trial took G, so they
+became H and I. Older commit messages use the new letters.
+
+- **`docs/sealed-trial-record.md`** maps each clause of the roadmap's exit sentence (the signed
+  manifest is immutable; all launch-gate checks pass; the live world can recover from the last
+  checkpoint without divergent replay) to the tests that prove it on stand-ins, and to what
+  only the year on the PC proves. Its second half is the year's record, blank: the world and
+  its seal, the launch gate, spending, councils by provider, every stop and restart with
+  `verify` after it, the end, and the checks only the PC can make. It matches the runbook's
+  "What to send back" field for field; the runbook and the launch gate link to it.
+- **`tests/acceptance/test_sealed_trial_record.py`** keeps it honest: every test it names
+  exists, each exit clause (as the roadmap words it) has exactly one row, it quotes the
+  balance report's engine hash, and its links resolve.
+- **This plan** is corrected where G changed it (three civilizations, the free route, the
+  29-day rehearsal, no Gemini), noting what each earlier slice planned rather than rewriting
+  it. The roadmap gains a status line per phase.
+
+## Phase 5 built; the live year is the user's
+
+Every slice is built and pushed to PR 35. On stand-ins, the exit sentence is proved by the
+tests `docs/sealed-trial-record.md` names, end to end by `test_phase_five_exit.py` (four stub
+models: gate, seal, a 95-day run with a kill, resume, verify, a tampered manifest refused) and
+`test_free_trial_exit.py` (the free three-provider world through the gate, the seal, a 29-day
+run and `verify --signer`). The phase closes when the year's record is filled in from the real
+run.
+
+| Slice | What | Commits |
+|---|---|---|
+| A | Balance calibration with rotated starts | c70dd1f, b72fb02, 098acef; report 964f174 |
+| B | Usage recording and the spending cap | 36dcb6c |
+| C | Crash-safe recovery | bcc35ad |
+| D | Sealing | 6bbdff1 |
+| E | The launch gate | 1b38673 |
+| — | Adjustable council cadence | 3125d40 |
+| F | Progress, pace, `councils`, the runbook | 70cb0cd, 0d70bf7 |
+| G | The free three-civilization trial | da56ec4, 53da12a, e2529bd, 1926725, 142f860; review fixes 8bc54db, 0722afc, 3af3c4c |
+| H | Watching from outside | 4829add, 0ff9113, 7c4c19d, f0c6e26 |
+| I | The exit mapping and the year's record | this slice's commits |
+
+**Known limits carried forward:**
+- No live record yet: the year runs on the user's PC by `docs/sealed-trial-runbook.md`.
+- The seal's code hash moves with every change to the package, so the PC must be on the final
+  commit before `seal`; a fix after sealing means a fork.
+- Codex takes no output limit; the cap reserves 32,000 output tokens a Codex call instead.
+- The plans' allowances are the user's own: a used-up allowance costs a civilization that
+  council (`unavailable`), not the run.
+- A quick tunnel changes its address when it restarts; a named tunnel keeps one.
+- On a 32×32 map, model-played civilizations may meet rarely in one year (calibration: contact
+  is rare with scripted explorers).
