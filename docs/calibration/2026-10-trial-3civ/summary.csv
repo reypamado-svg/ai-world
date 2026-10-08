@@ -1,0 +1,19 @@
+table,group,n,living,peak,tiles,settlements,survival,win_share,wars,battles,rejected
+builders by start position,0,750,33.632,33.632,46.552,1.0,1.0,0.334,0.0,0.0,0.104
+builders by start position,1,750,33.621,33.621,48.388,1.0,1.0,0.33,0.0,0.0,0.204
+builders by start position,2,750,33.633,33.633,50.387,1.0,1.0,0.336,0.0,0.0,0.132
+builders by civilization,0,750,33.569,33.569,48.469,1.0,1.0,0.318,0.0,0.0,0.147
+builders by civilization,1,750,33.592,33.592,48.432,1.0,1.0,0.322,0.0,0.0,0.147
+builders by civilization,2,750,33.725,33.725,48.425,1.0,1.0,0.36,0.0,0.0,0.147
+mixed by policy,expander,750,33.433,33.448,49.705,2.703,1.0,0.29,0.0,0.0,1.697
+mixed by policy,raider,750,33.685,33.712,42.204,1.0,1.0,0.376,0.051,0.039,4.879
+mixed by policy,trader,750,33.591,33.591,42.321,1.0,1.0,0.334,0.0,0.0,4.923
+mixed by policy and position,expander @ 0,250,33.452,33.46,48.108,2.912,1.0,0.29,0.0,0.0,1.964
+mixed by policy and position,expander @ 1,250,33.412,33.432,49.5,2.576,1.0,0.281,0.0,0.0,1.52
+mixed by policy and position,expander @ 2,250,33.436,33.452,51.508,2.62,1.0,0.3,0.0,0.0,1.608
+mixed by policy and position,raider @ 0,250,33.708,33.728,40.164,1.0,1.0,0.383,0.02,0.032,4.744
+mixed by policy and position,raider @ 1,250,33.704,33.708,42.336,1.0,1.0,0.368,0.06,0.016,4.848
+mixed by policy and position,raider @ 2,250,33.644,33.7,44.112,1.0,1.0,0.376,0.072,0.068,5.044
+mixed by policy and position,trader @ 0,250,33.58,33.58,40.224,1.0,1.0,0.332,0.0,0.0,4.776
+mixed by policy and position,trader @ 1,250,33.592,33.592,42.456,1.0,1.0,0.334,0.0,0.0,4.864
+mixed by policy and position,trader @ 2,250,33.6,33.6,44.284,1.0,1.0,0.335,0.0,0.0,5.128

@@ -30,7 +30,7 @@ Chosen on 2026-10-08: a 32 by 32 map, councils every 28 days, `--pace 600` (abou
 | D | Sealing | Done (6bbdff1) |
 | E | The launch gate | Done (1b38673) |
 | F | The live run on the user's PC: progress, pace, `councils`, the runbook | Built; the run itself is the user's |
-| G | The free three-civilization trial: Claude Code and Codex adapters, 2-4 civilizations in the calibration and the gate, token caps, the runbook | Built (G1-G4); the balance report in G5 |
+| G | The free three-civilization trial: Claude Code and Codex adapters, 2-4 civilizations in the calibration and the gate, token caps, the runbook, the balance report | Done; the run itself is the user's |
 | H | Reachable from outside | Planned |
 | I | Docs and close | Planned |
 
@@ -357,3 +357,61 @@ local NTFS drive.
 **Defaults taken:** progress on standard output; quiet days silent; council times in seconds
 since the day began; `councils` includes baseline-played civilizations (no cost); the rehearsal
 uses the trial's settings for 31 days with `--spend-limit 10`.
+
+## G as built: the free three-civilization trial (planned by Fable 5.1 at 0d70bf7)
+
+On 2026-10-08 the user chose to keep the trial free: three civilizations on a 32 by 32 map,
+councils every 28 days, `--pace 600`, played by Claude through Claude Code (Claude Pro sign-in),
+ChatGPT through Codex (ChatGPT Plus sign-in) and a local Ollama model on a 16 GB NVIDIA card;
+Gemini skipped. Commits G1 (da56ec4), G2 (53da12a), G3 (e2529bd), G4 (1926725), G5 (the report).
+
+- **Signed-in programs** (`gateway/cli_provider.py`, `claude_code_provider.py`,
+  `codex_provider.py`): provider kinds `claude-code` and `codex`. Each council runs the vendor's
+  own program once, found on PATH, in an empty folder removed afterwards: the charter as the
+  program's whole instructions (`--system-prompt-file`; Codex's `model_instructions_file`), the
+  papers on standard input, no tools, no saved session, Claude Code in `--safe-mode` (never
+  `--bare`, which ignores the sign-in), Codex read-only with no shell, web search, AGENTS.md or
+  environment context. The variables that would replace the sign-in with an API key are left
+  out of the program's environment; Claude Code is told not to update itself. A hung program is
+  killed with its children; a usage limit, a missing sign-in or an unreadable answer is that
+  council's `unavailable`, never retried. The output budget cannot be passed to either program;
+  the reply's size cap and the time limit bound a council.
+- **The seal** pins a program by kind and name (`cli://claude`), not by where it is installed.
+- **The gate** counts the world's own civilizations (2 to 4), one distinct provider each; a
+  signed-in program needs no token, passes `endpoints` with the path PATH gives and fails when
+  missing; `keys` warns while a sign-in hijacker is set; the probe shows each program's version
+  and sign-in; the clock asks only http(s) hosts.
+- **Caps in tokens**: any of a cost, input-token or output-token cap satisfies `spend`, which
+  counts the worst-case rounds each covers; every price may be zero. The trial's caps are
+  6,000,000 input and 1,500,000 output tokens, about 31 worst-case rounds of three civilizations.
+- **The calibration for 2 to 4 civilizations**: `--civilizations N` (builders play N builders,
+  mixed the last N policies, all N rotations); the win-share band is 0.6 to 1.4 times the even
+  share (15-35% at four, 20-47% at three). A stopped 28-day batch used to replay everything (its
+  resume keys left out the interval); rows are now matched on what they record, and a folder
+  made for another interval or number of civilizations is refused.
+- **The runbook** is rewritten for the free route; its doc test checks that no API key is ever
+  set and that the example settings make three distinct providers at zero price with a cap.
+
+### The matrix (1,500 one-year histories, three civilizations)
+
+`docs/calibration/2026-10-trial-3civ/`: 250 seeds, 3 rotations, builders and mixed, 32 by 32,
+365 days, councils every 28 days, engine `16b24380…`; 3,664 s on 3 workers. **Passed every check.**
+
+| Builders by start position | Living at the end | Tiles | Survival | Win share |
+|---|---|---|---|---|
+| 0 | 33.6 | 46.6 | 100% | 33% |
+| 1 | 33.6 | 48.4 | 100% | 33% |
+| 2 | 33.6 | 50.4 | 100% | 34% |
+
+- Population spread between starts is within 0.02%; win shares 33.0-33.6% (band 20-47%).
+- Mixed: expander 33.4 living with 2.7 settlements, trader 33.6, raider 33.7; each policy within
+  0.12% of its own mean at every start.
+- As at four civilizations, a scripted year changes little (32 founders become about 34) and
+  wars are rare (0.05 a raider a year). Start 0 holds about 8% fewer tiles than start 2 (46.6
+  against 50.4), with no effect on population or wins.
+
+**Left for the user's PC** (the Linux suite uses stand-ins): the real JSON of `claude -p` and
+`codex exec --json` and their usage-limit messages; `.exe` resolution and killing a hung program
+on Windows; `DISABLE_AUTOUPDATER`; Ollama's 32K context on the card within 600 s; the plans'
+allowances at one council every 4.7 hours. The probe and the 29-day rehearsal check them before
+sealing.
