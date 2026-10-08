@@ -103,6 +103,8 @@ from the program's environment; the gate names them so they can be removed)."""
 TOKEN_ENV = "SOVEREIGN_WORLD_OBSERVER_TOKEN"
 """The observer's token variable (`observer.TOKEN_ENV`; the engine side never imports the
 observer)."""
+VIEWER_TOKEN_ENV = "SOVEREIGN_WORLD_VIEWER_TOKEN"
+"""A public observer's viewer token variable (`observer.VIEWER_TOKEN_ENV`)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -789,17 +791,32 @@ def _check_seal_key(options: GateOptions, environ: Mapping[str, str]) -> Check:
 
 
 def _check_observer_token(environ: Mapping[str, str]) -> Check:
+    """The observer's own token and, when given, a public observer's viewer token: lengths
+    only, never the values."""
     token = environ.get(TOKEN_ENV, "")
+    viewer = environ.get(VIEWER_TOKEN_ENV, "")
+    failed: list[str] = []
+    warned: list[str] = []
+    said: list[str] = []
     if not token:
-        return Check(
-            "observer_token",
-            "WARN",
-            f"{TOKEN_ENV} is not present; `observe` makes a new token each time it starts",
+        warned.append(
+            f"{TOKEN_ENV} is not present; `observe` makes a new token each time it starts"
         )
-    if len(token) < MIN_OBSERVER_TOKEN_CHARS:
-        return Check(
-            "observer_token",
-            "FAIL",
-            f"{len(token)} characters; at least {MIN_OBSERVER_TOKEN_CHARS} needed",
-        )
-    return Check("observer_token", "PASS", f"{len(token)} characters")
+    elif len(token) < MIN_OBSERVER_TOKEN_CHARS:
+        failed.append(f"{len(token)} characters; at least {MIN_OBSERVER_TOKEN_CHARS} needed")
+    else:
+        said.append(f"{len(token)} characters")
+    if viewer:
+        if len(viewer) < MIN_OBSERVER_TOKEN_CHARS:
+            failed.append(
+                f"viewer token {len(viewer)} characters; at least {MIN_OBSERVER_TOKEN_CHARS} needed"
+            )
+        elif viewer == token:
+            warned.append(
+                f"{VIEWER_TOKEN_ENV} equals {TOKEN_ENV}; `observe --public` refuses it, so give"
+                " viewers a different token"
+            )
+        else:
+            said.append(f"viewer token {len(viewer)} characters")
+    status: Status = "FAIL" if failed else "WARN" if warned else "PASS"
+    return Check("observer_token", status, "; ".join([*failed, *warned, *said]))

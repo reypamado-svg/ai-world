@@ -26,7 +26,7 @@ from sovereign_world.config import (
     WorldConfig,
 )
 from sovereign_world.gateway.sovereign import prompt_hash
-from sovereign_world.observer import TOKEN_ENV
+from sovereign_world.observer import TOKEN_ENV, VIEWER_TOKEN_ENV
 from sovereign_world.persistence import WorldStore
 from sovereign_world.preflight import (
     CHECKS,
@@ -331,6 +331,7 @@ def test_the_launch_pass_checks_the_seal_and_the_day(
 
 def test_the_gate_names_the_observers_own_token_variable() -> None:
     assert preflight.TOKEN_ENV == TOKEN_ENV
+    assert preflight.VIEWER_TOKEN_ENV == VIEWER_TOKEN_ENV
 
 
 def test_the_observer_token(tmp_path: Path) -> None:
@@ -340,6 +341,21 @@ def test_the_observer_token(tmp_path: Path) -> None:
     good = _gate(store, environ={TOKEN_ENV: "y" * 43})
     assert good["observer_token"].status == "PASS"
     assert good["observer_token"].detail == "43 characters"
+    shared = _gate(store, environ={TOKEN_ENV: "y" * 43, VIEWER_TOKEN_ENV: "v" * 40})
+    assert shared["observer_token"].status == "PASS"
+    assert shared["observer_token"].detail == "43 characters; viewer token 40 characters"
+    short_viewer = _gate(store, environ={TOKEN_ENV: "y" * 43, VIEWER_TOKEN_ENV: "v" * 12})
+    assert short_viewer["observer_token"].status == "FAIL"
+    assert "viewer token 12 characters" in short_viewer["observer_token"].detail
+    same = _gate(store, environ={TOKEN_ENV: "y" * 43, VIEWER_TOKEN_ENV: "y" * 43})
+    assert same["observer_token"].status == "WARN"
+    assert "refuses it" in same["observer_token"].detail
+    alone = _gate(store, environ={VIEWER_TOKEN_ENV: "v" * 40})
+    assert alone["observer_token"].status == "WARN"
+    assert "viewer token 40 characters" in alone["observer_token"].detail
+    for check in (shared, short_viewer, same, alone):
+        assert "v" * 12 not in check["observer_token"].detail
+        assert "y" * 12 not in check["observer_token"].detail
 
 
 def test_preflight_writes_nothing_prints_no_secret_and_drops_the_seal_key(tmp_path: Path) -> None:

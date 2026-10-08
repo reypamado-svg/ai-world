@@ -13,7 +13,7 @@ import typer.main
 
 from sovereign_world.cli import _settings, app
 from sovereign_world.config import ENGINE_VERSION, RunManifest, WorldConfig
-from sovereign_world.observer import TOKEN_ENV
+from sovereign_world.observer import TOKEN_ENV, VIEWER_TOKEN_ENV
 from sovereign_world.preflight import SIGN_IN_HIJACKERS
 from sovereign_world.seal import SEAL_KEY_ENV, pins_of
 from sovereign_world.spend import worst_case_round
@@ -148,3 +148,17 @@ def test_the_world_and_calibration_it_makes_have_three_civilizations() -> None:
 def test_the_documents_it_points_to_exist() -> None:
     for target in re.findall(r"\]\(([^)#]+\.md)\)", DOC.read_text()):
         assert (DOC.parent / target).exists(), target
+
+
+def test_sharing_is_viewing_only_through_a_tunnel_to_this_machine() -> None:
+    commands = _commands()
+    observes = [words for words in commands if "observe" in words]
+    assert any("--public" in words for words in observes)
+    assert not any("--run-days" in words for words in observes)
+    tunnels = [words for words in commands if words[:2] == ["cloudflared", "tunnel"]]
+    assert tunnels and all(
+        words[words.index("--url") + 1] == "http://127.0.0.1:8766" for words in tunnels
+    )
+    # The viewer token is made fresh by each start (so a restart takes links back): the runbook
+    # never sets it.
+    assert VIEWER_TOKEN_ENV not in DOC.read_text()

@@ -142,6 +142,21 @@ runs/baseline-21 --days 30`): new days appear within about two seconds.
   tooltip gives the state hash the run saved for that day; `sovereign-world replay RUN
 --day N` prints the same hash.
 
+### Watching from outside (`observe --public`, slice H)
+
+```sh
+.venv/bin/sovereign-world observe runs/baseline-21 --public
+cloudflared tunnel --url http://127.0.0.1:8766      # in another terminal
+```
+
+A public observer also prints a link with a **viewer token** for others, to be put behind the
+tunnel's `https://` address. Viewers may look at everything and steer nothing; on a public
+observer nobody steers (it refuses `--run-days`, and listens only on 127.0.0.1). The page says
+**VIEWING ONLY · shared**, and a viewer's link keeps its token in the address so a reload
+works. Every answer carries a strict Content-Security-Policy and the other security headers,
+and requests are limited per visitor; under that policy the page draws through Pixi's own
+no-eval polyfills (`vendor/pixi/unsafe-eval.min.js`). See `docs/observer-remote.md`.
+
 ### Running the world from the observer (`observe --run-days`, O4)
 
 ```sh
@@ -351,7 +366,8 @@ node tests/art-manifest.mjs                            # regenerate art/manifest
 | `tour.test.mjs`            | The measurement tour holds the camera against wheel, drag and buttons, labels each row with the band it measured, records evictions, heap and load times                                                                                                                                                    |
 | `server.test.mjs`          | Live server: wrong token, newest day, Follow latest, later day in 5 s, run unchanged, Go/Follow, travellers, cut-back restart                                                                                                                                                                               |
 | `chronicle.test.mjs`       | Chronicle sentences with observer-assigned names, how each place was found, routine events hidden, the person an event names                                                                                                                                                                                |
-| `server-source.test.mjs`   | Live source: answers from another history refused (also a record and people from two), the token dropped from the address                                                                                                                                                                                   |
+| `server-source.test.mjs`   | Live source: answers from another history refused (also a record and people from two), the token dropped from the address, a viewing page never posts                                                                                                                                                       |
+| `viewer.test.mjs`          | A public observer under its CSP: a shared link viewing only, the crowd as particles and dots, a reload, the owner's window, control refused, headers, 429 then served                                                                                                                                       |
 | `timeline.test.mjs`        | Replay timeline: days stepped with the time carried over, holding at the last day, the slider, each day's recorded hash                                                                                                                                                                                     |
 | `perspective.test.mjs`     | A civilization's view: its people as its council counts them, council news, then in the page fog, kept camera, hidden world sites and chronicle, the run unchanged                                                                                                                                          |
 | `layout.test.mjs`          | Every control of a recorded run lies within the window at 1440 × 900 and 1280 × 720                                                                                                                                                                                                                         |

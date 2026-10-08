@@ -322,6 +322,35 @@ It prints an address with `#token=...` once: open it in the browser. The page dr
 from the address after reading it, so a reload (F5) needs the printed address again. Do not use
 `observe --run-days` for the trial: the window running `run` is the run's only writer.
 
+### Step 6b: share it (optional)
+
+To let others watch from anywhere, viewing only, serve the run publicly and open a tunnel to
+it ([details](observer-remote.md)). Once, install the tunnel program:
+
+```powershell
+winget install --id Cloudflare.cloudflared
+```
+
+In the **second** window, serve the run with `--public` instead of the plain `observe` above:
+
+```powershell
+$env:PYTHONUTF8 = "1"
+& .venv\Scripts\sovereign-world.exe observe work\trial --public
+```
+
+It prints your own address and a line `Share https://<your tunnel address>/?run=live#token=...`.
+In a **third** window, open the tunnel:
+
+```powershell
+cloudflared tunnel --url http://127.0.0.1:8766
+```
+
+It prints an address ending in `trycloudflare.com`. Put it in place of `<your tunnel address>`
+and send the whole link. Viewers see **VIEWING ONLY · shared**; nobody, you included, can pause
+or steer the run from a public observer. Ctrl+C in the third window stops sharing; restarting
+the second window makes a new link and cancels the old ones. The tunnel's address changes each
+time it starts.
+
 ### Step 7: after a stop, a crash or a reboot
 
 Press Ctrl+C once to stop after the day under way (a second Ctrl+C stops at once). To go on,

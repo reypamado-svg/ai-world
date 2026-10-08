@@ -78,37 +78,16 @@ speed and lookahead.
 | The runner never sees the token | `test_the_runner_never_sees_the_token` |
 | An answer from another history of the run is never shown | `server-source.test.mjs` › "an answer from another history is refused, not shown", `server-source.test.mjs` › "a day whose record and people come from two histories is refused" |
 
-## What the observer shows is what the run recorded
+## Watching from outside (slice H)
 
 | Promise | Proved by |
 |---|---|
-| Served bytes equal the static export's | `test_the_server_answers_with_the_exports_bytes`, `test_a_designed_town_is_served_as_exported` |
-| Each served day is the projection of `replay_run(store, D)`, with the hash the run saved (O4) | `test_every_served_day_is_its_replay_in_an_old_run`, `test_every_served_day_is_its_replay_in_a_designed_town`, `test_days_saved_while_followed_are_their_replay_too` |
-| The page shows the hash `replay --day D` prints | `server.test.mjs` › "a runner started by the observer plays with the page, stays a few days ahead, and finishes" |
-| Residents and travellers add up as the engine counts them | `test_residents_and_travellers_add_up_as_the_engine_counts` |
-| Day changes rebuild each day exactly | `test_changes_rebuild_each_day_from_another` |
-
-## The civilization perspective (O5)
-
-| Promise | Proved by |
-|---|---|
-| The serializer takes a council report and nothing else | `test_the_serializer_takes_only_a_council_report`, `test_the_service_builds_the_report_in_one_place` |
-| Each perspective is the serialized report of that day's replay | `test_the_endpoint_is_the_report_of_the_days_replay` |
-| Noninterference: hidden facts never change what is served | `test_the_perspective_does_not_change_when_hidden_facts_change`, `test_each_hidden_fact_leaves_the_perspective_alone`, `test_a_perspective_changes_with_its_own_facts` |
-| The engine's own report hides what a civilization cannot know | `test_an_unlearned_capture_is_hidden`, `test_an_unseen_siege_and_occupation_are_hidden`, `test_an_unheard_treaty_ending_is_hidden`, `test_unseen_ruins_and_the_worlds_ending_are_hidden` |
-| The page draws only what the report says, with opaque fog, and drops late world answers | `perspective.test.mjs` › "the page sees the world as one civilization, and back", `perspective.test.mjs` › "the perspective layer covers unknown tiles opaquely and veils old sightings" |
-| An export's perspectives are the server's bytes | `test_an_export_with_perspectives_has_the_servers_bytes` |
-
-## Exit readiness (O6)
-
-| Promise | Proved by |
-|---|---|
-| Every control of a recorded run is on screen at common window sizes | `layout.test.mjs` › "a run's controls are all on screen at" |
-| The measurement tour records the run, day and perspective it measured, and never resumes a runner | `tour.test.mjs` › "the tour measures a recorded run, with its day loads", `server.test.mjs` › "a runner started by the observer plays with the page, stays a few days ahead, and finishes" |
-| The server's answers can be timed on any run without calling a model | `test_the_route_timings_table_lists_every_measure` |
-| The art manifest lists every key the painters make, and is kept fresh | `art-manifest.test.mjs` › "the committed art manifest equals a fresh one" |
-| An art pack replaces painted sprites key by key, within the asset contract | `art-pack.test.mjs` › "the sample pack draws its sprites from PNG and the painters fill the rest", `art-pack.test.mjs` › "a pack sprite outside its footprint is drawn, and counted on the chip" |
-| A pack that cannot be loaded leaves the painted art and says so | `art-pack.test.mjs` › "a pack that is not there leaves the painted art, and says so" |
-| A pack that reaches outside its folder, or whose sprite is too large for the atlas or the crowd sheet, is not loaded at all, in the page as in the checker | `art-pack.test.mjs` › "a pack whose file lies outside its folder is refused whole", `art-pack.test.mjs` › "a pack whose citizen frame is too large for the crowd sheet is refused whole", `art-pack.test.mjs` › "the pack checker passes the sample and catches a broken pack" |
-| The server timings run on a run of one day | `test_the_route_timings_table_handles_a_run_of_one_day` |
-| The pack checker passes a good pack and names what is wrong with a bad one | `art-pack.test.mjs` › "the pack checker passes the sample and catches a broken pack" |
+| A viewer may look at every route but never steer; on a public observer nobody may | `test_a_viewer_may_look_at_everything_but_control_nothing`, `test_a_public_observer_lets_nobody_steer`, `viewer.test.mjs` › "nobody may steer a public observer, and its answers carry the security headers" |
+| The owner's token works only on the observer's own machine | `test_the_owners_token_works_only_on_the_observers_own_machine` |
+| Tokens are checked and both always compared in constant time | `test_tokens_are_checked_and_both_always_compared` |
+| Requests are limited per visitor and in all; large or unmeasured bodies are refused | `test_requests_are_limited_per_client_and_in_all`, `test_large_or_unmeasured_bodies_are_refused`, `viewer.test.mjs` › "a client asking too often is held back, then served again" |
+| Every answer carries the security headers, and the page needs nothing they refuse | `test_every_answer_carries_the_security_headers`, `test_the_page_needs_nothing_the_security_policy_refuses`, `viewer.test.mjs` › "a shared link is viewing only, keeps its token for a reload, and steps a day" |
+| A viewer sees no path from the observer's machine | `test_a_viewer_sees_no_path_from_this_machine` |
+| A public observer runs no world and listens only on its own machine | `test_a_public_observer_runs_no_world_and_stays_on_this_machine` |
+| A viewing page never asks to steer; the owner's own window on a public observer is viewing only | `server-source.test.mjs` › "a viewing page never asks to steer the runner", `viewer.test.mjs` › "the owner's own window on a shared observer is viewing only and drops its token" |
+| The runner never sees the viewer token | `test_the_runner_never_sees_the_token` |

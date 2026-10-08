@@ -31,7 +31,7 @@ Chosen on 2026-10-08: a 32 by 32 map, councils every 28 days, `--pace 600` (abou
 | E | The launch gate | Done (1b38673) |
 | F | The live run on the user's PC: progress, pace, `councils`, the runbook | Built; the run itself is the user's |
 | G | The free three-civilization trial: Claude Code and Codex adapters, 2-4 civilizations in the calibration and the gate, token caps, the runbook, the balance report | Done; the run itself is the user's |
-| H | Reachable from outside | Planned |
+| H | Watching from outside: viewer links through a tunnel, viewing only, with limits and security headers | Done; the PC check is the user's |
 | I | Docs and close | Planned |
 
 ## A as built
@@ -439,3 +439,59 @@ sealing.
   from a turn that completed, from a program that exited 0.
 
 None of these files is in the engine hash: the three-civilization report stays valid.
+
+## H as built: watching from outside (planned by Fable 5.1 at 3af3c4c)
+
+The user chose: **anyone with the link** may watch the live year through a Cloudflare Tunnel,
+with no login, and the observer is **viewing only, always**: nobody steers the run from outside.
+The how-to is `docs/observer-remote.md`; the runbook's step 6b has the PowerShell.
+
+- **Roles** (`observer/access.py`). The owner keeps the token `observe` prints. A public observer
+  (`observe --public`) also has a viewer token, fresh at each start or from
+  `SOVEREIGN_WORLD_VIEWER_TOKEN` (at least 32 characters, not the owner's). Both are compared in
+  constant time, always both. `/api/status` says `role` and `public`. `/api/control` answers 403
+  to viewers on both methods, and to everyone on a public observer. The owner's token is refused
+  (401, like a wrong token) on a request carrying `X-Forwarded-For`, `Cf-Connecting-Ip` or
+  `Cf-Ray`, so it works only on the observer's own machine.
+- **A public observer** refuses `--run-days` and any host but this machine, and runs uvicorn with
+  no `Server` header, trusting forwarded addresses only from 127.0.0.1 (the tunnel).
+- **The guard** (an ASGI middleware before every route and file): bodies over 4 KB are 413, a
+  body with no declared length 411; per visitor a burst of 600 requests and 20 a second, for all
+  visitors 3,000 and 150 a second (429 with `Retry-After`; the owner on its own machine is never
+  held back); the security headers on every answer (a strict CSP with no `unsafe-eval` or inline
+  styles, `nosniff`, `no-referrer`, `DENY` framing, a Permissions-Policy, same-origin COOP and
+  CORP). `node_modules` is no longer served. The runner never sees the viewer token.
+- **The page.** A viewer's link shows **VIEWING ONLY** (`· shared` on a public observer, also in
+  the owner's own window there), hides the lookahead, sends no control, and opens on the newest
+  day, following it. A viewer's token stays in the address (the link is the pass, so a reload
+  or a bookmark works); an owner's is still dropped. A 403 to a control post is no answer, not
+  an error.
+- **Pixi under the CSP.** Pixi 8 refuses to start where `eval` is refused. The page loads Pixi's
+  own no-eval polyfills (`pixi.js/unsafe-eval`, vendored unmodified) before making a renderer,
+  only where eval is refused; the static test server is unchanged. The polyfill carries its own
+  copy of the particle buffer, so the module's particle buffer is given the same no-eval update.
+  The inspector's colour swatch is set through the CSSOM, and `[hidden]` now always hides (the
+  lookahead box was shown without a runner, since `.toggle` is a flex box).
+- **The gate.** `observer_token` also checks `SOVEREIGN_WORLD_VIEWER_TOKEN` when it is set: FAIL
+  under 32 characters, WARN when it equals the owner's (`observe --public` refuses that).
+  Lengths only, never the values.
+- **Neither hash moves** for what a run computes: the engine hash is unchanged
+  (`16b24380…`). `cli.py` and `preflight.py` are in the seal's code hash, so H must be on the PC
+  before `seal`.
+
+**Tests.** `tests/observer/test_viewer_access.py` (roles on every route, the public observer,
+the owner from outside, both tokens always compared, limits per visitor and in all, bodies,
+headers on every status, no path from this PC, the CLI's refusals, and a static scan for
+anything the CSP refuses); `observer/tests/viewer.test.mjs` (in Chromium against a real
+`observe --public`: a shared link under the CSP, the crowd drawn as particles and dots, a reload,
+the owner's window, refused control and the headers, 429 and then served again);
+`server-source.test.mjs` (a viewing page never posts); `test_preflight.py`; the runbook's doc
+test.
+
+**Defaults taken.** The viewer token only under `--public`; the limits above; viewers keep the
+token in the address; `/api/control` is 403 to viewers on both methods; a viewing page opens on
+the newest day whatever `?day=` says.
+
+**Left for the user's PC:** a phone off the home Wi-Fi opening the link, and Cloudflare's
+forwarded header names (`curl` lines in `docs/observer-remote.md`). Quick tunnels are offered by
+Cloudflare for testing and change address on restart; a named tunnel is the stable option.
