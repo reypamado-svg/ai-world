@@ -37,6 +37,7 @@ ENGINE_EXCLUDED = (
     "rulehash.py",
     "seal.py",
     "preflight.py",
+    "doctor.py",
 )
 """Folders and files left out of the engine hash: they run, save, show or pay for a world, but
 decide nothing in it."""

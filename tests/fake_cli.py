@@ -1,7 +1,8 @@
 """Stand-ins for Claude Code's `claude` and OpenAI's `codex`, put first on PATH: each answers as
 the real program's documented output does, and logs what it was asked and which sign-in
 variables it could see. Behaviour by ``FAKE_CLI_MODE``: ok, limit, auth, notjson, hang, exit2,
-partial (an answer, then the turn fails), noturn (an answer, but no completed turn)."""
+partial (an answer, then the turn fails), noturn (an answer, but no completed turn),
+signedout (the status commands say not signed in)."""
 
 from __future__ import annotations
 
@@ -37,6 +38,12 @@ if args[:1] == ["--version"]:
     print(f"{program} 9.9.9 (fake)")
     sys.exit(0)
 if args[:2] in (["auth", "status"], ["login", "status"]):
+    if mode == "signedout":
+        if program == "claude":
+            print(json.dumps({"loggedIn": False}))
+        else:
+            print("Not logged in", file=sys.stderr)
+        sys.exit(1)
     if program == "claude":
         print(json.dumps({"loggedIn": True, "authMethod": "claude.ai"}))
     else:

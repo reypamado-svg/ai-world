@@ -53,3 +53,11 @@ def test_the_record_quotes_the_balance_reports_engine() -> None:
 def test_the_documents_it_points_to_exist() -> None:
     for target in re.findall(r"\]\(([^)#]+\.md)\)", RECORD.read_text()):
         assert (RECORD.parent / target).exists(), target
+
+
+def test_the_engine_is_the_one_the_balance_report_measured() -> None:
+    """Any change to the engine moves its hash, and the committed balance report then no longer
+    holds: the calibration must be played again before the trial is sealed."""
+    from sovereign_world.rulehash import engine_hash
+
+    assert engine_hash() == json.loads(REPORT.read_text())["engine_hash"]

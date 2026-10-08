@@ -605,6 +605,50 @@ def seal(
 
 
 @app.command()
+def doctor(
+    settings: str | None = typer.Option(
+        None, "--settings", help="The trial's settings file: the models to look for."
+    ),
+    root: str = typer.Option(
+        ".", "--root", help="The repository folder (its path and drive are checked)."
+    ),
+    ollama: str | None = typer.Option(
+        None, "--ollama", help="Ollama's address, if not the one in the settings."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the checks as JSON."),
+) -> None:
+    """Check this computer before the trial: Python, uv, PowerShell, the repository's folder
+    and drive, Claude Code and Codex signed in, the variables that would replace their
+    sign-ins, Ollama and its model and context, the GPU, disk, sleep settings and the clock.
+    It writes nothing and shows no variable's value; it exits 1 if any check fails."""
+    from sovereign_world.doctor import DOCTOR_TITLES, machine_checks
+
+    os.environ.pop(SEAL_KEY_ENV, None)
+    chosen = _settings(settings).get("sovereigns")
+    sovereigns = chosen if isinstance(chosen, dict) else None
+    checks = machine_checks(Path(root), sovereigns, ollama_url=ollama, environ=dict(os.environ))
+    ready = gate_passed(checks)
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "passed": ready,
+                    "checks": [
+                        {"id": c.id, "title": c.title, "status": c.status, "detail": c.detail}
+                        for c in checks
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        for line in render(checks, ids=DOCTOR_TITLES):
+            typer.echo(line)
+    if not ready:
+        raise typer.Exit(1)
+
+
+@app.command()
 def preflight(
     directory: Path,
     probe: bool = typer.Option(

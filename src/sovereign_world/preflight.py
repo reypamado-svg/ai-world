@@ -113,10 +113,12 @@ class Check:
     id: str
     status: Status
     detail: str
+    label: str = ""
+    """The title, for checks other than the gate's own (the readiness check's)."""
 
     @property
     def title(self) -> str:
-        return TITLES[self.id]
+        return self.label or TITLES[self.id]
 
 
 @dataclass(frozen=True)
