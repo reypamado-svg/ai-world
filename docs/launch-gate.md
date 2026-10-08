@@ -27,6 +27,7 @@ What each part of the phase's exit sentence rests on, and the year's record to f
 |---|---|---|---|---|---|
 | `store` | the run loads, replays and verifies | the journal's chain, header and every day's hash, the replayed day, the checkpoint, and the world rederived from its councils | | any difference | §19 deterministic replay and recovery |
 | `day` | the world has not begun | day 0 | later, before `--launch` | later, under `--launch` | §19 |
+| `writer` | no other writer holds the run | no process holds the run's writer lock (checked without taking it, creating nothing) | a `run` or `observe --run-days` holds it, before `--launch` | one holds it, under `--launch` | one writer per run (slice J) |
 | `engine` | the engine replays its pinned self-test | a fixed 24 by 24 world, 10 scripted days, hashes as pinned | | another hash | §19 deterministic replay |
 | `code` | the code's hashes | always: the rule and engine hashes, for the record | | | §19 rules frozen and reviewable |
 | `players` | every civilization played by a model | the world's civilizations (2 to 4), each with a model provider and model | | one scripted, or a model not named | roadmap: model-played sovereigns |

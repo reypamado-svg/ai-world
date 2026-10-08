@@ -40,6 +40,7 @@ Status = Literal["PASS", "WARN", "FAIL", "SKIP"]
 CHECKS: tuple[tuple[str, str], ...] = (
     ("store", "the run loads, replays and verifies"),
     ("day", "the world has not begun"),
+    ("writer", "no other writer holds the run"),
     ("engine", "the engine replays its pinned self-test"),
     ("code", "the code's hashes"),
     ("players", "every civilization played by a model"),
@@ -343,6 +344,7 @@ def launch_gate(
         checks.append(Check("day", "SKIP", "the run did not load"))
     else:
         checks.append(_check_day(latest_day, options))
+    checks.append(_check_writer(store.root, options))
     checks.append(_check_engine())
     checks.append(_check_code())
     if run is None:
@@ -369,10 +371,11 @@ def passed(checks: Iterable[Check]) -> bool:
     return all(check.status != "FAIL" for check in checks)
 
 
-def render(checks: Iterable[Check]) -> list[str]:
-    """One line per check, then the counts."""
+def render(checks: Iterable[Check], ids: Iterable[str] | None = None) -> list[str]:
+    """One line per check, then the counts; ``ids`` (the gate's by default) set the column
+    width."""
     listed = list(checks)
-    width = max(len(check_id) for check_id, _ in CHECKS)
+    width = max(len(check_id) for check_id in (TITLES if ids is None else ids))
     lines = [
         f"{check.status:<4}  {check.id:<{width}}  {check.title}"
         + (f" — {check.detail}" if check.detail else "")
@@ -387,6 +390,21 @@ def render(checks: Iterable[Check]) -> list[str]:
 
 
 STATUSES: tuple[Status, ...] = ("PASS", "WARN", "FAIL", "SKIP")
+
+
+def _check_writer(root: Path, options: GateOptions) -> Check:
+    """Whether another process (a `run`, or `observe --run-days`) is writing the run. Only
+    probes the writer lock: it creates nothing and changes nothing."""
+    from sovereign_world.persistence import writer_held
+
+    if not writer_held(root):
+        return Check("writer", "PASS", "none")
+    status: Status = "FAIL" if options.launch else "WARN"
+    return Check(
+        "writer",
+        status,
+        "a writer holds the run (a `run` or `observe --run-days` is going); stop it first",
+    )
 
 
 def _check_day(day: int, options: GateOptions) -> Check:

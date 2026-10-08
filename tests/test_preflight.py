@@ -132,6 +132,7 @@ def test_a_fresh_four_provider_run_passes_offline(tmp_path: Path) -> None:
     assert statuses == {
         "store": "PASS",
         "day": "PASS",
+        "writer": "PASS",
         "engine": "PASS",
         "code": "PASS",
         "players": "PASS",
@@ -333,6 +334,20 @@ def test_the_launch_pass_checks_the_seal_and_the_day(
 def test_the_gate_names_the_observers_own_token_variable() -> None:
     assert preflight.TOKEN_ENV == TOKEN_ENV
     assert preflight.VIEWER_TOKEN_ENV == VIEWER_TOKEN_ENV
+
+
+def test_the_gate_names_a_writer_holding_the_run(tmp_path: Path) -> None:
+    from sovereign_world.persistence import WriterLock
+
+    store = _store(tmp_path / "run")
+    assert _gate(store)["writer"].status == "PASS"
+    assert not (store.root / "writer.lock").exists()
+    with WriterLock(store.root):
+        held = _gate(store)["writer"]
+        assert held.status == "WARN" and "stop it first" in held.detail
+    with WriterLock(store.root):
+        assert _gate(store, GateOptions(launch=True))["writer"].status == "FAIL"
+    assert _gate(store)["writer"].status == "PASS"
 
 
 def test_the_observer_token(tmp_path: Path) -> None:
