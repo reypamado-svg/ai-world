@@ -42,8 +42,8 @@ CHECKS: tuple[tuple[str, str], ...] = (
     ("day", "the world has not begun"),
     ("engine", "the engine replays its pinned self-test"),
     ("code", "the code's hashes"),
-    ("players", "four civilizations, each played by a model"),
-    ("providers", "four distinct providers (kind and host)"),
+    ("players", "every civilization played by a model"),
+    ("providers", "one distinct provider (kind and host) per civilization"),
     ("prompts", "every sovereign on this engine's prompt version"),
     ("spend", "budgets, the hard cap and prices"),
     ("keys", "the key variables are present (names only)"),
@@ -87,6 +87,19 @@ PROBE_USER = "Reply now."
 PROBE_MAX_OUTPUT_TOKENS = 256
 PROBE_TIMEOUT_SECONDS = 60.0
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1", "[::1]")
+MODEL_REQUIRED = ("openai", "compatible", "claude-code", "codex")
+"""Kinds that have no default model (Claude's API client has one)."""
+SIGN_IN_HIJACKERS = {
+    "claude-code": (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+    ),
+    "codex": ("CODEX_API_KEY", "CODEX_ACCESS_TOKEN"),
+}
+"""Variables that would take a signed-in program off the user's plan (its adapter drops them
+from the program's environment; the gate names them so they can be removed)."""
 TOKEN_ENV = "SOVEREIGN_WORLD_OBSERVER_TOKEN"
 """The observer's token variable (`observer.TOKEN_ENV`; the engine side never imports the
 observer)."""
@@ -123,6 +136,8 @@ class ProbeResult:
     output_tokens: int = 0
     error: str | None = None
     """The error's type and first line, with every known secret removed."""
+    note: str | None = None
+    """For a signed-in program: its version and sign-in."""
 
 
 Prober = Callable[[str, SovereignConfig, Any, float], ProbeResult]
@@ -161,7 +176,7 @@ def offline_checks(store: WorldStore, manifest: RunManifest, state: WorldState) 
                 f"{civilization_id} is set to prompt {config.prompt_version}, not this engine's"
                 f" {PROMPT_VERSION}"
             )
-        if config.provider in ("openai", "compatible") and not config.model:
+        if config.provider in MODEL_REQUIRED and not config.model:
             problems.append(f"{civilization_id} names no model")
     try:
         pins_of(manifest)
@@ -248,9 +263,12 @@ def probe_provider(
         return ProbeResult(
             civilization, pin.model, error=f"{type(error).__name__}: {str(error) or 'no detail'}"
         )
+    status = getattr(provider, "status", None)
+    note = status() if callable(status) else None
     return ProbeResult(
         civilization,
         pin.model,
+        note=note if isinstance(note, str) else None,
         answering_model=reply.model or pin.model,
         latency_ms=round((time.perf_counter() - started) * 1000),
         input_tokens=reply.input_tokens,
@@ -291,6 +309,7 @@ def launch_gate(
     disk_usage: Callable[[Path], Any] = shutil.disk_usage,
     prober: Prober | None = probe_provider,
     dates: Callable[[Iterable[tuple[str, str]]], dict[str, float | None]] = host_dates,
+    which: Callable[[str], str | None] = shutil.which,
 ) -> list[Check]:
     """Every check of the launch gate, in order."""
     from sovereign_world.seal import pins_of
@@ -333,7 +352,7 @@ def launch_gate(
         checks.append(_check_prompts(run))
         checks.append(_check_spend(store, run, options))
         checks.append(_check_keys(run, environ))
-        checks.append(_check_endpoints(run))
+        checks.append(_check_endpoints(run, which))
         checks.append(_check_probe(run, options, environ, prober))
     checks.append(_check_disk(store, disk_usage))
     checks.append(_check_clock(store, run, options, now, dates))
@@ -394,8 +413,11 @@ def _check_code() -> Check:
 def _check_players(run: _Run) -> Check:
     civilizations = sorted(str(civ) for civ in run.state.civilizations)
     problems = []
-    if run.manifest.config.civilizations != 4 or len(civilizations) != 4:
-        problems.append(f"the world has {len(civilizations)} civilizations, not 4")
+    if run.manifest.config.civilizations != len(civilizations):
+        problems.append(
+            f"the world has {len(civilizations)} civilizations, its settings"
+            f" {run.manifest.config.civilizations}"
+        )
     for civilization in civilizations:
         config = run.manifest.sovereigns.get(civilization)
         if config is None or config.provider == "baseline":
@@ -407,7 +429,8 @@ def _check_players(run: _Run) -> Check:
     return Check(
         "players",
         "PASS",
-        "; ".join(
+        f"{len(civilizations)} civilizations: "
+        + "; ".join(
             f"{civ}: {run.manifest.sovereigns[civ].provider} {run.manifest.sovereigns[civ].model}"
             for civ in civilizations
         ),
@@ -416,9 +439,12 @@ def _check_players(run: _Run) -> Check:
 
 def _check_providers(run: _Run) -> Check:
     distinct = distinct_providers(run.pins)
+    needed = len(run.state.civilizations)
     detail = ", ".join(f"{kind} at {host}" for kind, host in sorted(distinct))
-    if len(distinct) < 4:
-        return Check("providers", "FAIL", f"{len(distinct)} distinct: {detail or 'none'}")
+    if len(distinct) < needed:
+        return Check(
+            "providers", "FAIL", f"{len(distinct)} distinct of {needed}: {detail or 'none'}"
+        )
     return Check("providers", "PASS", detail)
 
 
@@ -440,11 +466,14 @@ def _check_prompts(run: _Run) -> Check:
 
 def _check_spend(store: WorldStore, run: _Run, options: GateOptions) -> Check:
     from sovereign_world.gateway.records import recorded_councils
-    from sovereign_world.spend import tally, worst_case_round
+    from sovereign_world.spend import caps_of, rounds_covered, shown_cap, tally
 
     spend = run.manifest.spend
-    if spend is None or spend.max_cost_usd is None:
-        return Check("spend", "FAIL", "no cost cap is set in the run's [spend] settings")
+    caps = caps_of(spend)
+    if spend is None or not caps:
+        return Check(
+            "spend", "FAIL", "no cap is set in the run's [spend] settings (cost or tokens)"
+        )
     models = sorted(
         {
             config.model
@@ -455,13 +484,13 @@ def _check_spend(store: WorldStore, run: _Run, options: GateOptions) -> Check:
     unpriced = [model for model in models if model not in spend.prices]
     if unpriced:
         return Check("spend", "FAIL", f"no price for {', '.join(unpriced)}")
-    worst = worst_case_round(run.manifest)
-    spent = tally(recorded_councils(store), spend).cost_usd
-    rounds = int((spend.max_cost_usd - spent) // worst.cost_usd) if worst.cost_usd > 0 else 10**6
+    covered = rounds_covered(run.manifest, tally(recorded_councils(store), spend))
+    rounds = min(covered.values())
     budgets = run.manifest.budgets
     detail = (
-        f"cap ${spend.max_cost_usd:,.2f}, spent ${spent:,.2f}; worst-case round"
-        f" ${worst.cost_usd:,.2f}, covers {rounds}; {budgets.max_output_tokens:,} output tokens,"
+        "cap "
+        + ", ".join(shown_cap(name, cap) for name, cap in caps)
+        + f"; covers {rounds} worst-case rounds; {budgets.max_output_tokens:,} output tokens,"
         f" {budgets.timeout_seconds:g} s a call"
     )
     needed = regular_councils(run.manifest.config.council_interval_days, options.planned_days)
@@ -475,11 +504,17 @@ def _check_spend(store: WorldStore, run: _Run, options: GateOptions) -> Check:
 
 
 def _check_keys(run: _Run, environ: Mapping[str, str]) -> Check:
+    from sovereign_world.seal import CLI_PROGRAMS
+
     missing: list[str] = []
     present: list[str] = []
     notes: list[str] = []
+    hijackers: set[str] = set()
     for civ, pin in sorted(run.pins.items()):
-        if pin.token_env:
+        if pin.kind in CLI_PROGRAMS:
+            notes.append(f"{civ}: no token (signed-in program)")
+            hijackers |= {name for name in SIGN_IN_HIJACKERS[pin.kind] if environ.get(name)}
+        elif pin.token_env:
             (present if environ.get(pin.token_env) else missing).append(pin.token_env)
         elif _loopback(pin.host):
             notes.append(f"{civ}: no token (loopback)")
@@ -497,17 +532,21 @@ def _check_keys(run: _Run, environ: Mapping[str, str]) -> Check:
     )
     if missing:
         return Check("keys", "FAIL", f"not present: {', '.join(sorted(set(missing)))}")
+    warnings = []
     if redirects:
-        return Check(
-            "keys",
-            "WARN",
-            f"{detail}; {', '.join(redirects)} present (ignored by a sealed run)",
+        warnings.append(f"{', '.join(redirects)} present (ignored by a sealed run)")
+    if hijackers:
+        warnings.append(
+            f"{', '.join(sorted(hijackers))} present (left out of the signed-in programs'"
+            " environment; remove it)"
         )
+    if warnings:
+        return Check("keys", "WARN", "; ".join([detail, *warnings]))
     return Check("keys", "PASS", detail)
 
 
-def _check_endpoints(run: _Run) -> Check:
-    from sovereign_world.seal import HOSTED_BASE_URLS
+def _check_endpoints(run: _Run, which: Callable[[str], str | None] = shutil.which) -> Check:
+    from sovereign_world.seal import CLI_PROGRAMS, HOSTED_BASE_URLS
 
     problems: list[str] = []
     warnings: list[str] = []
@@ -515,6 +554,13 @@ def _check_endpoints(run: _Run) -> Check:
     for civ, pin in sorted(run.pins.items()):
         config = run.manifest.sovereigns[civ]
         label = config.label or pin.kind
+        if pin.kind in CLI_PROGRAMS:
+            found = which(pin.host)
+            if found is None:
+                problems.append(f"{civ}: the {pin.host} program is not on PATH")
+            else:
+                shown.append(f"{civ}: {label} by the signed-in program {found}")
+            continue
         shown.append(f"{civ}: {label} at {pin.base_url()}")
         if pin.kind in HOSTED_BASE_URLS:
             if pin.base_url() != HOSTED_BASE_URLS[pin.kind]:
@@ -557,7 +603,9 @@ def _check_probe(
         answered = result.answering_model or pin.model
         parts.append(
             f"{civ}: {answered} ({result.latency_ms} ms,"
-            f" {result.input_tokens} in/{result.output_tokens} out)"
+            f" {result.input_tokens} in/{result.output_tokens} out"
+            + (f"; {result.note}" if result.note else "")
+            + ")"
         )
         if answered != pin.model:
             warned.append(f"{civ}: a fallback answered ({answered}, not {pin.model})")
@@ -605,7 +653,11 @@ def _check_clock(
         return Check("clock", "FAIL", f"the clock says {shown}, before the run was last saved")
     if not options.probe or run is None:
         return Check("clock", "PASS", shown)
-    hosts = {(pin.scheme, pin.host) for pin in run.pins.values() if not _loopback(pin.host)}
+    hosts = {
+        (pin.scheme, pin.host)
+        for pin in run.pins.values()
+        if pin.scheme in ("http", "https") and not _loopback(pin.host)
+    }
     skews: list[str] = []
     for host, stamp in sorted(dates(hosts).items()):
         if stamp is None:

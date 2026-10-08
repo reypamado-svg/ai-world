@@ -62,10 +62,13 @@ from sovereign_world.seal import (
 )
 from sovereign_world.spend import (
     Tally,
+    caps_of,
     cost_of,
     council_summary,
     outcome_word,
     prompt_round,
+    rounds_covered,
+    shown_cap,
     stop_reason,
     tally,
     worst_case_round,
@@ -261,11 +264,15 @@ class _Progress:
         self.spend = manifest.spend or SpendConfig()
 
     def start(self, state: WorldState, planned: int) -> None:
-        cap = self.spend.max_cost_usd
+        caps = caps_of(self.manifest.spend)
         typer.echo(
             f"run {str(self.manifest.run_id)[:8]} day {state.day} -> {state.day + planned},"
             f" councils every {state.config.council_interval_days} days,"
-            + (" no cost cap" if cap is None else f" cap ${cap:,.2f}")
+            + (
+                " cap " + ", ".join(shown_cap(name, cap) for name, cap in caps)
+                if caps
+                else " no cost cap"
+            )
         )
 
     def council(self, record: CouncilRecord, seconds: float) -> None:
@@ -287,11 +294,17 @@ class _Progress:
         if progress.councils:
             cap = self.spend.max_cost_usd
             spent = progress.spent
+            tokens_in = f"{spent.input_tokens:,} in" + (
+                f" of {self.spend.max_input_tokens:,}" if self.spend.max_input_tokens else ""
+            )
+            tokens_out = f"{spent.output_tokens:,} out" + (
+                f" of {self.spend.max_output_tokens:,}" if self.spend.max_output_tokens else ""
+            )
             typer.echo(
                 f"day {progress.councils[0].day} councils: {len(progress.councils)} in"
                 f" {progress.elapsed_seconds:.1f} s; spent ${spent.cost_usd:,.4f}"
                 + ("" if cap is None else f" of ${cap:,.2f}")
-                + f" ({spent.input_tokens:,} in, {spent.output_tokens:,} out)"
+                + f" ({tokens_in}, {tokens_out})"
             )
         if progress.checkpoint:
             typer.echo(f"checkpoint saved at day {progress.day}")
@@ -342,6 +355,14 @@ def spend(
             f"cost cap: ${cap:,.2f}; remaining ${remaining:,.4f}"
             + (f", about {rounds} worst-case rounds" if rounds is not None else "")
         )
+    covered = rounds_covered(manifest, spent)
+    used = {"input tokens": spent.input_tokens, "output tokens": spent.output_tokens}
+    for name, cap in caps_of(manifest.spend):
+        if name in used:
+            typer.echo(
+                f"{name} cap: {int(cap):,}; remaining {max(0, int(cap) - used[name]):,},"
+                f" about {covered[name]} worst-case rounds"
+            )
     reason = stop_reason(manifest, spent)
     typer.echo(f"next day: {'stops, ' + reason if reason else 'may run'}")
     if dry_run:

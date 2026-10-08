@@ -170,7 +170,7 @@ def test_an_old_prompt_version_fails(tmp_path: Path) -> None:
 def test_the_cap_and_prices_are_required_and_a_thin_cap_warned(tmp_path: Path) -> None:
     price = {"m": Price(input_per_million_usd=1, output_per_million_usd=1)}
     no_cap = _gate(_store(tmp_path / "a", spend=SpendConfig(prices=price)))
-    assert no_cap["spend"].status == "FAIL" and "no cost cap" in no_cap["spend"].detail
+    assert no_cap["spend"].status == "FAIL" and "no cap is set" in no_cap["spend"].detail
     unpriced = _gate(_store(tmp_path / "b", spend=SpendConfig(max_cost_usd=100)))
     assert unpriced["spend"].status == "FAIL" and "no price for m" in unpriced["spend"].detail
     thin = _gate(_store(tmp_path / "c", spend=SpendConfig(max_cost_usd=0.5, prices=price)))

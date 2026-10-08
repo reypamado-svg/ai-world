@@ -46,6 +46,9 @@ HOSTED_BASE_URLS = {
 """Where the hosted providers' clients are pointed in a sealed run, whatever the environment
 says (``ANTHROPIC_BASE_URL`` and ``OPENAI_BASE_URL`` then have no effect)."""
 HOSTED_TOKEN_ENVS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+CLI_PROGRAMS = {"claude-code": "claude", "codex": "codex"}
+"""Kinds played by a vendor's own program on this computer, signed in with the user's plan: the
+pin names the program (``cli://claude``), not where it is installed."""
 
 
 class SealKeyMissing(RuntimeError):
@@ -156,7 +159,15 @@ def pins_of(manifest: RunManifest) -> dict[str, ProviderPin]:
     for civilization_id, config in sorted(manifest.sovereigns.items()):
         if config.provider == "baseline":
             continue
-        if config.provider in HOSTED_BASE_URLS:
+        if config.provider in CLI_PROGRAMS:
+            pins[civilization_id] = ProviderPin(
+                kind=config.provider,
+                model=config.model,
+                scheme="cli",
+                host=CLI_PROGRAMS[config.provider],
+                path="",
+            )
+        elif config.provider in HOSTED_BASE_URLS:
             pins[civilization_id] = _pin(
                 config.provider,
                 config.model,

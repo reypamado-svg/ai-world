@@ -220,3 +220,28 @@ def test_the_spending_cap_enters_the_manifest_hash_only_when_set() -> None:
         {**plain.model_dump(), "spend": SpendConfig(max_cost_usd=5).model_dump()}
     )
     assert capped.content_hash() != plain.content_hash()
+
+
+def test_each_cap_counts_the_worst_case_rounds_it_covers() -> None:
+    from sovereign_world.spend import Tally, caps_of, rounds_covered, shown_cap
+
+    free = SpendConfig(
+        max_input_tokens=6_000_000,
+        max_output_tokens=1_500_000,
+        prices={"m": Price(input_per_million_usd=0, output_per_million_usd=0)},
+    )
+    manifest = _manifest(free, **{"civilization:0000000001": _model("m")})
+    worst = worst_case_round(manifest)
+    assert worst.cost_usd == 0 and worst.input_tokens == 62_668
+    assert caps_of(free) == [("input tokens", 6e6), ("output tokens", 1.5e6)]
+    assert rounds_covered(manifest, Tally()) == {"input tokens": 95, "output tokens": 93}
+    used = Tally(input_tokens=6_000_000 - 62_667)
+    assert rounds_covered(manifest, used)["input tokens"] == 0
+    assert shown_cap("cost", 50) == "$50.00"
+    assert shown_cap("input tokens", 6e6) == "6,000,000 input tokens"
+    paid = SpendConfig(
+        max_cost_usd=10, prices={"m": Price(input_per_million_usd=3, output_per_million_usd=15)}
+    )
+    covered = rounds_covered(_manifest(paid, **{"civilization:0000000001": _model("m")}), Tally())
+    assert list(covered) == ["cost"] and covered["cost"] > 0
+    assert caps_of(None) == [] and caps_of(SpendConfig()) == []

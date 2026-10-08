@@ -26,8 +26,8 @@ their values. `--json` prints the same as JSON, to keep outside the run's folder
 | `day` | the world has not begun | day 0 | later, before `--launch` | later, under `--launch` | §19 |
 | `engine` | the engine replays its pinned self-test | a fixed 24 by 24 world, 10 scripted days, hashes as pinned | | another hash | §19 deterministic replay |
 | `code` | the code's hashes | always: the rule and engine hashes, for the record | | | §19 rules frozen and reviewable |
-| `players` | four civilizations, each played by a model | four, each with a model provider and model | | fewer, or one scripted | roadmap: a four-sovereign world |
-| `providers` | four distinct providers (kind and host) | four distinct (kind, host) pairs | | fewer | the user's decision: four providers |
+| `players` | every civilization played by a model | four, each with a model provider and model | | fewer, or one scripted | roadmap: a four-sovereign world |
+| `providers` | one distinct provider (kind and host) per civilization | four distinct (kind, host) pairs | | fewer | the user's decision: four providers |
 | `prompts` | every sovereign on this engine's prompt version | all on it; the reply schema's hash shown | | any other (fork the run) | §19 prompts frozen |
 | `spend` | budgets, the hard cap and prices | a cost cap, every model priced, room for a worst-case round at each regular council of the planned days (14 in a year of 28-day councils) | room for fewer | no cap, or a model without a price | the user's decision: a hard cap |
 | `keys` | the key variables are present (names only) | every token variable present; loopback endpoints need none | `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` present (ignored by a sealed run) | a token variable missing | credentials only from the environment |

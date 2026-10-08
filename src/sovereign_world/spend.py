@@ -170,6 +170,40 @@ def stop_reason(manifest: RunManifest, spent: Tally) -> str | None:
     return None
 
 
+UNLIMITED_ROUNDS = 10**6
+"""Rounds a cap covers when a worst-case round costs nothing against it."""
+
+
+def caps_of(spend: SpendConfig | None) -> list[tuple[str, float]]:
+    """The caps a run sets, by name: ``cost`` (US dollars), ``input tokens``, ``output tokens``."""
+    if spend is None:
+        return []
+    named = (
+        ("cost", spend.max_cost_usd),
+        ("input tokens", spend.max_input_tokens),
+        ("output tokens", spend.max_output_tokens),
+    )
+    return [(name, float(cap)) for name, cap in named if cap is not None]
+
+
+def rounds_covered(manifest: RunManifest, spent: Tally) -> dict[str, int]:
+    """For each cap the run sets, how many more worst-case council rounds it covers."""
+    worst = worst_case_round(manifest)
+    used = {"cost": spent.cost_usd, "input tokens": spent.input_tokens}
+    used["output tokens"] = spent.output_tokens
+    per = {"cost": worst.cost_usd, "input tokens": worst.input_tokens}
+    per["output tokens"] = worst.output_tokens
+    return {
+        name: int(max(0.0, cap - used[name]) // per[name]) if per[name] > 0 else UNLIMITED_ROUNDS
+        for name, cap in caps_of(manifest.spend)
+    }
+
+
+def shown_cap(name: str, cap: float) -> str:
+    """A cap as people read it: ``$50.00`` or ``6,000,000 input tokens``."""
+    return f"${cap:,.2f}" if name == "cost" else f"{int(cap):,} {name}"
+
+
 def prompt_round(manifest: RunManifest, state: WorldState) -> Tally:
     """A council round on `state` sized from the real prompts, with no model asked: each
     model-played civilization's turn at its prompt's length and the most output it may write.
