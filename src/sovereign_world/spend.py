@@ -7,7 +7,9 @@ a resumed run counts what it spent before it stopped. Before each day the runner
 
 A worst-case council round is every model-played civilization asking its model twice (the turn
 and a repair), each time with the largest prompt its budgets allow and the most output it may
-write, priced at its configured model's rate (the dearest in the table if that model has none).
+write, priced at the table's dearest rate: whatever answers is charged at most that, and a
+fallback or a dated model name may answer in place of the configured model. A program that
+takes no output limit (Codex) is reserved at ``OUTPUT_CEILING_TOKENS`` a call.
 """
 
 from __future__ import annotations
@@ -15,7 +17,13 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from sovereign_world.config import BudgetConfig, Price, RunManifest, SpendConfig
+from sovereign_world.config import (
+    BudgetConfig,
+    Price,
+    RunManifest,
+    SovereignConfig,
+    SpendConfig,
+)
 from sovereign_world.gateway.records import CouncilRecord
 from sovereign_world.state import WorldState
 
@@ -26,6 +34,9 @@ CHARTER_ALLOWANCE_CHARS = 32_000
 SLACK_CHARS = 2_000
 """Headings and the repair note."""
 CALLS_PER_COUNCIL = 2
+OUTPUT_CEILING_TOKENS = {"codex": 32_000}
+"""Output reserved for one call by a program that cannot be given an output limit (a call above
+it can pass a cap by its excess for that day; the runbook says so)."""
 
 
 @dataclass
@@ -126,16 +137,25 @@ def call_input_tokens(budgets: BudgetConfig) -> int:
     return -(-chars // CHARS_PER_TOKEN)
 
 
+def output_bound(sovereign: SovereignConfig, budgets: BudgetConfig) -> int:
+    """The most output one call may write: the budget, or a ceiling for a program that cannot
+    be held to one."""
+    return max(budgets.max_output_tokens, OUTPUT_CEILING_TOKENS.get(sovereign.provider, 0))
+
+
 def worst_case_round(manifest: RunManifest) -> Tally:
-    """Every model-played civilization's council at its dearest."""
+    """Every model-played civilization's council at its largest, at the table's dearest rate."""
     spend = manifest.spend or SpendConfig()
+    price = dearest(spend)
     round_ = Tally()
     tokens_in = CALLS_PER_COUNCIL * call_input_tokens(manifest.budgets)
-    tokens_out = CALLS_PER_COUNCIL * manifest.budgets.max_output_tokens
     for civilization_id, sovereign in sorted(manifest.sovereigns.items()):
         if sovereign.provider == "baseline":
             continue
-        cost, _ = cost_of(sovereign.model, tokens_in, tokens_out, spend)
+        tokens_out = CALLS_PER_COUNCIL * output_bound(sovereign, manifest.budgets)
+        cost = (
+            tokens_in * price.input_per_million_usd + tokens_out * price.output_per_million_usd
+        ) / 1_000_000
         round_.add(civilization_id, sovereign.model, tokens_in, tokens_out, cost)
         round_.councils += 1
     return round_
@@ -221,7 +241,7 @@ def prompt_round(manifest: RunManifest, state: WorldState) -> Tally:
             continue
         system, user = build_prompt(build_council_report(state, civilization_id), (), budgets)
         tokens_in = -(-(len(system) + len(user)) // CHARS_PER_TOKEN)
-        tokens_out = manifest.budgets.max_output_tokens
+        tokens_out = output_bound(sovereign, manifest.budgets)
         cost, _ = cost_of(sovereign.model, tokens_in, tokens_out, spend)
         round_.add(str(civilization_id), sovereign.model, tokens_in, tokens_out, cost)
         round_.councils += 1

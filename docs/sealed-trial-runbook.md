@@ -165,15 +165,19 @@ output_per_million_usd = 0
   differs from what the file says, put the probe's name in both places (the sovereign's `model`
   and its `[spend.prices."..."]` row) and make the world again.
 - **Prices are zero**, because nothing is billed per token. Every model still needs its row.
-- **The cap is in tokens:** 6,000,000 in and 1,500,000 out for the year, about 31 worst-case
-  council rounds (the 14 regular councils and room for crises). Real councils use far less; the
-  run stops cleanly (exit code 3) only if something runs away.
+- **The cap is in tokens:** 6,000,000 in and 1,500,000 out for the year. That covers 31
+  worst-case council rounds by input and 15 by output: Codex cannot be given an output limit,
+  so each of its calls is reserved at 32,000 output tokens. Both cover the 14 regular councils.
+  Real councils use far less; the run stops cleanly (exit code 3) only if something runs away. A
+  single Codex call beyond 32,000 output tokens could pass the cap by its excess on that day;
+  the run then stops before the next.
 - **`effort`** is how hard ChatGPT thinks (`low`, `medium`, `high`); medium keeps each council
   within its time and your plan's allowance.
 - **`timeout_seconds`** is how long one model may take; 600 leaves room for the programs to
   start and the local model to write. A reply after that is thrown away (`late`).
-- The output budget (`max_output_tokens`) is passed to the local model; Claude Code and Codex
-  take no such setting, so for them the time limit and the reply's size limit bound a council.
+- The output budget (`max_output_tokens`) is passed to the local model and to Claude Code (as
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, thinking included). Codex takes no such setting; `effort` is
+  its lever, and the time limit and the reply's size limit bound it.
 
 ## 3. The balance report
 
@@ -188,7 +192,8 @@ three civilizations on 32 by 32 maps, councils every 28 days, in
 & .venv\Scripts\python.exe -m sovereign_world.calibration report docs\calibration\2026-10-trial-3civ-again
 ```
 
-It takes a few hours, and can be stopped and run again: it carries on.
+It takes a few hours, and can be stopped and run again: it carries on (a history cut off
+part-way is played again). A folder made under another engine is refused: use a new folder.
 
 ## 4. Keys
 
@@ -262,7 +267,9 @@ What to look for in `councils --errors`:
 - `malformed` from Ollama usually means the context is too small (section 1); `late` or
   `timeout` means the model is too slow for `timeout_seconds`;
 - no `answered by` lines: if there are, the probe's model names were not used (section 2);
-- the council times on the `run` lines, against `timeout_seconds`.
+- the council times on the `run` lines, against `timeout_seconds`;
+- the output tokens (`councils --json`): Claude's calls at or under `max_output_tokens`, Codex's
+  well under 32,000; if Codex comes near it, lower its `effort`.
 
 If any of this changes `work\trial.toml`, make the trial world again (it is still on day 0 and
 costs nothing to remake):

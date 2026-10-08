@@ -5,7 +5,8 @@ Asked as `claude -p` with the charter as the whole system prompt, no tools, one 
 output and nothing saved; `--safe-mode` keeps the folder's settings, hooks, plugins and
 CLAUDE.md out. (`--bare` is never used: it ignores the subscription sign-in.) The variables
 that would make Claude Code use an API key or another account are left out of its
-environment, and it is told not to update itself mid-run.
+environment, it is told not to update itself mid-run, and the council's output budget is passed
+as ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` (the request's limit, thinking included).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from sovereign_world.gateway.cli_provider import (
     classify,
     first_line,
 )
-from sovereign_world.gateway.provider import ModelReply, ProviderUnavailable
+from sovereign_world.gateway.provider import ModelReply, ModelRequest, ProviderUnavailable
 
 INSTRUCTION = (
     "The council's papers are on standard input. Answer exactly as your instructions say:"
@@ -51,6 +52,9 @@ class ClaudeCodeProvider(CliProvider):
     dropped = DROPPED
     dropped_prefixes = ("ANTHROPIC_FEDERATION_",)
     added = MappingProxyType({"NO_COLOR": "1", "DISABLE_AUTOUPDATER": "1"})
+
+    def added_for(self, request: ModelRequest) -> dict[str, str]:
+        return {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(request.max_output_tokens)}
 
     def arguments(self, path: str, folder: Path, system_file: Path) -> list[str]:
         return [

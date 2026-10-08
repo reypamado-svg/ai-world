@@ -106,7 +106,8 @@ batch's silent stall after a failing history (fixed in the same commit).
 - **The worst-case council round** (`spend.worst_case_round`): every model-played civilization
   asks twice (the turn and a repair), each time with the charter allowance (32,000 characters),
   every budgeted section full and 2,000 characters of slack, at 3 characters a token, and writes
-  the most output allowed; priced at its model's rate.
+  the most output allowed; priced at its model's rate. (Since the review fixes below: at the
+  table's dearest rate, and Codex calls reserved at 32,000 output tokens.)
 - **Before every day** `run_days` asks `spend.stop_reason`. While spent plus the reserve of
   worst-case rounds would pass any cap, it saves a checkpoint (if the session advanced a day)
   and raises `SpendCapReached`; no transition is written. What was spent is counted from the
@@ -415,3 +416,26 @@ Gemini skipped. Commits G1 (da56ec4), G2 (53da12a), G3 (e2529bd), G4 (1926725), 
 on Windows; `DISABLE_AUTOUPDATER`; Ollama's 32K context on the card within 600 s; the plans'
 allowances at one council every 4.7 hours. The probe and the 29-day rehearsal check them before
 sealing.
+
+### Codex's review of the sealed trial (142f860): five findings, all fixed
+
+- **P1, the worst case at the configured rate** (spend.py): a fallback or a dated model name can
+  answer, and is charged at its own rate, up to the table's dearest. The worst-case round is now
+  priced at the dearest rate, so the cap check is a true bound; `spend --dry-run`'s real-prompt
+  estimate still uses the configured model.
+- **P1, no output limit for the signed-in programs** (cli_provider.py): Claude Code is now given
+  the council's budget as `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (its request limit, thinking
+  included). Codex takes no output limit, so the worst-case round reserves 32,000 output tokens
+  a Codex call (`spend.OUTPUT_CEILING_TOKENS`): the trial's 1,500,000 output tokens then cover
+  15 rounds (2 x (8,000 + 32,000 + 8,000) = 96,000 a round), still more than the 14 councils.
+- **P1, a calibration folder mixing engines** (batch.py): `run.json` now names the engine,
+  interval and civilizations before the first row (`finished: false` until the batch ends); a
+  folder made under another engine, or holding rows with no `run.json`, is refused; the gate
+  fails a report whose batch did not finish.
+- **P2, a history cut off part-way counted as done** (batch.py): only whole histories count; a
+  partial one (or a torn last line) is dropped and played again, and the report refuses a
+  history with the wrong number of rows.
+- **P2, a failed Codex turn taken for an answer** (codex_provider.py): an answer is taken only
+  from a turn that completed, from a program that exited 0.
+
+None of these files is in the engine hash: the three-civilization report stays valid.

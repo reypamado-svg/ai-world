@@ -245,3 +245,31 @@ def test_each_cap_counts_the_worst_case_rounds_it_covers() -> None:
     covered = rounds_covered(_manifest(paid, **{"civilization:0000000001": _model("m")}), Tally())
     assert list(covered) == ["cost"] and covered["cost"] > 0
     assert caps_of(None) == [] and caps_of(SpendConfig()) == []
+
+
+def test_the_worst_case_round_is_priced_at_the_dearest_rate_because_a_fallback_may_answer() -> None:
+    from sovereign_world.spend import Tally, dearest, prompt_round, stop_reason
+
+    table = SpendConfig(prices=PRICES)
+    manifest = _manifest(table, **{"civilization:0000000001": _model("cheap")})
+    worst = worst_case_round(manifest)
+    top = dearest(table)
+    expected = (
+        worst.input_tokens * top.input_per_million_usd
+        + worst.output_tokens * top.output_per_million_usd
+    ) / 1_000_000
+    assert worst.cost_usd == pytest.approx(expected)
+    assert worst.by_model["cheap"][2] == pytest.approx(expected)
+    cheap = PRICES["cheap"]
+    at_cheap = (
+        worst.input_tokens * cheap.input_per_million_usd
+        + worst.output_tokens * cheap.output_per_million_usd
+    ) / 1_000_000
+    assert at_cheap < expected
+    sized = prompt_round(manifest, build_initial_state(manifest))
+    assert sized.cost_usd < expected / 2, "the dry run still prices the real prompts as configured"
+    capped = _manifest(
+        SpendConfig(prices=PRICES, max_cost_usd=at_cheap + 0.001),
+        **{"civilization:0000000001": _model("cheap")},
+    )
+    assert stop_reason(capped, Tally()) is not None

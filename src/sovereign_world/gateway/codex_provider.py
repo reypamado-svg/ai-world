@@ -7,7 +7,8 @@ environment context, no saved session and no user config, reading the papers fro
 input and answering as JSON events. The answer is the last agent message of a turn that
 completed, from a program that exited 0; a turn that failed, or never completed, is no answer,
 whatever it said before. The tokens are the completed turn's. The variables that would make
-Codex use an API key instead of the ChatGPT sign-in are left out of its environment.
+Codex use an API key instead of the ChatGPT sign-in are left out of its environment. Codex takes
+no output limit; its reasoning effort is the lever, and the spending cap reserves a ceiling.
 """
 
 from __future__ import annotations

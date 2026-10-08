@@ -9,8 +9,9 @@ run never spends on an API by accident. Nothing here reads a key; a failure's me
 program's first line, classified (a usage limit, no sign-in), and never carries a secret.
 
 No call is retried here: a retry after a usage limit would spend more of the allowance. The
-gateway's one repair call is the second chance. The output budget cannot be passed to these
-programs; the reply's size cap and the time limit bound a council instead.
+gateway's one repair call is the second chance. A program that takes an output limit is given the
+council's budget (Claude Code, through its environment); one that does not (Codex) is reserved a
+fixed ceiling by the spending cap (``spend.OUTPUT_CEILING_TOKENS``).
 """
 
 from __future__ import annotations
@@ -167,13 +168,17 @@ class CliProvider:
         self._which = which
         self._environ = environ
 
-    def environment(self) -> dict[str, str]:
+    def environment(self, request: ModelRequest | None = None) -> dict[str, str]:
         return child_environment(
             os.environ if self._environ is None else self._environ,
             self.dropped,
             self.dropped_prefixes,
-            self.added,
+            {**self.added, **(self.added_for(request) if request is not None else {})},
         )
+
+    def added_for(self, request: ModelRequest) -> dict[str, str]:
+        """Variables that carry this call's limits to the program (none by default)."""
+        return {}
 
     def location(self) -> str | None:
         """Where the program is, or None when it is not on PATH."""
@@ -200,7 +205,7 @@ class CliProvider:
                 request.user.encode("utf-8"),
                 timeout=request.timeout_seconds,
                 cwd=here,
-                env=self.environment(),
+                env=self.environment(request),
                 name=self.name,
             )
         if len(finished.stdout) > MAX_OUTPUT_BYTES:

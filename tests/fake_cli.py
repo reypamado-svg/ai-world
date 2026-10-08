@@ -57,7 +57,10 @@ entry = {
     "cwd": os.getcwd(),
     "files": sorted(os.listdir(os.getcwd())),
     "seen": sorted(name for name in WATCHED if name in os.environ),
-    "env": {name: os.environ.get(name) for name in ("DISABLE_AUTOUPDATER", "NO_COLOR")},
+    "env": {
+        name: os.environ.get(name)
+        for name in ("DISABLE_AUTOUPDATER", "NO_COLOR", "CLAUDE_CODE_MAX_OUTPUT_TOKENS")
+    },
     "pid": os.getpid(),
 }
 if mode == "hang":

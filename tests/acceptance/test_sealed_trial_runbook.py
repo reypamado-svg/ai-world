@@ -133,6 +133,7 @@ def test_its_settings_make_the_free_three_provider_world(tmp_path: Path) -> None
     worst = worst_case_round(manifest)
     assert worst.cost_usd == 0 and worst.input_tokens > 0
     assert spend.max_input_tokens // worst.input_tokens >= 14
+    assert spend.max_output_tokens // worst.output_tokens >= 14
 
 
 def test_the_world_and_calibration_it_makes_have_three_civilizations() -> None:

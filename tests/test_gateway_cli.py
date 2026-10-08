@@ -83,7 +83,11 @@ def test_claude_code_is_asked_once_with_the_charter_and_no_api_key(log: Path) ->
     assert call["files"] == ["system.md"]
     assert not Path(str(call["cwd"])).exists()
     assert call["seen"] == ["CODEX_API_KEY", "KEEP_ME", "OPENAI_API_KEY"]
-    assert call["env"] == {"DISABLE_AUTOUPDATER": "1", "NO_COLOR": "1"}
+    assert call["env"] == {
+        "DISABLE_AUTOUPDATER": "1",
+        "NO_COLOR": "1",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8000",
+    }
 
 
 def test_codex_is_asked_once_with_the_charter_and_no_api_key(log: Path) -> None:
@@ -259,3 +263,40 @@ def test_a_failed_or_unfinished_codex_turn_is_never_taken_for_an_answer(
     with pytest.raises(ProviderUnavailable, match="the turn did not complete"):
         _codex().complete(_request())
     assert len(calls(log)) == 2
+
+
+def test_the_output_budget_reaches_claude_code_and_the_reserve_covers_codex(log: Path) -> None:
+    from sovereign_world.config import BudgetConfig, RunManifest, SpendConfig, WorldConfig
+    from sovereign_world.spend import OUTPUT_CEILING_TOKENS, worst_case_round
+
+    request = ModelRequest(system=SYSTEM, user=PAPERS, max_output_tokens=1_234, timeout_seconds=30)
+    _claude().complete(request)
+    _codex().complete(request)
+    claude, codex = calls(log)
+    assert claude["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "1234"  # type: ignore[index]
+    assert codex["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] is None  # type: ignore[index]
+
+    base = RunManifest.new(WorldConfig(seed=21, width=24, height=24, civilizations=3), "0.2.0")
+    kinds = ("claude-code", "codex", "compatible")
+    sovereigns = {
+        f"civilization:000000000{n}": SovereignConfig(
+            provider=kind, model=f"m{n}", base_url="http://127.0.0.1:1/v1"
+        ).model_dump()
+        for n, kind in enumerate(kinds, 1)
+    }
+
+    def worst(budget: int) -> int:
+        manifest = RunManifest.model_validate(
+            {
+                **base.model_dump(),
+                "sovereigns": sovereigns,
+                "budgets": BudgetConfig(max_output_tokens=budget).model_dump(),
+                "spend": SpendConfig(max_output_tokens=1_500_000).model_dump(),
+            }
+        )
+        return worst_case_round(manifest).output_tokens
+
+    assert OUTPUT_CEILING_TOKENS["codex"] == 32_000
+    assert worst(8_000) == 2 * (8_000 + 32_000 + 8_000) == 96_000
+    assert 1_500_000 // worst(8_000) >= 14
+    assert worst(40_000) == 2 * 3 * 40_000
