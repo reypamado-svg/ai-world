@@ -109,15 +109,8 @@ needs no token.
 
 ## On Windows
 
-Set each key for the session only, never in a file:
-
-```powershell
-$env:ANTHROPIC_API_KEY = Read-Host -MaskInput "Anthropic key"
-$env:OPENAI_API_KEY = Read-Host -MaskInput "OpenAI key"
-$env:GEMINI_API_KEY = Read-Host -MaskInput "Gemini key"
-& .venv\Scripts\sovereign-world.exe preflight work\trial --calibration docs\calibration\2026-10-year-one --probe
-```
-
-After `seal`, `Remove-Item Env:SOVEREIGN_WORLD_SEAL_KEY` before the second pass.
-`preflight ... --json > ..\launch-gate.json` keeps the record outside the run's folder. The
-output has no colour codes, and the disk check works on any drive.
+The whole procedure, in PowerShell 7, is in [the sealed trial runbook](sealed-trial-runbook.md):
+set-up, keys typed in masked (`Read-Host -MaskInput` needs PowerShell 7.1 or later), both
+passes of the gate, the rehearsal, sealing, the run and recovery. `preflight ... --json >
+..\launch-gate.json` keeps the record outside the run's folder. The output has no colour codes,
+and the disk check works on any drive.

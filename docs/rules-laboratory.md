@@ -27,6 +27,11 @@ py -3.12 -m venv .venv
 
 If `py` is unavailable, use any installed Python 3.12 executable in the first command.
 
+uv works as well (`uv venv --python 3.12 .venv`, then `uv pip install --python
+.venv\Scripts\python.exe -e ".[dev,observer]"`). For the sealed trial, follow
+[the sealed trial runbook](sealed-trial-runbook.md), which also covers Ollama, keys, the
+rehearsal and keeping the PC awake.
+
 ## Create and run a world
 
 ```powershell
@@ -39,7 +44,7 @@ Without `--width` and `--height`, a world is 100 × 100 tiles (each 25 km across
 
 **How often councils sit.** `init --council-interval 7|14|21|28` sets the days between regular councils (28 by default; worlds made before the setting keep 30), and `--crisis-gap N` the fewest days between one civilization's crisis councils (7 by default; 0 holds none). Both are fixed when the world is made. Some things happen once a council whatever its interval: a captive's chance to escape, refusing a petition left unanswered for a whole interval, and a rank's one step up or down; with weekly councils they come four times as often as with 28-day ones, and a model-played civilization is asked four times as often.
 
-`run` resumes the latest verified journal state, advances the requested number of daily ticks, and saves a checkpoint every 30 days and at the end. Repeating `run` continues the same world.
+`run` resumes the latest verified journal state, advances the requested number of daily ticks, and saves a checkpoint every 30 days and at the end. Repeating `run` continues the same world. It prints a line for each council as it is saved (who held it, which model, the outcome, tokens, cost and time) and for each checkpoint, and nothing on quiet days. `--pace SECONDS` waits that long between days, so a year can run over days or weeks; the world records nothing about it. `councils RUN_DIR` sums up how each civilization's councils went (`--errors` lists the ones that failed, with key values removed).
 
 **Stopping and recovering.** Press Ctrl+C once and the run stops after the day under way, saves a checkpoint and says `stopped at day N`; a second Ctrl+C stops it at once. After a crash, a kill or a power cut, run `run` again: it carries on from what was saved. Each council is saved the moment it is held, before its day, so a council a model has already answered is reused and that model is not asked again; only a reply in flight at the moment of the kill is lost. If the saved councils cannot belong to the day under way (the journal was changed or mixed with another run), `run` refuses with `cannot resume: …`, exit code 1, and writes nothing.
 

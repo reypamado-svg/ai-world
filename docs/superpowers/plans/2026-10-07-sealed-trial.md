@@ -28,8 +28,8 @@ The models, the cap, the seed, the size, the rotation and the pace are chosen on
 | B | Usage recording and the spending cap | Done (36dcb6c) |
 | C | Crash-safe recovery | Done (bcc35ad) |
 | D | Sealing | Done (6bbdff1) |
-| E | The launch gate | Done (this commit) |
-| F | The live run on the user's PC | Planned |
+| E | The launch gate | Done (1b38673) |
+| F | The live run on the user's PC: progress, pace, `councils`, the runbook | Built; the run itself is the user's |
 | G | Reachable from outside | Planned |
 | H | Docs and close | Planned |
 
@@ -308,3 +308,51 @@ made before; and the crisis councils' spacing settable too.
 **Before launch:** the balance report in `docs/calibration/2026-10-year-one/` measured 30-day
 councils, and the engine hash has moved, so the trial needs a fresh calibration at its own
 interval and map size (about 2.4 hours unattended).
+
+## F as built (detailed by Fable 5.1 at 3125d40)
+
+The code a year-long run on the user's PC needs, and the runbook to do it with. The rehearsal
+and the year itself are run by the user.
+
+- **`run` shows its progress.** A header (`run <id> day S -> T, councils every N days, cap $X`),
+  a line for each council the moment it is saved (civilization, vendor, model, outcome, tokens,
+  cost, seconds into the day), a line for each council day (councils, seconds, spent against
+  the cap) and for each checkpoint, and nothing on quiet days; ASCII only, on standard output.
+  Two hooks on `run_days` (`on_council`, `on_progress`) carry it; the times are measured there
+  and recorded nowhere, and the journal is byte-identical with and without them (tested). The
+  controlled runner (`observe --run-days`) passes no hooks, so its protocol is unchanged.
+- **`run --pace SECONDS`** waits between days, so a year can run over days or weeks. It waits
+  in half-second steps, and the first Ctrl+C ends the wait: the run stops at that day with its
+  checkpoint. A paced run records exactly what an unpaced one does (tested).
+- **`councils RUN_DIR [--json] [--errors]`** sums up each civilization's councils: vendor and
+  model, outcomes (accepted, repaired, timeout, late, malformed, refused, unavailable), mean
+  tokens, cost, models that answered in place of the configured one, and unpriced models.
+  `--errors` lists every council whose first reply failed, with key values removed. It never
+  asks a model and never writes.
+- **The console.** A console that cannot show a character prints `?` instead of failing, and
+  the settings file is read as UTF-8 whatever the PC's code page.
+- **The runbook**, [`docs/sealed-trial-runbook.md`](../../sealed-trial-runbook.md), in
+  PowerShell 7: set-up with uv, Ollama's context length, the settings file, the balance report,
+  keys typed in masked, the seven steps (make, gate, rehearse, seal, gate again, run, recover),
+  keeping the PC awake, backups, pace in Dubai time, and what to send back.
+  `tests/acceptance/test_sealed_trial_runbook.py` keeps it honest: every command and option it
+  names exists, it sets only known variables and types keys only masked, and its example
+  settings make a four-provider world with every model priced and a cap.
+- **The rehearsal** is a second world made with the same settings and run 31 days with a small
+  `--spend-limit`: two council days with real models, real prompts and real time limits, read
+  with `spend`, `councils --errors` and `verify`.
+- **The engine hash is unchanged**: the new code lives in files outside it (`cli.py`,
+  `runner.py`, `spend.py`, `preflight.py`). The rule (code) hash moves, so the code on the PC
+  must be final before `seal`.
+- **A flaky test made robust.** The random-kill recovery test failed about 2 runs in 5 even
+  before F: its 35-day run could end before a second random kill landed. The killed runs are
+  now paced (0.2 s), which records nothing and keeps each run alive across the kill window.
+
+**Left for the user's PC** (the Linux suite cannot check them): `Read-Host -MaskInput` in
+PowerShell 7.1+; Ctrl+C during a pace; the console output; Ollama and Gemini accepting the
+council requests, reporting usage and a priced model name, and answering in time; the run on a
+local NTFS drive.
+
+**Defaults taken:** progress on standard output; quiet days silent; council times in seconds
+since the day began; `councils` includes baseline-played civilizations (no cost); the rehearsal
+uses the trial's settings for 31 days with `--spend-limit 10`.
