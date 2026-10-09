@@ -7,13 +7,14 @@ from sovereign_world.commands import (
     build_council_report,
     validate_envelope,
 )
+from sovereign_world.config import RunManifest, WorldConfig
 from sovereign_world.endings import BREAKUP_GRACE_DAYS, EndingKind
 from sovereign_world.engine import TransitionResult, _learn_by_sight, advance_day
 from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
-from sovereign_world.state import WorldState, validate_world
+from sovereign_world.state import WorldState, build_initial_state, validate_world
 from sovereign_world.walls import WALL_GRADES, WallGrade, Walls
 from sovereign_world.war import WarObjective
 
@@ -254,3 +255,17 @@ def test_the_last_civilization_knows_it_is_last_only_once_it_knows_every_other_f
     assert ending.kind is EndingKind.LAST_CIVILIZATION and ending.survivor_id == home
     assert ending.day == max(fallen.values())
     assert build_council_report(state, others[0]).endings == ()
+
+
+def test_a_two_civilization_world_ends_when_one_falls() -> None:
+    config = WorldConfig(seed=21, width=48, height=48, civilizations=2)
+    state = build_initial_state(RunManifest.new(config=config, engine_version="test"))
+    home, other = sorted(state.civilizations)
+    _kill(state, other)
+    state, results = _run(state, 3)
+
+    [last] = _events(results, "last_civilization")
+    assert last.actor_id == str(home)
+    [ending] = state.endings
+    assert ending.kind is EndingKind.LAST_CIVILIZATION and ending.survivor_id == home
+    validate_world(state)

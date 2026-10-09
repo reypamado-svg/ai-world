@@ -7,6 +7,7 @@ from logistics_helpers import treaty_world
 
 from sovereign_world.commands import build_council_report
 from sovereign_world.gateway.compatible_provider import MAX_BODY_BYTES, CompatibleProvider
+from sovereign_world.gateway.envelope import decoding_schema
 from sovereign_world.gateway.provider import ModelRequest, ProviderTimeout, ProviderUnavailable
 from sovereign_world.gateway.records import CouncilOutcome
 from sovereign_world.gateway.sovereign import GatewaySovereign
@@ -63,6 +64,82 @@ def test_the_same_computer_is_asked_in_the_openai_format_without_a_token() -> No
     assert body["messages"][0] == {"role": "system", "content": "charter"}
     assert body["max_tokens"] == 1_500 and body["stream"] is False
     assert "tools" not in body
+    assert body["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "sovereign_reply", "schema": decoding_schema(), "strict": True},
+    }
+    assert provider.status() == "reply schema sent as json_schema"
+
+
+def _json_object(request: httpx.Request) -> bool:
+    return bool(json.loads(request.content)["response_format"] == {"type": "json_object"})
+
+
+@pytest.mark.parametrize("refused", [400, 422, 500, 501])
+def test_a_server_that_refuses_the_schema_is_asked_for_any_json_that_call(refused) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if _json_object(request):
+            return httpx.Response(200, json=_answer())
+        return httpx.Response(refused, json={"error": "format not supported"})
+
+    provider, seen = _provider(handler)
+    assert provider.complete(REQUEST).text == REPLY
+    assert provider.status() == (
+        f"json_object only: the server refused the reply schema (answered {refused})"
+    )
+    assert provider.complete(REQUEST).text == REPLY
+    # Each call asks for the schema first, so a server that failed once is held to it again.
+    asked = [_json_object(request) for request in seen]
+    schema_tries = 2 if refused == 500 else 1  # a 500 is first retried as busy
+    assert asked == ([False] * schema_tries + [True]) * 2
+
+
+def test_the_schema_is_asked_for_again_after_a_passing_failure() -> None:
+    answers = iter(
+        [
+            httpx.Response(400, json={}),
+            httpx.Response(200, json=_answer()),
+            httpx.Response(200, json=_answer()),
+        ]
+    )
+    provider, seen = _provider(lambda request: next(answers))
+    provider.complete(REQUEST)
+    assert provider.status().startswith("json_object only")
+    provider.complete(REQUEST)
+    assert provider.status() == "reply schema sent as json_schema"
+    assert [_json_object(request) for request in seen] == [False, True, False]
+
+
+def test_a_refused_token_or_an_unknown_model_is_not_taken_for_a_refused_schema() -> None:
+    for code in (401, 404):
+        provider, seen = _provider(lambda request, code=code: httpx.Response(code, json={}))
+        with pytest.raises(ProviderUnavailable):
+            provider.complete(REQUEST)
+        assert len(seen) == 1 and provider.status() == "reply schema sent as json_schema"
+
+
+def test_a_schema_refused_and_then_a_failure_is_the_council_unavailable() -> None:
+    answers = iter([httpx.Response(400, json={}), httpx.Response(401, json={})])
+    provider, seen = _provider(lambda request: next(answers))
+    with pytest.raises(ProviderUnavailable):
+        provider.complete(REQUEST)
+    assert len(seen) == 2
+
+
+def test_the_repair_is_held_to_the_schema_too() -> None:
+    answers = iter(
+        [httpx.Response(200, json=_answer("not a reply")), httpx.Response(200, json=_answer())]
+    )
+    provider, seen = _provider(lambda request: next(answers))
+    state, home, _, _ = treaty_world(distance=4)
+    sovereign = GatewaySovereign(provider)
+    sovereign.decide(build_council_report(state, home))
+    [record] = sovereign.drain_records()
+    assert record.outcome is CouncilOutcome.REPAIRED
+    assert len(seen) == 2
+    assert all(
+        json.loads(request.content)["response_format"]["type"] == "json_schema" for request in seen
+    )
 
 
 def test_a_second_computer_needs_a_token_and_never_shows_it(monkeypatch) -> None:

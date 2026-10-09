@@ -33,14 +33,17 @@ class AnthropicProvider:
         max_retries: int = 2,
         fallbacks: bool = True,
         client: Any = None,
+        base_url: str | None = None,
     ) -> None:
+        """`base_url`, when given (a sealed run pins it), wins over ANTHROPIC_BASE_URL."""
         self.model = model
         self.effort = effort
         self.fallbacks = fallbacks
         if client is None:
             import anthropic
 
-            client = anthropic.Anthropic(max_retries=max_retries)
+            pinned: dict[str, Any] = {"base_url": base_url} if base_url else {}
+            client = anthropic.Anthropic(max_retries=max_retries, **pinned)
         self._client = client
 
     def complete(self, request: ModelRequest) -> ModelReply:

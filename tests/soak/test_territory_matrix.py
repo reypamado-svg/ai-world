@@ -91,10 +91,15 @@ class ExpandingSovereign:
         }
         foreign = self._foreign(report)
         routes = self._routes(report, set())
+        # New settlements need water at hand (rules 2): open water or a river beside them.
+        water = {tile for tile, terrain in report.known_terrain if terrain is Terrain.WATER}
+        rivers = {end for river in report.known_rivers for end in (river.tile, river.across)}
         sites = sorted(
             (len(route), tile)
             for tile, route in routes.items()
-            if tile not in foreign and all(tile.distance(other) >= 3 for other in taken)
+            if tile not in foreign
+            and all(tile.distance(other) >= 3 for other in taken)
+            and (tile in rivers or any(neighbor in water for neighbor in tile.neighbors()))
         )
         if not sites:
             return None

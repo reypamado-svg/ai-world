@@ -188,4 +188,4 @@ def test_ratified_treaties_move_real_goods_and_people(tmp_path: Path) -> None:
 
     validate_world(state)
     assert state_hash(replay_run(store)) == state_hash(state)
-    assert verify_run(store).state_hash == state_hash(state)
+    assert verify_run(store).state_hash == store.state_hash(state)

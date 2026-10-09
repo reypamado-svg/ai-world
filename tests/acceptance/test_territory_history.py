@@ -40,4 +40,4 @@ def test_neighbouring_capitals_meet_at_a_contested_frontier(tmp_path: Path) -> N
     }
     validate_world(state)
     assert state_hash(replay_run(store)) == state_hash(state)
-    assert verify_run(store).state_hash == state_hash(state)
+    assert verify_run(store).state_hash == store.state_hash(state)

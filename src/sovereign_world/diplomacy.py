@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -11,10 +12,18 @@ from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import SERVICE_FIDELITY
 from sovereign_world.languages import fidelity, render
-from sovereign_world.people import Person
+from sovereign_world.people import CopyOnRead, Person
 from sovereign_world.resources import Resource
 from sovereign_world.rng import StableRng
-from sovereign_world.travel import DAY, MAX_PROGRESS, Roads, entry_cost
+from sovereign_world.travel import (
+    CROSSING_COST,
+    DAY,
+    MAX_PROGRESS,
+    NO_BRIDGES,
+    Bridges,
+    Roads,
+    entry_cost,
+)
 
 
 class MissionStatus(StrEnum):
@@ -244,7 +253,7 @@ class DiplomaticMessage(BaseModel):
 @dataclass(frozen=True, slots=True)
 class DiplomacyDayResult:
     missions: tuple[DiplomaticMessage, ...]
-    people_by_civilization: dict[EntityId, dict[EntityId, Person]]
+    people_by_civilization: Mapping[EntityId, Mapping[EntityId, Person]]
     delivered: tuple[DiplomaticMessage, ...]
     delayed_ids: tuple[EntityId, ...]
     lost_ids: tuple[EntityId, ...]
@@ -264,22 +273,21 @@ def _delivered_words(
 
 def advance_diplomacy_day(
     missions: tuple[DiplomaticMessage, ...],
-    people_by_civilization: dict[EntityId, dict[EntityId, Person]],
+    people_by_civilization: Mapping[EntityId, Mapping[EntityId, Person]],
     *,
     day: int,
     rng: StableRng,
     world_map: WorldMap,
     roads: Roads | None = None,
     briefed: frozenset[EntityId] = frozenset(),
+    bridges: Bridges = NO_BRIDGES,
 ) -> DiplomacyDayResult:
     """Advance each ambassador along its known route without revealing foreign state.
 
     Rough terrain takes more than a day to enter, and roads make it quicker.
     """
-    people = {
-        civilization_id: {
-            person_id: person.model_copy(deep=True) for person_id, person in population.items()
-        }
+    people: dict[EntityId, CopyOnRead] = {
+        civilization_id: CopyOnRead(population)
         for civilization_id, population in people_by_civilization.items()
     }
     updated: list[DiplomaticMessage] = []
@@ -290,7 +298,8 @@ def advance_diplomacy_day(
         if mission.status is not MissionStatus.IN_TRANSIT:
             updated.append(mission)
             continue
-        ambassador = people.get(mission.sender_civilization_id, {}).get(mission.ambassador_id)
+        senders: Mapping[EntityId, Person] = people.get(mission.sender_civilization_id, {})
+        ambassador = senders.get(mission.ambassador_id)
         if ambassador is None or not ambassador.alive:
             updated.append(mission.model_copy(update={"status": MissionStatus.LOST}))
             lost_ids.append(mission.message_id)
@@ -312,7 +321,20 @@ def advance_diplomacy_day(
         progress = mission.travel_progress + DAY
         # A day's walking may cover several cheap road tiles.
         while route_index < len(mission.route):
-            cost = entry_cost(world_map, mission.route[route_index], roads)
+            origin = mission.route[route_index - 1] if route_index else None
+            cost = entry_cost(
+                world_map, mission.route[route_index], roads, origin=origin, bridges=bridges
+            )
+            if cost is None and origin is not None:
+                # Only a mission sent before deep rivers blocked travel meets one here; the
+                # ambassador fords it as an ordinary river rather than stranding the message.
+                cost = entry_cost(world_map, mission.route[route_index], roads)
+                river = CROSSING_COST["river"]
+                if cost is not None and river is not None:
+                    if world_map.river_between(origin, mission.route[route_index]) is None:
+                        cost = None
+                    else:
+                        cost += river
             if cost is None:
                 raise ValueError("an ambassador route cannot enter impassable terrain")
             if progress < cost:
@@ -346,7 +368,9 @@ def advance_diplomacy_day(
         delivered.append(completed)
     return DiplomacyDayResult(
         missions=tuple(sorted(updated, key=lambda item: item.message_id)),
-        people_by_civilization=people,
+        people_by_civilization={
+            civilization_id: population for civilization_id, population in people.items()
+        },
         delivered=tuple(sorted(delivered, key=lambda item: item.message_id)),
         delayed_ids=tuple(sorted(delayed_ids)),
         lost_ids=tuple(sorted(lost_ids)),

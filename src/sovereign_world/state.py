@@ -4,18 +4,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+import numpy as np
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
 
 from sovereign_world.armoury import CraftJob
+from sovereign_world.bridges import Bridge
 from sovereign_world.capabilities import (
     CapabilityId,
     CapabilityRecord,
     TeachingAssignment,
     regional_capability,
 )
-from sovereign_world.config import RunManifest, WorldConfig
+from sovereign_world.config import CURRENT_RULES, RunManifest, WorldConfig
+from sovereign_world.defence import DefenceOrder
 from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
@@ -26,7 +37,8 @@ from sovereign_world.diplomacy import (
 from sovereign_world.endings import Ending, Ruin, RuinView
 from sovereign_world.espionage import CaughtSpy, SpyReport
 from sovereign_world.exploration import Expedition, ExpeditionStatus, Observation
-from sovereign_world.hexmap import HexCoord, WorldMap
+from sovereign_world.hexmap import HexCoord, Terrain, WorldMap
+from sovereign_world.housing import HouseJob, Housing, founding_housing
 from sovereign_world.ids import EntityId, IdAllocator
 from sovereign_world.institutions import Institution
 from sovereign_world.logistics import (
@@ -36,10 +48,14 @@ from sovereign_world.logistics import (
     LogisticsNotice,
 )
 from sovereign_world.people import Population, create_founders
+from sovereign_world.people_store import people_hash
+from sovereign_world.ranks import RealmRank, SettlementRank
 from sovereign_world.research import ResearchAssignment
 from sovereign_world.resources import Inventory, Resource
+from sovereign_world.rings import Citadel, WallRing, gate_sections, tower_cap
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView
+from sovereign_world.sites import Site, SiteSighting
 from sovereign_world.stores import (
     FOUNDING_GRADE,
     Storehouse,
@@ -49,6 +65,7 @@ from sovereign_world.stores import (
 )
 from sovereign_world.territory import Claim, Garrison, Settlement, Territory
 from sovereign_world.tolls import TollPost, TollView
+from sovereign_world.townplan import DEFAULT_PLAN, TownPlan, default_plan, site_error
 from sovereign_world.walls import WallJob, Walls
 from sovereign_world.war import Battle, BattleReport, Drill, Occupation, Siege, War
 from sovereign_world.work import ConstructionProject, WorkOrder
@@ -89,6 +106,9 @@ class CivilizationState(BaseModel):
     caught_spies: tuple[CaughtSpy, ...] = ()
     institutions: tuple[Institution, ...] = ()
     ruin_intel: tuple[RuinView, ...] = ()
+    site_sightings: tuple[SiteSighting, ...] = ()
+    """Sites its people have seen worked or emptied, as they last saw them, by site id
+    (rules version 2)."""
     """Ruins its people have seen, as they last saw them; by tile."""
     fallen: dict[EntityId, int] = Field(default_factory=dict)
     """Civilizations it knows have died out, and the day it learned each."""
@@ -112,6 +132,36 @@ class CivilizationState(BaseModel):
     """Progress toward each topic not yet discovered."""
     war_reports: tuple[BattleReport, ...] = ()
     """Battles as this civilization's own survivors told them."""
+    housing: dict[EntityId, Housing] = Field(default_factory=dict)
+    """Each settlement's houses, by settlement id (rules version 2)."""
+    house_jobs: tuple[HouseJob, ...] = ()
+    """Houses going up, by job id."""
+    ranks_reached: dict[EntityId, SettlementRank] = Field(default_factory=dict)
+    """Each settlement's rank above village, by settlement id (rules version 2)."""
+    realm_rank_reached: RealmRank = RealmRank.CHIEFDOM
+    town_plans: dict[EntityId, TownPlan] = Field(default_factory=dict)
+    """Each settlement's design, by settlement id (rules version 3)."""
+    wall_rings: dict[EntityId, WallRing] = Field(default_factory=dict)
+    """Each settlement's walls along its planned ring, by settlement id (rules version 3)."""
+    defence_orders: dict[EntityId, DefenceOrder] = Field(default_factory=dict)
+    """Each settlement's standing defence order, by settlement id (rules version 3)."""
+    citadels: dict[EntityId, Citadel] = Field(default_factory=dict)
+    """Each settlement's citadel, by settlement id (rules version 3)."""
+
+
+_CIVILIZATION_ADDITIONS: tuple[tuple[str, object], ...] = (
+    ("housing", {}),
+    ("house_jobs", []),
+    ("ranks_reached", {}),
+    ("realm_rank_reached", "chiefdom"),
+    ("town_plans", {}),
+    ("wall_rings", {}),
+    ("defence_orders", {}),
+    ("citadels", {}),
+    ("site_sightings", []),
+)
+"""Civilization fields added by rules versions 2 and 3, and the value at which each is left
+out."""
 
 
 class WorldState(BaseModel):
@@ -130,6 +180,8 @@ class WorldState(BaseModel):
     journeys: tuple[Journey, ...] = ()
     territory: Territory = Field(default_factory=Territory)
     roads: tuple[Road, ...] = ()
+    bridges: tuple[Bridge, ...] = ()
+    """River borders a road crew has bridged; any traveller crosses them at plain cost."""
     wars: tuple[War, ...] = ()
     battles: tuple[Battle, ...] = ()
     """Every battle as it really happened; civilizations see only their own reports."""
@@ -143,6 +195,40 @@ class WorldState(BaseModel):
     """The last-civilization and no-civilization endings, each recorded once."""
     joined_roads: tuple[EntityId, ...] = ()
     """Trade treaties whose partners' settlements a continuous road now links."""
+    sites: tuple[Site, ...] = ()
+    """Ore deposits, quarries, ancient ruins and troves placed when the world was made, by tile;
+    worlds from before them have none."""
+    rules_version: int = Field(default=1, ge=1, le=CURRENT_RULES)
+    """The rules this world runs under, copied from its manifest; see ``rules.rules_for``."""
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_additions(
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ) -> object:
+        # Worlds from before rivers had courses, or before any bridge stood, have none;
+        # leaving those keys out keeps their saves' hashes.
+        dumped = handler(self)
+        if isinstance(dumped, dict):
+            world_map = dumped.get("world_map")
+            if isinstance(world_map, dict):
+                if not world_map.get("rivers"):
+                    world_map.pop("rivers", None)
+                # Tiles without land cover (water, and every tile of older maps).
+                for tile in world_map.get("tiles", ()):
+                    if isinstance(tile, dict) and not tile.get("cover"):
+                        tile.pop("cover", None)
+            for key in ("bridges", "sites"):
+                if not dumped.get(key):
+                    dumped.pop(key, None)
+            if dumped.get("rules_version") == 1:
+                dumped.pop("rules_version")
+            # Rules-2 additions to each civilization, left out while they hold nothing.
+            for civilization in (dumped.get("civilizations") or {}).values():
+                if isinstance(civilization, dict):
+                    for key, empty in _CIVILIZATION_ADDITIONS:
+                        if key in civilization and civilization[key] == empty:
+                            civilization.pop(key)
+        return dumped
 
 
 def _canonical_payload(state: WorldState) -> str:
@@ -157,13 +243,74 @@ def state_hash(state: WorldState) -> str:
     return hashlib.sha256(_canonical_payload(state).encode()).hexdigest()
 
 
+def _digest(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+OutsidePeople = tuple[dict[str, Any], dict[str, dict[str, Any]]]
+"""A world as JSON without its map and people: the world's fields, and each
+civilization's."""
+
+
+def outside_people(state: WorldState) -> OutsidePeople:
+    """The world dumped without its map and people, in one pass: what hash v2 hashes and
+    what a format-2 journal compares from day to day."""
+    dumped = state.model_dump(
+        mode="json",
+        exclude={
+            "world_map": True,
+            "civilizations": {"__all__": {"population": {"people"}}},
+        },
+    )
+    civilizations: dict[str, dict[str, Any]] = dumped.pop("civilizations")
+    return dumped, civilizations
+
+
+def hash_parts(
+    state: WorldState, *, fresh: bool = False, parts: OutsidePeople | None = None
+) -> dict[str, object]:
+    """What hash v2 is made of: the map's own hash, everything outside the people, and each
+    civilization's fields and people, hashed apart. `parts` is `outside_people(state)`
+    when the caller has it already."""
+    dumped, civilizations = outside_people(state) if parts is None else parts
+    return {
+        "version": 2,
+        "map": state.world_map.content_hash(),
+        "world": _digest(dumped),
+        "civilizations": {
+            civilization_id: {
+                "fields": _digest(civilizations[civilization_id]),
+                "people": people_hash(civilization.population.people.table, fresh=fresh),
+            }
+            for civilization_id, civilization in sorted(state.civilizations.items())
+        },
+    }
+
+
+def state_hash_v2(
+    state: WorldState, *, fresh: bool = False, parts: OutsidePeople | None = None
+) -> str:
+    """Hash version 2 of the whole world: the same for the same state, as hash v1 is, but
+    built from parts so that most of it is not worked out again each day. `fresh` works
+    every part out from scratch, as verification does."""
+    return _digest(hash_parts(state, fresh=fresh, parts=parts))
+
+
 def build_initial_state(manifest: RunManifest) -> WorldState:
     stable_rng = StableRng(manifest.config.seed)
-    generated = generate_world(manifest.config, stable_rng)
+    generated = generate_world(
+        manifest.config, stable_rng, generator_version=manifest.generator_version
+    )
     civilization_ids = IdAllocator("civilization")
     person_ids = IdAllocator("person")
     civilizations: dict[EntityId, CivilizationState] = {}
-    for start in generated.starts:
+    # Civilization i takes the generator's (i + rotation)-th start; its founders are drawn from
+    # that start's own stream, so the whole starting package moves with the start.
+    starts = generated.starts
+    rotation = manifest.start_rotation
+    for index in range(len(starts)):
+        start = starts[(index + rotation) % len(starts)]
         civilization_id = civilization_ids.allocate()
         population = create_founders(
             civilization_id=civilization_id,
@@ -236,6 +383,14 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
                     discovered_day=0,
                 ),
             ),
+            housing=(
+                {capital_id: founding_housing(manifest.config.founders_per_civilization)}
+                if manifest.rules_version >= 2
+                else {}
+            ),
+            town_plans=(
+                {capital_id: default_plan(capital_id, 0)} if manifest.rules_version >= 3 else {}
+            ),
         )
     return WorldState(
         run_id=manifest.run_id,
@@ -243,12 +398,15 @@ def build_initial_state(manifest: RunManifest) -> WorldState:
         config=manifest.config,
         world_map=generated.world_map,
         civilizations=civilizations,
+        sites=generated.sites,
+        rules_version=manifest.rules_version,
     )
 
 
 def validate_world(state: WorldState) -> None:
     if state.day < 0:
         raise ValueError("world day cannot be negative")
+    sites_by_id = {site.site_id: site for site in state.sites}
     for civilization_id, civilization in state.civilizations.items():
         if civilization_id != civilization.civilization_id:
             raise ValueError("civilization key does not match state")
@@ -257,7 +415,11 @@ def validate_world(state: WorldState) -> None:
         if any(quantity < 0 for quantity in civilization.inventory.quantities.values()):
             raise ValueError("inventory quantity cannot be negative")
         observation_tiles = tuple(observation.tile for observation in civilization.observations)
-        if observation_tiles != tuple(sorted(set(observation_tiles))):
+        # A founding world (day 0) lists its first sightings in map order, as every recorded
+        # run was founded; from day 1 the engine keeps them sorted by tile.
+        if len(set(observation_tiles)) != len(observation_tiles) or (
+            state.day > 0 and observation_tiles != tuple(sorted(observation_tiles))
+        ):
             raise ValueError("observations must be unique and sorted")
         if civilization.known_tiles != observation_tiles:
             raise ValueError("known tiles must mirror private observations")
@@ -284,6 +446,15 @@ def validate_world(state: WorldState) -> None:
         tiles = [view.ruin.tile for view in civilization.ruin_intel]
         if tiles != sorted(set(tiles)):
             raise ValueError("ruin intel is one view per tile, by tile")
+        sighted = [item.site_id for item in civilization.site_sightings]
+        if sighted != sorted(set(sighted)):
+            raise ValueError("site sightings are one per site, by site id")
+        for sighting in civilization.site_sightings:
+            site = sites_by_id.get(sighting.site_id)
+            if site is None or sighting.remaining > site.richness:
+                raise ValueError("a site sighting is of a real site, within what it held")
+            if sighting.as_of_day > state.day:
+                raise ValueError("a site sighting is not from the future")
         if set(civilization.fallen) - (set(state.civilizations) - {civilization_id}):
             raise ValueError("a civilization learns only of other civilizations falling")
         if civilization.known_captives != tuple(sorted(set(civilization.known_captives))):
@@ -293,6 +464,9 @@ def validate_world(state: WorldState) -> None:
             for person_id in civilization.known_captives
         ):
             raise ValueError("a civilization knows only of its own people held captive")
+        kinds_at = [(item.settlement_id, item.kind) for item in civilization.institutions]
+        if len(kinds_at) != len(set(kinds_at)):
+            raise ValueError("a settlement keeps at most one institution of each kind")
         kept_by: dict[EntityId, EntityId] = {}
         for institution in civilization.institutions:
             for person_id in institution.staff_ids:
@@ -357,6 +531,59 @@ def validate_world(state: WorldState) -> None:
         settlement_ids = {item.settlement_id for item in settlements}
         if any(item.settlement_id not in settlement_ids for item in houses):
             raise ValueError("a storehouse stands in one of its civilization's settlements")
+        if not set(civilization.housing) <= settlement_ids:
+            raise ValueError("houses stand in their civilization's own settlements")
+        house_jobs = [job.job_id for job in civilization.house_jobs]
+        if house_jobs != sorted(set(house_jobs)):
+            raise ValueError("house jobs are unique and sorted")
+        if any(job.settlement_id not in settlement_ids for job in civilization.house_jobs):
+            raise ValueError("houses go up in their civilization's own settlements")
+        if not set(civilization.ranks_reached) <= settlement_ids or any(
+            rank is SettlementRank.VILLAGE for rank in civilization.ranks_reached.values()
+        ):
+            raise ValueError("ranks above village belong to the civilization's own settlements")
+        plans = list(civilization.town_plans)
+        if plans != sorted(plans) or not set(plans) <= settlement_ids:
+            raise ValueError("town plans belong to the civilization's own settlements, sorted")
+        settled_at = {item.settlement_id: item.tile for item in settlements}
+        for settlement_id, plan in civilization.town_plans.items():
+            if plan.settlement_id != settlement_id:
+                raise ValueError("town plan key does not match its settlement")
+            if site_error(state.world_map, settled_at[settlement_id], plan) is not None:
+                raise ValueError("a town plan must suit its settlement's land")
+        builders = [person_id for job in civilization.house_jobs for person_id in job.worker_ids]
+        if len(builders) != len(set(builders)):
+            raise ValueError("a builder works on one house job at a time")
+        defended = list(civilization.defence_orders)
+        if (
+            defended != sorted(defended)
+            or not set(defended) <= settlement_ids
+            or any(order.settlement_id != key for key, order in civilization.defence_orders.items())
+        ):
+            raise ValueError("defence orders belong to their own settlements, sorted")
+        held = list(civilization.citadels)
+        if held != sorted(held) or not set(held) <= settlement_ids:
+            raise ValueError("citadels belong to the civilization's own settlements, sorted")
+        rings = list(civilization.wall_rings)
+        if rings != sorted(rings) or not set(rings) <= settlement_ids:
+            raise ValueError("wall rings belong to the civilization's own settlements, sorted")
+        if rings and civilization.walls:
+            raise ValueError("a civilization builds walls by ring or whole, not both")
+        for settlement_id, ring in civilization.wall_rings.items():
+            design = civilization.town_plans.get(settlement_id) or DEFAULT_PLAN
+            if ring.settlement_id != settlement_id:
+                raise ValueError("wall ring key does not match its settlement")
+            if ring.ring != design.wall_ring or ring.gates() != gate_sections(
+                ring.ring, design.gates
+            ):
+                raise ValueError("a wall ring runs along its settlement's planned line")
+            if ring.towers > tower_cap(ring):
+                raise ValueError("a ring carries no more towers than its walls allow")
+        for job in civilization.wall_jobs:
+            if job.sections:
+                ring_of_job = civilization.wall_rings.get(job.settlement_id)
+                if ring_of_job is None or max(job.sections) >= len(ring_of_job.sections):
+                    raise ValueError("a ring job works on its ring's own sections")
         walled = [item.settlement_id for item in civilization.walls]
         if walled != sorted(set(walled)) or not set(walled) <= settlement_ids:
             raise ValueError("each settlement has at most one set of walls, sorted")
@@ -415,14 +642,28 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("logistics notices must be sorted")
         if len({item.notice_id for item in notices}) != len(notices):
             raise ValueError("logistics notices must be unique")
-    person_owners: dict[EntityId, EntityId] = {}
+    person_owners: set[EntityId] = set()
     for civilization_id, civilization in state.civilizations.items():
-        for person_id, person in civilization.population.people.items():
+        table = civilization.population.people.table
+        rows = table.rows()
+        ids = list(map(table.ids.__getitem__, rows.tolist()))
+        records = table.column("person_id", rows)
+        owners = table.column("civilization_id", rows)
+        if (
+            records == ids
+            and set(owners) <= {civilization_id}
+            and len(set(ids)) == len(ids)
+            and person_owners.isdisjoint(ids)
+        ):
+            person_owners.update(ids)
+            continue
+        # Something is wrong: find the first person at fault, as each is checked in turn.
+        for person_id, record_id, owner in zip(ids, records, owners, strict=True):
             if person_id in person_owners:
                 raise ValueError("person IDs must be globally unique")
-            if person.person_id != person_id or person.civilization_id != civilization_id:
+            if record_id != person_id or owner != civilization_id:
                 raise ValueError("person record must match its civilization")
-            person_owners[person_id] = civilization_id
+            person_owners.add(person_id)
     missions = state.diplomatic_missions
     if missions != tuple(sorted(missions, key=lambda message: message.message_id)):
         raise ValueError("diplomatic missions must be sorted")
@@ -494,10 +735,10 @@ def validate_world(state: WorldState) -> None:
             person = sender.population.people[person_id]
             if person.alive and person.location != journey.route[journey.route_index]:
                 raise ValueError("living travellers must stand on their route position")
-        # Salvagers have done their errand at the ruin and carry its goods home.
+        # Salvagers and extractors have done their errand and carry its goods home.
         if (
             journey.carrying_cargo
-            and journey.kind.value != "salvage"
+            and journey.kind.value not in {"salvage", "extraction"}
             and journey.outcome
             not in {
                 JourneyOutcome.PENDING,
@@ -543,7 +784,13 @@ def validate_world(state: WorldState) -> None:
         for person_id in journey.captive_ids
     }
     for civilization_id, civilization in state.civilizations.items():
-        for person_id, person in civilization.population.people.items():
+        table = civilization.population.people.table
+        # Only captives, and anyone wrongly held somewhere, have anything to check.
+        for row in np.union1d(
+            table.rows_where_set("captive_of"), table.rows_where_set("held_at")
+        ).tolist():
+            person_id = table.ids[row]
+            person = table.person(row)
             if person.captive_of is None:
                 if person.held_at is not None:
                     raise ValueError("only captives are held at a settlement")
@@ -570,6 +817,18 @@ def validate_world(state: WorldState) -> None:
     }
     if any(ruin.tile in settled for ruin in ruins):
         raise ValueError("a ruin is not a living settlement")
+    sites = state.sites
+    if sites != tuple(sorted(sites, key=lambda item: item.tile)):
+        raise ValueError("sites must be sorted by tile")
+    if len({site.tile for site in sites}) != len(sites):
+        raise ValueError("a tile holds at most one site")
+    if len({site.site_id for site in sites}) != len(sites):
+        raise ValueError("site ids must be unique")
+    for site in sites:
+        if state.world_map.tile(site.tile).terrain is Terrain.WATER:
+            raise ValueError("a site lies on land")
+        if site.remaining > site.richness:
+            raise ValueError("a site cannot hold more than it started with")
     occupations = state.occupations
     if occupations != tuple(sorted(occupations, key=lambda item: item.occupation_id)):
         raise ValueError("occupations must be sorted")
@@ -602,6 +861,16 @@ def validate_world(state: WorldState) -> None:
             raise ValueError("a road lies on the map")
         if state.world_map.tile(road.tile).terrain.value == "water":
             raise ValueError("no road can be built on water")
+    bridges = state.bridges
+    if bridges != tuple(sorted(bridges, key=lambda bridge: (bridge.a, bridge.b))):
+        raise ValueError("bridges must be sorted by border")
+    if len({(bridge.a, bridge.b) for bridge in bridges}) != len(bridges):
+        raise ValueError("a border has at most one bridge")
+    for bridge in bridges:
+        if bridge.civilization_id not in state.civilizations:
+            raise ValueError("a bridge is built by an existing civilization")
+        if state.world_map.river_between(bridge.a, bridge.b) is None:
+            raise ValueError("a bridge spans a river")
     for journey in journeys:
         if journey.kind is JourneyKind.ROADWORK and journey.route[0] not in {
             settlement.tile

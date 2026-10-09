@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI World — Observer prototype</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <div id="topbar">
+      <div class="brand">AI World <span class="sub" id="world-label">Observer prototype</span></div>
+      <span
+        class="chip warn"
+        id="source-chip"
+        title="Terrain and capitals come from the engine's own world generation; no day has been simulated."
+        >ENGINE TERRAIN · DAY 0</span
+      >
+      <span
+        class="chip warn"
+        id="sample-chip"
+        title="The village, its buildings, citizens and routines are invented sample data."
+        >SAMPLE VILLAGE</span
+      >
+      <span class="chip warn" id="art-chip" title="Procedurally painted placeholder art.">PROTOTYPE ARTWORK</span>
+      <span id="clock" class="clock">Engine day 0 · sample time 08:00</span>
+      <div class="group">
+        <button id="btn-pause">❚❚ Pause</button>
+        <button data-speed="1" class="on">1×</button>
+        <button data-speed="10">10×</button>
+        <button data-speed="25">25×</button>
+        <button data-speed="50">50×</button>
+        <button data-speed="100">100×</button>
+      </div>
+      <span class="chip" id="live-chip" title="This prototype is not connected to a live run."
+        >Prototype · no live run</span
+      >
+      <span class="chip persp" title="Only the observer perspective exists in this prototype."
+        >Perspective: Observer</span
+      >
+      <div class="spacer"></div>
+      <label class="toggle"
+        >Quality
+        <select id="quality">
+          <option value="auto">Auto</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select></label
+      >
+      <label class="toggle"><input type="checkbox" id="chk-footprints" /> Footprints</label>
+    </div>
+    <div id="run-bar" hidden>
+      <div class="group" id="day-group" hidden>
+        <button id="btn-day-prev" title="The previous exported day">‹</button>
+        <span id="day-label" class="clock"></span>
+        <button id="btn-day-next" title="The next exported day">›</button>
+        <input id="day-slider" type="range" min="0" max="0" value="0" step="1" title="Skip to a recorded day" />
+        <button id="btn-day-follow" hidden title="Follow the newest day as the run saves it">Follow latest</button>
+        <label class="toggle" id="lookahead-group" hidden title="How many days the run may go ahead of the day shown"
+          >Ahead <input id="lookahead" type="number" min="1" max="30" value="3"
+        /></label>
+      </div>
+      <span class="chip warn" id="role-chip" hidden></span>
+      <span class="chip" id="runner-chip" hidden></span>
+      <span class="chip" id="seal-chip" hidden></span>
+      <span class="chip persp" id="perspective-chip">Perspective: Observer</span>
+      <label class="toggle" id="perspective-picker" title="See the world as one civilization's council knows it"
+        >See as
+        <select id="perspective">
+          <option value="">World (observer)</option>
+        </select></label
+      >
+      <select id="perspective-asof" title="Its council's knowledge on the day shown, or at its last council">
+        <option value="shown">on the day shown</option>
+        <option value="council">at its last council</option>
+      </select>
+    </div>
+    <div id="stage"></div>
+    <aside id="inspector" hidden></aside>
+    <canvas id="minimap" width="240" height="150" title="Minimap — click to move the camera"></canvas>
+    <div id="controls">
+      <button id="btn-zoom-in" title="Zoom in">+</button>
+      <button id="btn-zoom-out" title="Zoom out">−</button>
+      <button id="btn-village" title="Go to the sample village">⌖</button>
+      <button id="btn-world" title="Return to world view">⌂</button>
+    </div>
+    <div id="footer">
+      <span id="perf"></span>
+      <button id="btn-measure" title="Show and copy performance measurements">Measurements</button>
+      <button id="btn-chronicle" hidden title="The shown day's events, placed where the record puts them">
+        Chronicle
+      </button>
+      <button id="btn-council" hidden title="What this civilization's council has heard, from its report">
+        Council news
+      </button>
+      <span id="pick-note"></span>
+      <span class="note" id="provenance"
+        >Terrain, land cover and sites: engine worldgen (generator 3, day 0); their painting is a presentation. 25 km
+        between tile centres is a world rule (travel.TILE_SPACING_M); travel days come from the engine's travel tables.
+        Village, fields, citizens and routines: SAMPLE. Movement: visual approximation.</span
+      >
+    </div>
+    <div id="tour-banner" hidden></div>
+    <aside id="chronicle" hidden>
+      <header>
+        <strong>Chronicle</strong> <span id="chronicle-day"></span>
+        <label class="toggle"><input type="checkbox" id="chk-routine" /> Routine</label>
+        <button id="btn-chronicle-close" title="Close">×</button>
+      </header>
+      <ol id="chronicle-list"></ol>
+    </aside>
+    <aside id="council" hidden>
+      <header>
+        <strong>Council news</strong> <span id="council-day"></span>
+        <button id="btn-council-close" title="Close">×</button>
+      </header>
+      <ol id="council-list"></ol>
+    </aside>
+    <aside id="measure" hidden>
+      <header><strong>Performance measurements</strong> <button id="btn-copy">Copy</button></header>
+      <p>
+        Browser rendering only, on this machine. Counts are kept separate: world population, resident, indoor, away,
+        outdoor, visible (full detail / simplified).
+      </p>
+      <table id="measure-tour"></table>
+      <table id="measure-caps"></table>
+      <pre id="measure-json"></pre>
+    </aside>
+    <div id="loading">
+      <div class="box">
+        <div class="title">Opening the world…</div>
+        <div id="loading-status">Starting</div>
+        <div class="hint">All artwork is generated in your browser from code (original, no external assets).</div>
+      </div>
+    </div>
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

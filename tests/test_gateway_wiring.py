@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from logistics_helpers import ScheduledSovereign, clear_message_id, treaty_world
@@ -8,7 +9,6 @@ from typer.testing import CliRunner
 
 from sovereign_world.cli import app
 from sovereign_world.commands import (
-    CRISIS_GAP_DAYS,
     DirectOrder,
     DirectOrderKind,
     build_council_report,
@@ -34,7 +34,9 @@ QUIET = json.dumps({"commands": [], "rationale": "Wait and watch."})
 
 
 def test_a_manifest_left_at_its_defaults_keeps_its_old_hash() -> None:
-    manifest = RunManifest.new(config=WorldConfig(seed=21, width=48, height=48), engine_version="1")
+    manifest = RunManifest(
+        run_id=uuid4(), engine_version="1", config=WorldConfig(seed=21, width=48, height=48)
+    )
     old = hashlib.sha256(
         json.dumps(
             {
@@ -85,7 +87,8 @@ def test_a_crisis_calls_a_model_played_council_the_next_day_and_at_most_weekly()
 
     again = result.state
     _at_war(again, home, rival, learned_day=again.day - 1)
-    assert not crisis_council_due(again, home), f"only one crisis council in {CRISIS_GAP_DAYS} days"
+    gap = again.config.crisis_gap_days
+    assert not crisis_council_due(again, home), f"only one crisis council in {gap} days"
 
 
 def test_scripted_sovereigns_keep_to_the_monthly_council() -> None:
@@ -189,7 +192,19 @@ def test_the_command_line_runs_records_verifies_and_forks(tmp_path: Path) -> Non
     world = tmp_path / "world"
     assert (
         runner.invoke(
-            app, ["init", str(world), "--seed", "21", "--sovereigns", str(settings)]
+            app,
+            [
+                "init",
+                str(world),
+                "--seed",
+                "21",
+                "--width",
+                "24",
+                "--height",
+                "24",
+                "--sovereigns",
+                str(settings),
+            ],
         ).exit_code
         == 0
     )

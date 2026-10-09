@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -64,7 +65,7 @@ class WorkDayResult(BaseModel):
     completed_project_ids: tuple[EntityId, ...]
 
 
-def _living_workers(order: WorkOrder, people: dict[EntityId, Person]) -> tuple[Person, ...]:
+def _living_workers(order: WorkOrder, people: Mapping[EntityId, Person]) -> tuple[Person, ...]:
     return tuple(
         people[worker_id]
         for worker_id in sorted(order.worker_ids)
@@ -74,7 +75,7 @@ def _living_workers(order: WorkOrder, people: dict[EntityId, Person]) -> tuple[P
 
 def execute_work_day(
     work_orders: tuple[WorkOrder, ...],
-    people: dict[EntityId, Person],
+    people: Mapping[EntityId, Person],
     inventory: Inventory,
     projects: dict[EntityId, ConstructionProject],
 ) -> WorkDayResult:

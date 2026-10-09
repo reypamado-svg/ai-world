@@ -30,6 +30,8 @@ ROAD_COST: dict[Terrain, tuple[int, ...]] = {
     Terrain.DESERT: (13, 11, 9, 8, 6, 5),
     Terrain.TUNDRA: (13, 11, 9, 8, 6, 5),
     Terrain.MOUNTAIN: (26, 22, 18, 15, 12, 10),
+    Terrain.HILLS: (17, 15, 13, 11, 9, 7),
+    Terrain.SNOW: (45, 40, 34, 28, 22, 18),
 }
 """Entry cost of a road tile, in tenths of a day, for each grade in order."""
 

@@ -84,6 +84,6 @@ def test_a_road_built_then_upgraded_speeds_travel_and_carries_land(tmp_path: Pat
     assert known == dict.fromkeys(road, RoadGrade.GRAVEL), "the builders know their road"
     validate_world(state)
     assert state_hash(replay_run(store)) == state_hash(state)
-    assert verify_run(store).state_hash == state_hash(state)
+    assert verify_run(store).state_hash == store.state_hash(state)
     rerun, _, _ = run(with_roads=True)
     assert state_hash(rerun) == state_hash(state)

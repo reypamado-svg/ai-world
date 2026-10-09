@@ -296,4 +296,4 @@ def test_seeded_journey_histories_conserve_goods_people_and_replay(
     assert state_hash(rerun) == state_hash(final)
     assert rerun_kinds == kinds
     assert state_hash(replay_run(store)) == state_hash(final)
-    assert verify_run(store).state_hash == state_hash(final)
+    assert verify_run(store).state_hash == store.state_hash(final)

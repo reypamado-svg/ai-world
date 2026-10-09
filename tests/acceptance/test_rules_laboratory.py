@@ -90,4 +90,4 @@ def test_second_generation_reaches_adulthood_with_completed_buildings(
     replayed = replay_run(store, target_day=state.day)
     verification = verify_run(store)
     assert state_hash(replayed) == state_hash(state)
-    assert verification.state_hash == state_hash(state)
+    assert verification.state_hash == store.state_hash(state)

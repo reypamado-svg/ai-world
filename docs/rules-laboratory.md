@@ -1,6 +1,6 @@
 # Rules Laboratory Operator Guide
 
-The Rules Laboratory is the first playable foundation for the AI civilization world. It creates four isolated communities with 32 founders each, advances them through deterministic daily ticks, asks scripted sovereigns for monthly decrees, and records a tamper-evident history that can be replayed and verified.
+The Rules Laboratory is the first playable foundation for the AI civilization world. It creates two to four isolated communities (four by default, `init --civilizations`) with 32 founders each, advances them through deterministic daily ticks, asks its sovereigns for decisions at regular councils (every 28 days by default), and records a tamper-evident history that can be replayed and verified.
 
 Phase 1 uses deterministic scripted sovereigns. It contains no OpenAI, Claude, local-model, HTTP, or multi-computer integration. Those adapters belong in later phases and will use the same validated command boundary.
 
@@ -27,17 +27,68 @@ py -3.12 -m venv .venv
 
 If `py` is unavailable, use any installed Python 3.12 executable in the first command.
 
+uv works as well (`uv venv --python 3.12 .venv`, then `uv pip install --python
+.venv\Scripts\python.exe -e ".[dev,observer]"`). For the sealed trial, follow
+[the sealed trial runbook](sealed-trial-runbook.md), which also covers Ollama, keys, the
+rehearsal and keeping the PC awake.
+
 ## Create and run a world
 
 ```powershell
-& .venv\Scripts\sovereign-world.exe init work\demo-world --seed 21
+& .venv\Scripts\sovereign-world.exe init work\demo-world --seed 21 --width 48 --height 48
 & .venv\Scripts\sovereign-world.exe run work\demo-world --days 3650
 & .venv\Scripts\sovereign-world.exe inspect work\demo-world
 ```
 
-Initialization fixes the manifest, seed, terrain, start packages, and founders. After launch, the CLI offers no command that edits people, resources, terrain, or outcomes.
+Without `--width` and `--height`, a world is 100 × 100 tiles (each 25 km across, a day's walk) and takes about two seconds to generate; the demo uses a smaller 48 × 48 world. Initialization fixes the manifest, seed, terrain, start packages, and founders. After launch, the CLI offers no command that edits people, resources, terrain, or outcomes.
 
-`run` resumes the latest verified journal state, advances the requested number of daily ticks, and saves a new checkpoint. Repeating `run` continues the same world.
+**How often councils sit.** `init --council-interval 7|14|21|28` sets the days between regular councils (28 by default; worlds made before the setting keep 30), and `--crisis-gap N` the fewest days between one civilization's crisis councils (7 by default; 0 holds none). Both are fixed when the world is made. Some things happen once a council whatever its interval: a captive's chance to escape, refusing a petition left unanswered for a whole interval, and a rank's one step up or down; with weekly councils they come four times as often as with 28-day ones, and a model-played civilization is asked four times as often.
+
+`run` resumes the latest verified journal state, advances the requested number of daily ticks, and saves a checkpoint every 30 days and at the end. Repeating `run` continues the same world. It prints a line for each council as it is saved (who held it, which model, the outcome, tokens, cost and time) and for each checkpoint, and nothing on quiet days. `--pace SECONDS` waits that long between days, so a year can run over days or weeks; the world records nothing about it. `councils RUN_DIR` sums up how each civilization's councils went (`--errors` lists the ones that failed, with key values removed).
+
+**Stopping and recovering.** Press Ctrl+C once and the run stops after the day under way, saves a checkpoint and says `stopped at day N`; a second Ctrl+C stops it at once. After a crash, a kill or a power cut, run `run` again: it carries on from what was saved. Each council is saved the moment it is held, before its day, so a council a model has already answered is reused and that model is not asked again; only a reply in flight at the moment of the kill is lost. If the saved councils cannot belong to the day under way (the journal was changed or mixed with another run), `run` refuses with `cannot resume: …`, exit code 1, and writes nothing.
+
+## Seal a run
+
+A run meant to be a trial is sealed on day 0, so nothing about it can change afterwards:
+
+```powershell
+& .venv\Scripts\sovereign-world.exe keygen
+$env:SOVEREIGN_WORLD_SEAL_KEY = Read-Host -MaskInput "Seal key"
+& .venv\Scripts\sovereign-world.exe seal work\trial --days 365
+Remove-Item Env:SOVEREIGN_WORLD_SEAL_KEY
+```
+
+`keygen` shows a new key and its fingerprint once and saves neither: keep the key safe and the fingerprint written down. `seal` signs the run's settings, code, prompts, model endpoints, spending cap and planned days with the key, and saves the seal with the run. From then on `run` refuses (exit code 4) a run whose settings, seal, code or endpoints have changed, and stops at the planned days; `verify --signer <fingerprint>` checks the run was sealed by that key. A fork of a sealed run is a new, unsealed run. After updating the code, run `uv pip install -e .[dev]` again: sealing needs the `cryptography` package.
+
+## Rules versions
+
+Each world records the rules it runs under in its manifest.
+- **Rules 3:** worlds made with `init` now. They keep everything in rules 2 and add town plans:
+  - each council designs its settlements: a style (open, ringed, grid, river town, hill fort), where the keep, market, shrine and craft quarter stand, how far out the wall ring runs (1 to 5 blocks of 64 m) and where its 1 to 3 gates face; every settlement starts with a plain plan that changes nothing;
+  - walls go up section by section along the planned ring (6 to 22 sections), each costing a tenth of a whole wall's grade step, so a standard ring costs what walls always cost;
+  - walls defend in proportion to the share of the ring built and of the houses inside it; catapults batter the weakest section; houses beyond the ring burn first in a storm;
+  - moving the ring or its gates pulls the old ring down for half its cost;
+  - a keep at the centre with its hall open, a hill fort, a craft quarter by the water and a market by the store each change one number (defence, ground, the workshop's day, store room); the shrine is drawn only.
+  - councils say how each town is defended: who stands in the line and who in reserve, who mans the towers and who gets the best kits; they choose which sections to build and where towers stand, and may add gatehouses, a ditch or moat, stakes and a citadel; a town's own catapults fight for it and fire on a siege camp, its towers cover a sally, and its council sees how many days its store lasts under siege;
+  - the scripted baseline designs its capital as a ringed town on day 30 and walls it from day 60: earthwork, or a palisade where its people know timbercraft; once the ring is complete it puts towers and then gatehouses on its gates where its crew can, and it sets its capital's defence (everyone fights, a tenth in reserve, drilled tower crews, best kits to veterans).
+- **Rules 2:** worlds made with `init` before rules 3. They add:
+  - houses: every five people need one, and births need room;
+  - settlement ranks (village to city) and realm ranks (chiefdom to empire), and what they unlock;
+  - the hall, armoury and training grounds;
+  - civil research;
+  - decrees that end when their days run out;
+  - food, water and forage from each tile's land cover; new settlements need water;
+  - timber and stone gathered at home toward a materials target;
+  - parties working ore deposits and quarries;
+  - one-off finds at ancient ruins and troves;
+  - recipes for metal, tools and planks;
+  - a cap on how far a settlement's hold reaches (strength 300, about 25 tiles of open land), so borders stay local however large a city grows;
+  - orders for work at home that count their workers at a settlement instead of naming them.
+- **Rules 1:** worlds made before rules versions were recorded. They keep rules 1 and replay and verify exactly as before.
+- **Forks:** a fork keeps its parent's rules.
+
+**Model-played runs and prompt versions.** Councils played by a model read a charter of a given prompt version. The current one is `council-7`, which tells rules-3 councils how to design their towns and raise their walls by the section, and how a town is defended (its town plan and defence rules are written from the engine's tables). Since `council-5` the council report sums up the people (counts by age, health and settlement, the idle grown-ups at each settlement, and up to 40 notable people) instead of listing every one, which kept the report readable at any population. A run recorded under an older prompt version still replays, verifies and rederives, but to carry on with a model sovereign it must be forked; the fork's sovereigns use the current version.
 
 ## Checkpoint, replay, and verify
 
@@ -66,6 +117,12 @@ Each world directory contains:
 
 - `world.sqlite3`: the immutable manifest and compressed checkpoints.
 - `journal.jsonl`: append-only, checksummed transition records linked by hashes.
+
+**Journal formats.** `inspect` and `verify` print a run's format.
+- **Format 2** (new runs and every fork): the journal opens with a header record. Each day saves only what changed since the day before; the whole world is saved every 30 days, and after any gap. Hashes use version 2, worked out in parts, so a large world hashes and saves in a fraction of the time.
+- **Format 1** (runs made before this): the whole world every day, hash version 1. Old runs keep their format, carry on in it, and replay and verify exactly as before. A fork of an old run is saved in format 2.
 - `world.sqlite3-wal` and `world.sqlite3-shm`: temporary SQLite files that may appear while a command is running.
+
+**Council records.** New runs save a day's councils before the day; runs recorded earlier saved them after it. Both orders replay, verify and rederive alike.
 
 Copy the entire directory when backing up or moving a world. Do not edit either authoritative file; verification will report corruption rather than silently accepting a changed history.

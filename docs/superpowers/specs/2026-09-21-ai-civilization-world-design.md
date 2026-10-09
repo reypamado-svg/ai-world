@@ -5,7 +5,7 @@
 
 ## 1. Purpose
 
-Create a persistent, sandboxed world in which four AI models act as immortal sovereigns of separate human communities. Each civilization begins isolated with a small founding population, develops across generations, explores a finite world, encounters rival societies, and competes to become the final surviving civilization.
+Create a persistent, sandboxed world in which two to four AI models (four by default) act as immortal sovereigns of separate human communities. Each civilization begins isolated with a small founding population, develops across generations, explores a finite world, encounters rival societies, and competes to become the final surviving civilization.
 
 The project is primarily an experiment in emergent civilization. Warfare and territorial expansion matter, but the world must also support families, specialization, culture, institutions, technology, diplomacy, trade, migration, disease, famine, surrender, and cultural assimilation.
 
@@ -15,7 +15,7 @@ The creator defines the laws and initial conditions before launch. Once a world 
 
 The design succeeds when:
 
-1. Four communities can develop from 32 founders into multigenerational societies.
+1. Two to four communities (four by default) can develop from 32 founders into multigenerational societies.
 2. Different environments produce distinct but competitively viable development paths.
 3. AI sovereigns can issue both broad decrees and direct assignments without controlling world state directly.
 4. Exploration is necessary for discovery, and no civilization receives information it has not obtained in-world.
@@ -92,7 +92,9 @@ During a live run the observer can pause and resume processing, adjust display s
 
 The first playable world is a finite two-dimensional hex grid generated from a stored seed. It includes elevation, water, rivers, coasts, climate, soil, biomes, seasonal weather, hazards, ruins, renewable resources, and nonrenewable deposits.
 
-Four starting regions are geographically separated far enough to prevent immediate contact. The generator validates that each region provides adequate initial food and water, a viable construction path, one regional advantage, one significant constraint, and eventual access to routes leading toward other societies.
+Tiles are hexagons whose centres lie 25 km apart: a day's walk with rest and sleep. Terrain forms regions — mountain ranges with snow on the coldest peaks, hills, forests, grasslands, deserts, tundra, lakes and seas — and neighbouring tiles follow from one another. Entering grassland takes a day; forest, desert and tundra a day and a half; hills two days; mountains three; snow five. Water cannot be entered on foot. Rivers run along the borders between tiles from high ground to a lake, the sea or the map's edge, and deepen as tributaries join: a stream adds half a day to cross, a river a day, and a deep river cannot be waded. Road crews building a graded road or better bridge the rivers on their way, and anyone then crosses at no extra cost.
+
+Two to four starting regions (four by default, chosen when the world is made) are placed as far apart as the land allows, scaled by the land area and the number of civilizations, and always far enough to prevent immediate contact. The generator validates that each region provides adequate initial food and water, a viable construction path, one regional advantage, one significant constraint, and eventual access to routes leading toward other societies.
 
 No civilization begins with a global map. Knowledge of a location records who observed it, when it was observed, and the confidence of the report.
 
@@ -108,7 +110,7 @@ Territory is a derived fact rather than a painted claim. Effective control comes
 
 ## 6. Time and Turns
 
-The engine advances the world in daily ticks. Routine individual needs, movement, work, construction, health, and local events resolve at this level.
+The engine advances the world in daily ticks. Routine individual needs, movement, work, construction, health, and local events resolve at this level. A party moves from tile to tile at the terrain and river costs of §5.1.
 
 Each sovereign normally receives one council turn per in-world month. Standing decrees and ongoing projects remain active between council turns. A material crisis may trigger an additional decision opportunity, including an invasion, epidemic, disaster, leadership request, first contact, or proposed treaty.
 
@@ -215,7 +217,7 @@ The second-PC model endpoint must be bound only to an intended private interface
 
 The first playable release includes:
 
-- four civilizations and 128 total founders;
+- two to four civilizations (four by default) of 32 founders each;
 - a finite hex map with balanced asymmetric starts;
 - daily simulation and monthly sovereign councils;
 - food, water, shelter, storage, tools, transport, construction, and resource ecology;

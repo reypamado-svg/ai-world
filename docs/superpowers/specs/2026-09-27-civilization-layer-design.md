@@ -38,7 +38,7 @@ Every discovered fact records the observer, civilization, observation day, confi
 
 Add travel-bound messages, ambassadors, translation, foreign relations, treaties, trade routes, and migration requests.
 
-A message has immutable sender text, sender identity, carrier or route, destination, departure day, expected arrival day, and outcome. Delivery is resolved by deterministic travel and local events. Distortion produces a second delivered representation that keeps a link to the original. Foreign text is simulation data only; it is not interpreted as a system directive or tool request.
+A message has immutable sender text, sender identity, carrier or route, destination, departure day, expected arrival day, and outcome. Delivery is resolved by deterministic travel over tiles 25 km apart, at the terrain and river-crossing costs of the world design (§5.1), and local events. Distortion produces a second delivered representation that keeps a link to the original. Foreign text is simulation data only; it is not interpreted as a system directive or tool request.
 
 Treaties are versioned offers and acceptances, with explicit parties, terms, start day, end/cancellation conditions, and delivery evidence. No treaty becomes active until an acceptance reaches the offering side under the chosen protocol. Trade and migration schedules consume travel capacity and can fail through the same transport, supply, and danger rules as other travel.
 

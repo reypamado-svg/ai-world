@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
 from itertools import pairwise
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+import numpy as np
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
 
 from sovereign_world.armoury import (
+    GOODS_RECIPES,
     MAX_CRAFT_QUANTITY,
     RECIPES,
     WAR_GEAR,
@@ -20,8 +29,16 @@ from sovereign_world.armoury import (
     personal_kits,
     slows,
 )
+from sovereign_world.bridges import (
+    Bridge,
+    bridge_materials,
+    bridged_edges,
+    deep_spans,
+    spans_planned,
+)
 from sovereign_world.capabilities import CapabilityId
-from sovereign_world.culture import ancestry, culture
+from sovereign_world.cover import WET_FIELD
+from sovereign_world.defence import DefenceOrder, DefenceOrderSpec
 from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
@@ -34,18 +51,38 @@ from sovereign_world.endings import Ending, EndingKind, RuinView
 from sovereign_world.espionage import MAX_SPIES, MAX_WATCH_DAYS, CaughtSpy, SpyReport
 from sovereign_world.events import DomainEvent
 from sovereign_world.exploration import ExpeditionStatus
-from sovereign_world.hexmap import HexCoord, Terrain
+from sovereign_world.hexmap import COVER_CLASSES, CoverClass, HexCoord, Terrain, WorldMap
+from sovereign_world.housing import (
+    MAX_HOUSES_PER_ORDER,
+    HouseGrade,
+    HouseJob,
+    best_grade,
+    house_materials,
+    known_grades,
+    residents_by_settlement,
+)
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import (
+    ARMOURY_GEAR,
+    CIVIC_KINDS,
     INSTITUTIONS,
     MAX_STAFF,
     SCHOOL_APPRENTICES,
+    SEAT,
     Institution,
     InstitutionKind,
     serving_tiles,
     staff_of,
 )
-from sovereign_world.languages import native, speaks
+from sovereign_world.land import (
+    fields_by_settlement,
+    food_capacity,
+    irrigated_fields,
+    stone_capacity,
+    timber_capacity,
+    water_near,
+)
+from sovereign_world.languages import FLUENT
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
     INTERNAL_KINDS,
@@ -61,7 +98,24 @@ from sovereign_world.logistics import (
     provisions_needed,
     roadwork_days,
 )
+from sovereign_world.people import FERTILE_HEALTH_BP
+from sovereign_world.people_store import PeopleTable, Sex, place_code
+from sovereign_world.ranks import (
+    INSTITUTION_RANK,
+    INSTITUTION_SLOTS,
+    STOREHOUSE_RANK,
+    TOLL_RANK,
+    TRIBUTE_RANK,
+    WAR_PARTY_LIMIT,
+    WRITING_RANK,
+    RealmRank,
+    SettlementRank,
+    at_least,
+    realm_at_least,
+    settlement_rank,
+)
 from sovereign_world.research import (
+    CIVIL_TOPICS,
     LOGISTICS_CARRY,
     MAX_RESEARCH_DAYS,
     ResearchAssignment,
@@ -69,6 +123,18 @@ from sovereign_world.research import (
     research_error,
 )
 from sovereign_world.resources import Resource
+from sovereign_world.rings import (
+    MAX_SECTIONS,
+    MOAT,
+    Citadel,
+    WallRing,
+    damaged_sections,
+    ring_for,
+    ring_work,
+    tower_cap,
+    tower_positions,
+    weakest,
+)
 from sovereign_world.roads import (
     STONE_LAYING,
     STONEWORKING,
@@ -76,6 +142,8 @@ from sovereign_world.roads import (
     RoadView,
     materials_for,
 )
+from sovereign_world.rules import rules_for
+from sovereign_world.sites import FIND_KINDS, MAX_WORK_DAYS, WORKED_KINDS, SiteKind
 from sovereign_world.state import CivilizationState, WorldState
 from sovereign_world.stores import (
     STOREHOUSE_GRADES,
@@ -83,8 +151,10 @@ from sovereign_world.stores import (
     StorehouseGrade,
     StorehouseJob,
     all_stores,
+    held_captives,
     holdings,
     rank,
+    rows_by_store,
     settlement_at,
     step_materials,
     steps,
@@ -101,9 +171,18 @@ from sovereign_world.tolls import (
     TollPost,
     TollView,
 )
-from sovereign_world.travel import passable
+from sovereign_world.townplan import DEFAULT_PLAN, Place, TownPlan, TownPlanSpec, site_error
+from sovereign_world.travel import (
+    NO_BRIDGES,
+    Bridges,
+    crossing,
+    entry_cost,
+    passable,
+    river_depth,
+)
 from sovereign_world.walls import (
     WALL_GRADES,
+    DefenceWork,
     WallGrade,
     WallJob,
     Walls,
@@ -129,6 +208,10 @@ class DecreeKind(StrEnum):
     FOOD_RESERVE_TARGET = "food_reserve_target"
     LABOR_PRIORITY = "labor_priority"
     POPULATION_GROWTH_POLICY = "population_growth_policy"
+    HOUSING_POLICY = "housing_policy"
+    """Rules version 2: the spare room, in percent, each settlement keeps building toward."""
+    MATERIALS_RESERVE_TARGET = "materials_reserve_target"
+    """Rules version 2: the timber each settlement gathers toward (and half as much stone)."""
 
 
 class DirectOrderKind(StrEnum):
@@ -171,6 +254,14 @@ class DirectOrderKind(StrEnum):
     SEND_COURIER = "send_courier"
     FOUND_INSTITUTION = "found_institution"
     STAFF_INSTITUTION = "staff_institution"
+    EXTRACT = "extract"
+    """Rules version 2: send workers to a deposit or quarry to work it for some days."""
+    PLAN_SETTLEMENT = "plan_settlement"
+    """Rules version 3: lay out one of this civilization's settlements to a design."""
+    SET_DEFENCE = "set_defence"
+    """Rules version 3: how one of this civilization's settlements fights when attacked."""
+    BUILD_WORKS = "build_works"
+    """Rules version 3: raise a work on a settlement's ring, such as gatehouses on its gates."""
 
 
 MESSAGE_ORDERS = frozenset(
@@ -194,6 +285,7 @@ JOURNEY_ORDERS: dict[DirectOrderKind, JourneyKind] = {
     DirectOrderKind.HAUL_GOODS: JourneyKind.HAUL,
     DirectOrderKind.RELEASE_PEOPLE: JourneyKind.PETITION,
     DirectOrderKind.SALVAGE: JourneyKind.SALVAGE,
+    DirectOrderKind.EXTRACT: JourneyKind.EXTRACTION,
     DirectOrderKind.SEND_SPY: JourneyKind.SPY,
 }
 CAMP_ORDERS = frozenset(
@@ -204,8 +296,15 @@ CAMP_ORDERS = frozenset(
     }
 )
 """Orders to a war party holding the end of its route: besiegers or occupiers."""
+SETTLEMENT_ORDERS = frozenset({DirectOrderKind.PLAN_SETTLEMENT, DirectOrderKind.SET_DEFENCE})
+"""Orders whose `settlement_id` names the settlement they act on, not a worker count's."""
 WALL_ORDERS = frozenset(
-    {DirectOrderKind.BUILD_WALLS, DirectOrderKind.BUILD_TOWERS, DirectOrderKind.REPAIR_WALLS}
+    {
+        DirectOrderKind.BUILD_WALLS,
+        DirectOrderKind.BUILD_TOWERS,
+        DirectOrderKind.REPAIR_WALLS,
+        DirectOrderKind.BUILD_WORKS,
+    }
 )
 REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
     JourneyKind.SHIPMENT: TreatyKind.TRADE,
@@ -214,6 +313,8 @@ REQUIRED_TREATY: dict[JourneyKind, TreatyKind] = {
 
 
 MAX_CLAIMED_TILES = 256
+MAX_WORKER_COUNT = 100
+"""The most workers one counted order sets to a duty."""
 
 
 class ControlView(BaseModel):
@@ -297,11 +398,47 @@ class DirectOrder(BaseModel):
     """The grade a settlement's walls are raised to, one step at a time."""
     tower_count: int = Field(default=0, ge=0, le=6)
     """Towers to add to a settlement's walls."""
+    wall_sections: int | None = Field(default=None, ge=1, le=MAX_SECTIONS)
+    """Rules version 3: how many of the ring's weakest sections to raise; none means every
+    section below the grade."""
     craft_quantity: int = Field(default=1, ge=1, le=MAX_CRAFT_QUANTITY)
     research_topic: CapabilityId | None = None
     research_days: int = Field(default=30, ge=1, le=MAX_RESEARCH_DAYS)
     extra_provisions: int = Field(default=0, ge=0, le=CARGO_UNITS_PER_CARRIER * MAX_TRAVELLERS)
     priority: int = Field(default=50, ge=0, le=100)
+    house_count: int = Field(default=1, ge=1, le=MAX_HOUSES_PER_ORDER)
+    """Rules version 2: how many houses a shelter project raises, one after another."""
+    work_days: int = Field(default=0, ge=0, le=MAX_WORK_DAYS)
+    """Rules version 2: days an extraction party works its deposit or quarry."""
+    house_grade: HouseGrade | None = None
+    """Rules version 2: the kind of house to raise; none means the best this people knows."""
+    worker_count: int | None = Field(default=None, ge=1, le=MAX_WORKER_COUNT)
+    """Rules version 2: for work at home, how many idle grown-ups at `settlement_id` to set
+    to it, instead of naming them in `worker_ids`."""
+    settlement_id: EntityId | None = None
+    """Rules version 2: the settlement a counted order's workers are taken from; rules
+    version 3: the settlement a plan order lays out."""
+    town_plan: TownPlanSpec | None = None
+    """Rules version 3: the design a plan order gives its settlement."""
+    defence: DefenceOrderSpec | None = None
+    """Rules version 3: the standing defence a set_defence order gives its settlement."""
+    section_ids: tuple[int, ...] = Field(default=(), max_length=MAX_SECTIONS)
+    """Rules version 3: the ring sections a wall, tower or works order works on, in order."""
+    work: DefenceWork | None = None
+    """Rules version 3: the work a build_works order raises."""
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_counts(self, handler: SerializerFunctionWrapHandler) -> object:
+        # Orders that name their workers dump exactly as before counts existed.
+        dumped = handler(self)
+        if isinstance(dumped, dict):
+            for key in ("worker_count", "settlement_id", "town_plan", "wall_sections", "defence"):
+                if key in dumped and dumped[key] is None:
+                    dumped.pop(key)
+            for key in ("section_ids", "work"):
+                if key in dumped and dumped[key] in (None, [], ()):
+                    dumped.pop(key)
+        return dumped
 
 
 Command = Annotated[Decree | DirectOrder, Field(union_mode="left_to_right")]
@@ -310,7 +447,8 @@ Command = Annotated[Decree | DirectOrder, Field(union_mode="left_to_right")]
 class CommandEnvelope(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    schema_version: int = Field(ge=1, le=1)
+    schema_version: int = Field(ge=1, le=2)
+    """1, or 2 for envelopes that may count workers instead of naming them."""
     civilization_id: EntityId
     council_day: int = Field(ge=0)
     correlation_id: str
@@ -333,6 +471,172 @@ class CommandValidation(BaseModel):
     errors: tuple[CommandError, ...]
 
 
+class BridgeView(BaseModel):
+    """A bridge a civilization knows of: only where it stands, never who built it or when."""
+
+    model_config = ConfigDict(frozen=True)
+
+    a: HexCoord
+    b: HexCoord
+
+
+class RiverView(BaseModel):
+    """A river a civilization knows of: it runs along the border between a known tile and
+    its neighbour across, and is a stream, a river, or too deep to wade."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tile: HexCoord
+    across: HexCoord
+    depth: Literal["stream", "river", "deep"]
+
+
+class SiteView(BaseModel):
+    """An ore deposit, quarry, ancient ruin or trove on a tile this civilization has seen,
+    as it was when last seen."""
+
+    model_config = ConfigDict(frozen=True)
+
+    site_id: EntityId
+    tile: HexCoord
+    kind: SiteKind
+    richness: int
+    remaining: int
+    as_of_day: int
+
+
+class LandView(BaseModel):
+    """What a settlement's fields, woods and rock yield at most each day (rules version 2)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    food_per_day: int
+    timber_per_day: int
+    stone_per_day: int
+    watered: bool
+    """Water on or beside the settlement."""
+    irrigable_fields: int
+    """Its fields with a river or wetland, which irrigation makes yield half again."""
+
+
+class HousingView(BaseModel):
+    """A settlement's houses, the room they give, and who it has to house."""
+
+    model_config = ConfigDict(frozen=True)
+
+    houses: dict[HouseGrade, int]
+    slots: int
+    residents: int
+    """Its people at home and on its fields, and the captives held there."""
+    buildable: HouseGrade
+    """The best house this civilization knows how to build."""
+
+
+GROWN_DAYS = 16 * 365
+"""The age at which a person can be set to work at home."""
+FIGHTING_YEARS = 60
+"""The oldest a person drills or fights."""
+ELDER_YEARS = 65
+"""The age from which a person counts as an elder: when old age starts to tell."""
+NOTABLE_PEOPLE = 40
+"""How many of its people a council report names, with what they are doing."""
+
+
+def idle_at(
+    table: PeopleTable, tile: HexCoord, busy: set[EntityId], count: int, *, fit: bool = False
+) -> list[EntityId]:
+    """Up to `count` living, free, grown people standing on the tile and not busy, lowest
+    ids first; with `fit`, only those able to fight."""
+    living = table.living_rows()
+    ages = table.nums["age_days"][living]
+    wanted = (
+        (table.loc_code[living] == place_code(tile)) & ~table.captive[living] & (ages >= GROWN_DAYS)
+    )
+    if fit:
+        wanted &= (ages // 365 <= FIGHTING_YEARS) & (table.nums["health_bp"][living] > 0)
+    here = living[wanted]
+    idle: list[EntityId] = []
+    for row in here.tolist():
+        person_id = table.ids[row]
+        if person_id not in busy:
+            idle.append(person_id)
+            if len(idle) == count:
+                break
+    return idle
+
+
+class PopulationSummary(BaseModel):
+    """A civilization's people in numbers: what a council needs, at any size."""
+
+    model_config = ConfigDict(frozen=True)
+
+    living: int
+    """Its living people it knows of: not emigrants, not its people held by others."""
+    children: int
+    """Of those, under 16."""
+    grown: int
+    """From 16 to 64."""
+    elders: int
+    """65 and over."""
+    women_able_to_conceive: int
+    """Women of 18 to 42 in good enough health to bear children."""
+    hungry: int
+    """Short of food lately."""
+    ailing: int
+    """In poor health."""
+    newcomers: int
+    """People of other cultures still becoming its own."""
+    dead_this_year: int
+    """Its people who died in the last 365 days."""
+    residents: dict[EntityId, int]
+    """Each settlement's people at home and on its fields, and the captives held there."""
+    idle_workers: dict[EntityId, int]
+    """Each settlement's grown-ups standing there with no duty: who an order can set to
+    work there."""
+    speakers: dict[EntityId, int]
+    """How many of its free people speak each language."""
+
+
+class PersonView(BaseModel):
+    """One of a civilization's people, as its council knows them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    person_id: EntityId
+    sex: Sex
+    age_years: int
+    health_bp: int
+    hungry: bool
+    settlement_id: EntityId | None
+    """The settlement whose ground they stand on, if any."""
+    skills: dict[str, int]
+    duty: str | None
+    """What they are doing, as `kind:id`; none when idle."""
+
+
+_REPORT_ADDITIONS: tuple[tuple[str, object], ...] = (
+    ("population", None),
+    ("notable_people", []),
+    ("known_sites", []),
+    ("rules_version", 1),
+    ("housing", {}),
+    ("house_jobs", []),
+    ("ranks", {}),
+    ("realm_rank", None),
+    ("land", {}),
+    ("extractions", []),
+    ("town_plans", {}),
+    ("wall_rings", {}),
+    ("defence_orders", {}),
+    ("citadels", {}),
+    ("siege_days_of_food", {}),
+    ("council_interval_days", 30),
+    ("crisis_gap_days", 7),
+)
+"""Report fields added since council-3, and the value at which each is left out, so reports
+from older worlds read, and so prompt, exactly as before."""
+
+
 class CouncilReport(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -343,6 +647,10 @@ class CouncilReport(BaseModel):
     start_center: HexCoord
     known_tiles: tuple[HexCoord, ...]
     known_terrain: tuple[tuple[HexCoord, Terrain], ...] = ()
+    known_rivers: tuple[RiverView, ...] = ()
+    known_sites: tuple[SiteView, ...] = ()
+    """Sites on tiles this civilization has seen; left out of the report while there are none."""
+    """Rivers along the borders of known tiles."""
     inventory: dict[Resource, int]
     """The capital's store."""
     stores: dict[EntityId, dict[Resource, int]] = Field(default_factory=dict)
@@ -367,6 +675,8 @@ class CouncilReport(BaseModel):
     settlements: tuple[Settlement, ...] = ()
     garrisons: tuple[Garrison, ...] = ()
     known_roads: tuple[RoadView, ...] = ()
+    known_bridges: tuple[BridgeView, ...] = ()
+    """Bridges this civilization built or can see."""
     toll_posts: tuple[TollPost, ...] = ()
     known_tolls: tuple[TollView, ...] = ()
     wars: tuple[War, ...] = ()
@@ -409,28 +719,98 @@ class CouncilReport(BaseModel):
     research: tuple[ResearchAssignment, ...] = ()
     research_points: dict[CapabilityId, int] = Field(default_factory=dict)
     recent_events: tuple[DomainEvent, ...] = ()
+    rules_version: int = 1
+    """The rules this world runs under; version 2 adds houses, ranks and civil research."""
+    council_interval_days: int = 30
+    """Days between this world's regular councils."""
+    crisis_gap_days: int = 7
+    """The fewest days between crisis councils; 0 when crises call none."""
+    housing: dict[EntityId, HousingView] = Field(default_factory=dict)
+    """Each settlement's houses (rules version 2)."""
+    house_jobs: tuple[HouseJob, ...] = ()
+    """Houses going up."""
+    ranks: dict[EntityId, SettlementRank] = Field(default_factory=dict)
+    """Each settlement's rank (rules version 2); a settlement not listed is a village."""
+    realm_rank: RealmRank | None = None
+    """The civilization's rank: chiefdom, kingdom or empire (rules version 2)."""
+    land: dict[EntityId, LandView] = Field(default_factory=dict)
+    """What each settlement's land yields at most each day (rules version 2)."""
+    extractions: tuple[Journey, ...] = ()
+    """This civilization's parties out at deposits and quarries."""
+    population: PopulationSummary | None = None
+    """Its people in numbers (from council-5)."""
+    notable_people: tuple[PersonView, ...] = ()
+    """Up to 40 of its people: those on a duty, then idle grown-ups at each settlement."""
+    town_plans: dict[EntityId, TownPlan] = Field(default_factory=dict)
+    """How each settlement is laid out (rules version 3)."""
+    wall_rings: dict[EntityId, WallRing] = Field(default_factory=dict)
+    """Each settlement's walls, section by section along its planned ring (rules version 3)."""
+    defence_orders: dict[EntityId, DefenceOrder] = Field(default_factory=dict)
+    """Each settlement's standing defence order (rules version 3)."""
+    citadels: dict[EntityId, Citadel] = Field(default_factory=dict)
+    """Each settlement's citadel (rules version 3)."""
+    siege_days_of_food: dict[EntityId, int] = Field(default_factory=dict)
+    """For each settlement this civilization knows to be besieged, the days its store feeds
+    the people inside, one food each a day (rules version 3)."""
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_additions(self, handler: SerializerFunctionWrapHandler) -> object:
+        dumped = handler(self)
+        if isinstance(dumped, dict):
+            for key, empty in _REPORT_ADDITIONS:
+                if key in dumped and dumped[key] in (empty, None, ()):
+                    dumped.pop(key)
+        return dumped
 
 
-def _blend(civilization: CivilizationState) -> dict[str, Any]:
-    cultures: dict[EntityId, int] = {}
-    ancestries: dict[EntityId, int] = {}
-    assimilating = 0
-    known_captives = set(civilization.known_captives)
-    for person_id, person in civilization.population.people.items():
-        if not person.alive or person_id in known_captives:
-            continue
-        cultures[culture(person)] = cultures.get(culture(person), 0) + 1
-        for origin in ancestry(person):
-            ancestries[origin] = ancestries.get(origin, 0) + 1
-        assimilating += person.culture is not None
+def _land_views(state: WorldState, civilization_id: EntityId) -> dict[EntityId, LandView]:
+    if not rules_for(state.rules_version).cover_mechanics:
+        return {}
+    civilization = state.civilizations[civilization_id]
+    fields = fields_by_settlement(civilization)
+    irrigation = knows(civilization.capabilities, CapabilityId.IRRIGATION)
+    fishing = knows(civilization.capabilities, CapabilityId.FISHING)
+    world_map = state.world_map
     return {
-        "cultures": dict(sorted(cultures.items())),
-        "ancestries": dict(sorted(ancestries.items())),
-        "assimilating": assimilating,
+        settlement.settlement_id: LandView(
+            food_per_day=food_capacity(
+                world_map,
+                fields.get(settlement.settlement_id, ()),
+                irrigation=irrigation,
+                fishing=fishing,
+            ),
+            timber_per_day=timber_capacity(world_map, fields.get(settlement.settlement_id, ())),
+            stone_per_day=stone_capacity(world_map, fields.get(settlement.settlement_id, ())),
+            watered=water_near(world_map, settlement.tile),
+            irrigable_fields=irrigated_fields(world_map, fields.get(settlement.settlement_id, ())),
+        )
+        for settlement in civilization.settlements
     }
 
 
-CRISIS_GAP_DAYS = 7
+def _housing_views(
+    state: WorldState,
+    civilization_id: EntityId,
+    residents: Mapping[EntityId, Sequence[EntityId]] | None = None,
+) -> dict[EntityId, HousingView]:
+    if not rules_for(state.rules_version).houses:
+        return {}
+    civilization = state.civilizations[civilization_id]
+    if residents is None:
+        residents = residents_by_settlement(state, civilization_id)
+    buildable = best_grade(civilization.capabilities)
+    views: dict[EntityId, HousingView] = {}
+    for settlement in civilization.settlements:
+        housing = civilization.housing.get(settlement.settlement_id)
+        views[settlement.settlement_id] = HousingView(
+            houses={} if housing is None else dict(housing.houses),
+            slots=0 if housing is None else housing.slots,
+            residents=len(residents.get(settlement.settlement_id, ())),
+            buildable=buildable,
+        )
+    return views
+
+
 """A civilization holds at most one crisis council in this many days."""
 
 
@@ -462,28 +842,274 @@ def crisis_reasons(state: WorldState, civilization_id: EntityId) -> tuple[str, .
     return tuple(reason for reason, struck in found.items() if struck)
 
 
+def council_day(state: WorldState) -> bool:
+    """Whether today is a regular council day: day 0 and every interval after it."""
+    return state.day % state.config.council_interval_days == 0
+
+
 def crisis_council_due(state: WorldState, civilization_id: EntityId) -> bool:
-    """A council outside the monthly round, called by yesterday's news."""
-    if state.day == 0 or state.day % state.config.council_interval_days == 0:
+    """A council outside the regular round, called by yesterday's news, at most once in the
+    world's crisis gap (a gap of 0 calls none)."""
+    gap = state.config.crisis_gap_days
+    if gap == 0 or council_day(state):
         return False
     last = state.civilizations[civilization_id].last_crisis_council
-    if last is not None and state.day - last < CRISIS_GAP_DAYS:
+    if last is not None and state.day - last < gap:
         return False
     return bool(crisis_reasons(state, civilization_id))
 
 
-def _speakers(civilization: CivilizationState) -> dict[EntityId, tuple[EntityId, ...]]:
-    found: dict[EntityId, list[EntityId]] = {}
-    known_captives = set(civilization.known_captives)
-    for person_id, person in sorted(civilization.population.people.items()):
-        if not person.alive or person_id in known_captives:
-            continue
-        tongues = {native(person)} | {
-            language for language in person.languages if speaks(person, language)
+def _busy_for_orders(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
+    """People an order cannot set to work at home today: travelling, garrisoned, on a
+    duty at home, teaching or learning, or on a work crew. (The engine's housing policy
+    keeps its own, older rule.)"""
+    civilization = state.civilizations[civilization_id]
+    return (
+        _travelling_people(state, civilization_id)
+        | _garrisoned_people(state, civilization_id)
+        | _drilling_people(state, civilization_id)
+        | {
+            person_id
+            for assignment in civilization.teaching_assignments
+            for person_id in (assignment.teacher_id, assignment.apprentice_id)
         }
+        | {person_id for order in civilization.work_orders for person_id in order.worker_ids}
+    )
+
+
+def _duties(state: WorldState, civilization_id: EntityId) -> dict[EntityId, str]:
+    """What each busy person is doing, as `kind:id`; the first duty found counts."""
+    civilization = state.civilizations[civilization_id]
+    found: dict[EntityId, str] = {}
+
+    def note(people: Iterable[EntityId], label: str) -> None:
+        for person_id in people:
+            found.setdefault(person_id, label)
+
+    for institution in civilization.institutions:
+        note(institution.staff_ids, f"staff:{institution.institution_id}")
+    for assignment in civilization.research:
+        if assignment.active:
+            note(assignment.scholar_ids, f"scholar:{assignment.assignment_id}")
+    for drill in civilization.drills:
+        if drill.active:
+            note(drill.person_ids, f"drill:{drill.drill_id}")
+    for craft in civilization.craft_jobs:
+        if not craft.done:
+            note(craft.worker_ids, f"craft:{craft.job_id}")
+    for jobs in (civilization.storehouse_jobs, civilization.wall_jobs, civilization.house_jobs):
+        for job in jobs:
+            note(job.worker_ids, f"builder:{job.job_id}")
+    for teaching in civilization.teaching_assignments:
+        note((teaching.teacher_id,), f"teacher:{teaching.assignment_id}")
+        note((teaching.apprentice_id,), f"apprentice:{teaching.assignment_id}")
+    for order in civilization.work_orders:
+        note(order.worker_ids, f"work:{order.order_id}")
+    for garrison in civilization.garrisons:
+        note(garrison.member_ids, f"garrison:{garrison.garrison_id}")
+    for expedition in civilization.expeditions:
+        if expedition.status is ExpeditionStatus.ACTIVE:
+            note(expedition.explorer_ids, f"expedition:{expedition.expedition_id}")
+    for journey in state.journeys:
+        if journey.active and journey.sender_civilization_id == civilization_id:
+            note(journey.traveller_ids, f"journey:{journey.journey_id}")
+    for message in state.diplomatic_missions:
+        if (
+            message.status is MissionStatus.IN_TRANSIT
+            and message.sender_civilization_id == civilization_id
+        ):
+            note((message.ambassador_id,), f"envoy:{message.message_id}")
+    return found
+
+
+def _known_residents(
+    state: WorldState, civilization_id: EntityId, emigrants: set[EntityId]
+) -> dict[EntityId, list[EntityId]]:
+    """`residents_by_settlement` as the council knows it: its people it has not heard are
+    taken still count where they stand."""
+    civilization = state.civilizations[civilization_id]
+    if not civilization.settlements:
+        return {}
+    table = civilization.population.people.table
+    hidden = (
+        emigrants
+        | set(civilization.known_captives)
+        | {
+            person_id
+            for journey in state.journeys
+            if journey.active and journey.sender_civilization_id == civilization_id
+            for person_id in journey.traveller_ids
+        }
+    )
+    rows = table.living_rows()
+    hidden_rows = table.rows_of(hidden)
+    if len(hidden_rows):
+        rows = rows[~np.isin(rows, hidden_rows)]
+    residents = {
+        store_id: [table.ids[row] for row in found.tolist()]
+        for store_id, found in rows_by_store(civilization, table, rows).items()
+    }
+    own_settlements = {item.settlement_id for item in civilization.settlements}
+    for person_id, person in sorted(held_captives(state, civilization_id, own_settlements).items()):
+        assert person.held_at is not None
+        residents.setdefault(person.held_at, []).append(person_id)
+    return residents
+
+
+def _people_part(
+    state: WorldState,
+    civilization_id: EntityId,
+    emigrants: set[EntityId],
+    residents: Mapping[EntityId, Sequence[EntityId]],
+) -> dict[str, Any]:
+    """Everything a council report says about the people, read from the columns in one
+    pass: no person is copied or handed out, so nothing is marked as changed."""
+    civilization = state.civilizations[civilization_id]
+    table = civilization.population.people.table
+    ids, objs, nums = table.ids, table.objs, table.nums
+    known_captives = set(civilization.known_captives)
+    hidden = emigrants | known_captives
+    person_ids = tuple(
+        person_id
+        for person_id in map(ids.__getitem__, table.ordered(table.rows()).tolist())
+        if person_id not in hidden
+    )
+    living = table.living_rows().tolist()
+    own_tongue, homeland = objs["native_language"], objs["civilization_id"]
+    known_languages, cultures_of, ancestry_of = objs["languages"], objs["culture"], objs["ancestry"]
+    speakers: dict[EntityId, list[EntityId]] = {}
+    cultures: dict[EntityId, int] = {}
+    ancestries: dict[EntityId, int] = {}
+    assimilating = 0
+    for row in living:
+        person_id = ids[row]
+        if person_id in known_captives:
+            continue
+        own = own_tongue[row] or homeland[row]
+        known = known_languages[row]
+        tongues = (
+            {own} | {language for language, level in known.items() if level >= FLUENT}
+            if known
+            else (own,)
+        )
         for language in tongues:
-            found.setdefault(language, []).append(person_id)
-    return {language: tuple(found[language]) for language in sorted(found)}
+            speakers.setdefault(language, []).append(person_id)
+        lives_by = cultures_of[row] or homeland[row]
+        cultures[lives_by] = cultures.get(lives_by, 0) + 1
+        for origin in ancestry_of[row] or (own,):
+            ancestries[origin] = ancestries.get(origin, 0) + 1
+        assimilating += cultures_of[row] is not None
+    captives = sorted(
+        other.ids[row]
+        for civilization_other in state.civilizations.values()
+        for other in (civilization_other.population.people.table,)
+        for row in np.flatnonzero(other.mask(alive=True, captive=True)).tolist()
+        if other.objs["captive_of"][row] == civilization_id
+    )
+
+    free = np.array([row for row in living if ids[row] not in hidden], dtype=np.int64)
+    ages = nums["age_days"][free]
+    health = nums["health_bp"][free]
+    female = np.fromiter(
+        (objs["sex"][row] is Sex.FEMALE for row in free.tolist()), dtype=bool, count=len(free)
+    )
+    elder = ages // 365 >= ELDER_YEARS
+    dead = np.flatnonzero(table.mask(alive=False))
+    died = table.column("death_day", dead)
+    busy = _busy_for_orders(state, civilization_id)
+    # Only what the council knows: its people it has not heard are taken count as idle
+    # where they stand.
+    idle = free[ages >= GROWN_DAYS]
+    busy_rows = table.rows_of(busy)
+    if len(busy_rows):
+        idle = idle[~np.isin(idle, busy_rows)]
+    idle_codes = table.loc_code[idle]
+    settlements = sorted(
+        civilization.settlements, key=lambda item: (not item.capital, item.settlement_id)
+    )
+    population = PopulationSummary(
+        living=len(free),
+        children=int(np.count_nonzero(ages < GROWN_DAYS)),
+        grown=int(np.count_nonzero((ages >= GROWN_DAYS) & ~elder)),
+        elders=int(np.count_nonzero(elder)),
+        women_able_to_conceive=int(
+            np.count_nonzero(
+                female & (ages >= 18 * 365) & (ages <= 42 * 365) & (health >= FERTILE_HEALTH_BP)
+            )
+        ),
+        hungry=int(np.count_nonzero(nums["nutrition_debt"][free] > 0)),
+        ailing=int(np.count_nonzero(health < FERTILE_HEALTH_BP)),
+        newcomers=sum(cultures_of[row] is not None for row in free.tolist()),
+        dead_this_year=sum(day is not None and day > state.day - 365 for day in died),
+        residents={
+            settlement.settlement_id: len(residents.get(settlement.settlement_id, ()))
+            for settlement in civilization.settlements
+        },
+        idle_workers={
+            settlement.settlement_id: int(
+                np.count_nonzero(idle_codes == place_code(settlement.tile))
+            )
+            for settlement in civilization.settlements
+        },
+        speakers={language: len(speakers[language]) for language in sorted(speakers)},
+    )
+    # Those on a duty first, then idle grown-ups taken in turn from each settlement.
+    duties = _duties(state, civilization_id)
+    notable = [row for row in free.tolist() if ids[row] in duties][:NOTABLE_PEOPLE]
+    queues = [
+        idle[idle_codes == place_code(settlement.tile)].tolist()[:NOTABLE_PEOPLE]
+        for settlement in settlements
+    ]
+    turn = 0
+    while len(notable) < NOTABLE_PEOPLE and any(turn < len(queue) for queue in queues):
+        notable.extend(queue[turn] for queue in queues if turn < len(queue))
+        turn += 1
+    notable = notable[:NOTABLE_PEOPLE]
+    settlement_at = {}
+    for settlement in reversed(settlements):
+        settlement_at[place_code(settlement.tile)] = settlement.settlement_id
+    notable_people = tuple(
+        PersonView(
+            person_id=ids[row],
+            sex=objs["sex"][row],
+            age_years=int(nums["age_days"][row]) // 365,
+            health_bp=int(nums["health_bp"][row]),
+            hungry=int(nums["nutrition_debt"][row]) > 0,
+            settlement_id=settlement_at.get(int(table.loc_code[row])),
+            skills=dict(objs["skills"][row]),
+            duty=duties.get(ids[row]),
+        )
+        for row in notable
+    )
+    return {
+        "person_ids": person_ids,
+        "speakers": {language: tuple(speakers[language]) for language in sorted(speakers)},
+        "cultures": dict(sorted(cultures.items())),
+        "ancestries": dict(sorted(ancestries.items())),
+        "assimilating": assimilating,
+        "captives": tuple(captives),
+        "population": population,
+        "notable_people": notable_people,
+    }
+
+
+def _siege_days_of_food(
+    state: WorldState, civilization_id: EntityId, residents: dict[EntityId, list[EntityId]]
+) -> dict[EntityId, int]:
+    """Rules version 3 defence: how long each besieged settlement's store lasts."""
+    if not rules_for(state.rules_version).town_defence:
+        return {}
+    civilization = state.civilizations[civilization_id]
+    days: dict[EntityId, int] = {}
+    for siege in state.sieges:
+        if (
+            siege.active
+            and siege.defender_id == civilization_id
+            and siege.defender_learned_day is not None
+        ):
+            food = store_at(civilization, siege.settlement_tile).quantities.get(Resource.FOOD, 0)
+            days[siege.settlement_id] = food // max(len(residents.get(siege.settlement_id, [])), 1)
+    return dict(sorted(days.items()))
 
 
 def build_council_report(
@@ -508,7 +1134,8 @@ def build_council_report(
             and journey.outcome in {JourneyOutcome.FAILED, JourneyOutcome.REFUSED}
         )
     }
-    known_captives = set(civilization.known_captives)
+    residents = _known_residents(state, civilization_id, emigrants)
+    people = _people_part(state, civilization_id, emigrants, residents)
     visible_events = tuple(
         event
         for event in recent_events
@@ -518,15 +1145,9 @@ def build_council_report(
         report_id=f"report:{state.day}:{civilization_id}",
         civilization_id=civilization_id,
         day=state.day,
-        person_ids=tuple(
-            sorted(
-                person_id
-                for person_id, person in civilization.population.people.items()
-                if person_id not in emigrants and person_id not in known_captives
-            )
-        ),
+        person_ids=people["person_ids"],
         ruins=known_ruins(state, civilization_id),
-        speakers=_speakers(civilization),
+        speakers=people["speakers"],
         crisis=crisis_reasons(state, civilization_id),
         spy_missions=tuple(
             journey
@@ -537,7 +1158,9 @@ def build_council_report(
         ),
         spy_reports=civilization.spy_reports,
         institutions=civilization.institutions,
-        **_blend(civilization),
+        cultures=people["cultures"],
+        ancestries=people["ancestries"],
+        assimilating=people["assimilating"],
         caught_spies=civilization.caught_spies,
         endings=_known_endings(state, civilization_id),
         petitions=tuple(
@@ -545,19 +1168,32 @@ def build_council_report(
             for journey in state.journeys
             if journey.waiting and journey.recipient_civilization_id == civilization_id
         ),
-        captives=tuple(
-            sorted(
-                person_id
-                for other in state.civilizations.values()
-                for person_id, person in other.population.people.items()
-                if person.alive and person.captive_of == civilization_id
-            )
-        ),
+        captives=people["captives"],
         held_captive=civilization.known_captives,
         start_center=civilization.start_center,
         known_tiles=tuple(sorted(civilization.known_tiles)),
         known_terrain=tuple(
             (tile, state.world_map.tile(tile).terrain) for tile in sorted(civilization.known_tiles)
+        ),
+        known_rivers=known_rivers(state.world_map, frozenset(civilization.known_tiles)),
+        known_sites=known_sites(state, civilization),
+        rules_version=state.rules_version,
+        council_interval_days=state.config.council_interval_days,
+        crisis_gap_days=state.config.crisis_gap_days,
+        housing=_housing_views(state, civilization_id, residents),
+        land=_land_views(state, civilization_id),
+        extractions=tuple(
+            journey
+            for journey in state.journeys
+            if journey.active
+            and journey.kind is JourneyKind.EXTRACTION
+            and journey.sender_civilization_id == civilization_id
+        ),
+        house_jobs=civilization.house_jobs,
+        town_plans=dict(civilization.town_plans),
+        ranks=dict(civilization.ranks_reached),
+        realm_rank=(
+            civilization.realm_rank_reached if rules_for(state.rules_version).ranks else None
         ),
         inventory=dict(civilization.inventory.quantities),
         stores={
@@ -568,6 +1204,10 @@ def build_council_report(
         storehouses=civilization.storehouses,
         storehouse_jobs=civilization.storehouse_jobs,
         walls=civilization.walls,
+        wall_rings=dict(civilization.wall_rings),
+        defence_orders=dict(civilization.defence_orders),
+        citadels=dict(civilization.citadels),
+        siege_days_of_food=_siege_days_of_food(state, civilization_id, residents),
         wall_jobs=civilization.wall_jobs,
         store_capacity={
             settlement_id: inventory.capacity
@@ -595,6 +1235,9 @@ def build_council_report(
         settlements=civilization.settlements,
         garrisons=civilization.garrisons,
         known_roads=known_roads(state, civilization_id),
+        known_bridges=tuple(
+            BridgeView(a=bridge.a, b=bridge.b) for bridge in known_bridges(state, civilization_id)
+        ),
         toll_posts=civilization.toll_posts,
         known_tolls=known_tolls(state, civilization_id),
         occupations=tuple(
@@ -621,21 +1264,22 @@ def build_council_report(
         research=civilization.research,
         research_points=dict(civilization.research_points),
         recent_events=visible_events,
+        population=people["population"],
+        notable_people=people["notable_people"],
     )
 
 
 def sight_of(state: WorldState, civilization_id: EntityId) -> frozenset[HexCoord]:
     """Tiles seen today from this civilization's inhabited settlements."""
     civilization = state.civilizations[civilization_id]
+    table = civilization.population.people.table
+    occupied = set(np.unique(table.loc_code[np.flatnonzero(table.mask(alive=True))]).tolist())
     return visible_tiles(
         state.world_map,
         (
             settlement.tile
             for settlement in civilization.settlements
-            if any(
-                person.alive and person.location == settlement.tile
-                for person in civilization.population.people.values()
-            )
+            if place_code(settlement.tile) in occupied
         ),
     )
 
@@ -649,6 +1293,69 @@ def trade_partners(state: WorldState, civilization_id: EntityId) -> frozenset[En
         and treaty.kind is TreatyKind.TRADE
         and civilization_id in {treaty.proposer_civilization_id, treaty.recipient_civilization_id}
     )
+
+
+def known_sites(state: WorldState, civilization: CivilizationState) -> tuple[SiteView, ...]:
+    """The sites on tiles a civilization knows, as it last saw them: as they were made, or
+    as its people last saw them after they were worked or emptied. Work it never saw stays
+    hidden from it."""
+    if not state.sites:
+        return ()
+    known = set(civilization.known_tiles)
+    seen: dict[HexCoord, int] = {}
+    for observation in civilization.observations:
+        if observation.tile in known:
+            seen[observation.tile] = max(seen.get(observation.tile, 0), observation.observed_day)
+    sightings = {item.site_id: item for item in civilization.site_sightings}
+    views: list[SiteView] = []
+    for site in state.sites:
+        if site.tile not in known:
+            continue
+        sighting = sightings.get(site.site_id)
+        views.append(
+            SiteView(
+                site_id=site.site_id,
+                tile=site.tile,
+                kind=site.kind,
+                richness=site.richness,
+                remaining=site.richness if sighting is None else sighting.remaining,
+                as_of_day=seen.get(site.tile, 0) if sighting is None else sighting.as_of_day,
+            )
+        )
+    return tuple(views)
+
+
+def known_rivers(world_map: WorldMap, known: frozenset[HexCoord]) -> tuple[RiverView, ...]:
+    """Every river along a border of a known tile, seen from that tile."""
+    views: list[RiverView] = []
+    for edge in world_map.rivers:
+        if edge.a in known or edge.b in known:
+            tile, across = (edge.a, edge.b) if edge.a in known else (edge.b, edge.a)
+            views.append(RiverView(tile=tile, across=across, depth=river_depth(edge.flow)))
+    return tuple(sorted(views, key=lambda view: (view.tile, view.across)))
+
+
+def known_bridges(state: WorldState, civilization_id: EntityId) -> tuple[Bridge, ...]:
+    """Bridges this civilization built, and any standing where its people can see today."""
+    in_sight = sight_of(state, civilization_id)
+    return tuple(
+        bridge
+        for bridge in state.bridges
+        if bridge.civilization_id == civilization_id or bridge.a in in_sight or bridge.b in in_sight
+    )
+
+
+def known_spans(state: WorldState, civilization_id: EntityId) -> Bridges:
+    """The river borders this civilization knows are bridged."""
+    return bridged_edges(known_bridges(state, civilization_id))
+
+
+def _route_spans(command: DirectOrder, state: WorldState, civilization_id: EntityId) -> Bridges:
+    """Known bridges, plus those a road crew on this route will build before crossing."""
+    known = known_spans(state, civilization_id)
+    if JOURNEY_ORDERS.get(command.kind) is JourneyKind.ROADWORK:
+        return spans_planned(state.world_map, command.route, command.road_grade, known)
+    return known
 
 
 def known_roads(state: WorldState, civilization_id: EntityId) -> tuple[RoadView, ...]:
@@ -822,6 +1529,7 @@ def _drilling_people(state: WorldState, civilization_id: EntityId) -> set[Entity
         }
         | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
         | {person_id for job in civilization.wall_jobs for person_id in job.worker_ids}
+        | {person_id for job in civilization.house_jobs for person_id in job.worker_ids}
         | {
             person_id
             for assignment in civilization.research
@@ -849,6 +1557,7 @@ def journey_supplies(
     """
     kind = JOURNEY_ORDERS[command.kind]
     roads = {view.tile: view.grade for view in known_roads(state, civilization_id)}
+    spans = known_spans(state, civilization_id)
     crew = len(command.traveller_ids)
     taken = dict(command.cargo)
     free = trade_partners(state, civilization_id) | {civilization_id}
@@ -862,13 +1571,20 @@ def journey_supplies(
         )
     )
     if kind is JourneyKind.ROADWORK and command.road_grade is not None:
-        days = roadwork_days(state.world_map, command.route, command.road_grade, roads, crew)
+        days = roadwork_days(
+            state.world_map, command.route, command.road_grade, roads, crew, bridges=spans
+        )
         # A crew packs what it can bear and turns home when only the walk back is left.
         provisions = min(
             provisions_needed(days, crew, command.extra_provisions + toll_food),
             CARGO_UNITS_PER_CARRIER * crew,
         )
         taken = materials_for(command.route, command.road_grade, roads)
+        for resource, quantity in bridge_materials(
+            state.world_map, command.route, command.road_grade, spans
+        ).items():
+            taken[resource] = taken.get(resource, 0) + quantity
+        taken = dict(sorted(taken.items()))
     else:
         provisions = provisions_needed(
             journey_days(
@@ -877,11 +1593,13 @@ def journey_supplies(
                 command.route,
                 roads,
                 heavy=kind is JourneyKind.CAMPAIGN and slows(command.cargo),
+                bridges=spans,
             ),
             crew,
             command.extra_provisions
             + toll_food
-            + (crew * command.watch_days if kind is JourneyKind.SPY else 0),
+            + (crew * command.watch_days if kind is JourneyKind.SPY else 0)
+            + (crew * command.work_days if kind is JourneyKind.EXTRACTION else 0),
         )
         if kind is JourneyKind.SPY:
             # Spies pack what they can bear and forage through a long watch.
@@ -924,6 +1642,26 @@ def _reserve(
         reserved[(store_id, resource)] = reserved.get((store_id, resource), 0) + quantity
 
 
+def _known_route_passable(
+    world_map: WorldMap,
+    route: tuple[HexCoord, ...],
+    known: frozenset[HexCoord],
+    bridges: Bridges = NO_BRIDGES,
+) -> bool:
+    """Whether a route avoids every obstacle its civilization knows of.
+
+    Known tiles must be enterable, and a river along a border seen from a known tile must be
+    wadeable; what lies in unknown country is not checked, so refusing never reveals it.
+    """
+    for origin, tile in pairwise(route):
+        if tile in known:
+            if entry_cost(world_map, tile, origin=origin, bridges=bridges) is None:
+                return False
+        elif origin in known and crossing(world_map, origin, tile, bridges) is None:
+            return False
+    return True
+
+
 def _campaign_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -953,7 +1691,12 @@ def _campaign_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=known_spans(state, civilization_id),
+        )
     ):
         return error(
             "invalid_route", "a war party leaves one of its own settlements over known land"
@@ -981,6 +1724,14 @@ def _campaign_error(
     if expectant & set(command.traveller_ids):
         return error("expectant_traveller", "a mother with a birth due cannot march")
     fighters = len(command.traveller_ids)
+    if rules_for(state.rules_version).ranks:
+        limit = WAR_PARTY_LIMIT[civilization.realm_rank_reached]
+        if fighters > limit:
+            return error(
+                "party_too_large",
+                f"a {civilization.realm_rank_reached.value} sends at most {limit} fighters"
+                " in one war party",
+            )
     if (
         set(command.cargo) - WAR_GEAR
         or any(count <= 0 for count in command.cargo.values())
@@ -1025,7 +1776,12 @@ def _internal_journey_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=_route_spans(command, state, civilization_id),
+        )
     ):
         return error(
             "invalid_route",
@@ -1051,7 +1807,25 @@ def _internal_journey_error(
     if hauling and destination not in own_settlements - {route[0]}:
         return error("invalid_destination", "goods are hauled to another of their own settlements")
     if kind is JourneyKind.SALVAGE and destination not in {ruin.tile for ruin in state.ruins}:
-        return error("invalid_destination", "salvagers go to a ruin")
+        if not rules_for(state.rules_version).sites:
+            return error("invalid_destination", "salvagers go to a ruin")
+        if not any(
+            view.tile == destination and view.kind in FIND_KINDS and view.remaining > 0
+            for view in known_sites(state, civilization)
+        ):
+            return error("invalid_destination", "salvagers go to a ruin or a trove")
+    if kind is JourneyKind.EXTRACTION:
+        if not rules_for(state.rules_version).sites:
+            return error("invalid_journey", "this world's rules have no worked sites")
+        if not any(
+            view.tile == destination and view.kind in WORKED_KINDS and view.remaining > 0
+            for view in known_sites(state, civilization)
+        ):
+            return error("invalid_destination", "extractors go to a deposit or quarry they know of")
+        if not 1 <= command.work_days <= MAX_WORK_DAYS:
+            return error("invalid_stay", f"a party works 1 to {MAX_WORK_DAYS} days")
+    elif command.work_days:
+        return error("invalid_stay", "only an extraction party sets out to work")
     if kind is JourneyKind.SETTLEMENT and (
         foreign
         or any(tile.distance(destination) < SETTLEMENT_SPACING for tile in known_settlements)
@@ -1060,6 +1834,12 @@ def _internal_journey_error(
             "invalid_destination",
             "a new settlement needs land not seen as foreign, three tiles from any settlement",
         )
+    if (
+        kind is JourneyKind.SETTLEMENT
+        and rules_for(state.rules_version).cover_mechanics
+        and not water_near(state.world_map, destination)
+    ):
+        return error("invalid_destination", "a new settlement needs water on its tile or beside it")
     if kind is JourneyKind.GARRISON and (foreign or destination in known_settlements):
         return error(
             "invalid_destination", "a garrison holds land that is not a settlement or foreign"
@@ -1072,10 +1852,16 @@ def _internal_journey_error(
             return error(
                 "foreign_land", "a road cannot be built on foreign land without a trade treaty"
             )
-        if command.road_grade in STONE_LAYING and not any(
+        masonry = command.road_grade in STONE_LAYING or deep_spans(
+            state.world_map, route, command.road_grade, known_spans(state, civilization_id)
+        )
+        if masonry and not any(
             people[person_id].skills.get(STONEWORKING, 0) > 0 for person_id in command.traveller_ids
         ):
-            return error("no_stoneworker", "laying stone needs a stoneworker in the crew")
+            return error(
+                "no_stoneworker",
+                "laying stone or bridging a deep river needs a stoneworker in the crew",
+            )
     provisions, taken = journey_supplies(command, state, civilization_id)
     if provisions + sum(command.cargo.values()) > CARGO_UNITS_PER_CARRIER * len(
         command.traveller_ids
@@ -1120,7 +1906,12 @@ def _petition_error(
         or route[-1] not in known
         or any(tile not in civilization.known_tiles for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=known_spans(state, civilization_id),
+        )
     ):
         return error(
             "invalid_route", "the released walk from a settlement of theirs to one of the other's"
@@ -1164,6 +1955,125 @@ def _spy_error(
     return _petition_error(command, civilization_id, state, reserved_cargo)
 
 
+def _shelter_error(
+    command: DirectOrder,
+    civilization_id: EntityId,
+    state: WorldState,
+    reserved: Reserved,
+    starting: set[EntityId],
+) -> CommandError | None:
+    """Rules version 2: builders raise houses, of the best kind their people know, where they
+    stand, from their settlement's store."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    if not command.worker_ids or len(set(command.worker_ids)) != len(command.worker_ids):
+        return error("invalid_project", "a shelter project names one or more distinct builders")
+    assert command.project_id is not None
+    if (
+        command.project_id in starting
+        or command.project_id in civilization.projects
+        or any(job.job_id == command.project_id for job in civilization.house_jobs)
+    ):
+        return error("invalid_project", "that project is already under way")
+    people = civilization.population.people
+    places = {people[person_id].location for person_id in command.worker_ids}
+    site = settlement_at(civilization, next(iter(places))) if len(places) == 1 else None
+    if site is None:
+        return error(
+            "invalid_project", "builders raise houses together at one of their settlements"
+        )
+    grade = command.house_grade or best_grade(civilization.capabilities)
+    if grade not in known_grades(civilization.capabilities):
+        return error("invalid_project", f"this people does not know how to build a {grade.value}")
+    materials = house_materials(grade, command.house_count)
+    for resource, quantity in materials.items():
+        if _short(civilization, site.tile, reserved, resource, quantity):
+            return error(
+                "insufficient_materials",
+                f"not enough {resource} for {command.house_count} {grade.value}(s)",
+            )
+    starting.add(command.project_id)
+    _reserve(civilization, site.tile, reserved, materials)
+    return None
+
+
+def _civil_research_error(
+    command: DirectOrder, state: WorldState, civilization_id: EntityId
+) -> CommandError | None:
+    """Rules version 2: what a civil topic needs of the land and the settlements."""
+    civilization = state.civilizations[civilization_id]
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    topic = command.research_topic
+    if topic is CapabilityId.WRITING and not any(
+        at_least(settlement_rank(civilization, item.settlement_id), WRITING_RANK)
+        for item in civilization.settlements
+    ):
+        return error(
+            "rank_required",
+            f"writing is worked out in a {WRITING_RANK.value.replace('_', ' ')} or above",
+        )
+    if topic is CapabilityId.IRRIGATION and not any(
+        (tile := state.world_map.tile(coord)).river
+        or (tile.cover and tile.cover[WETLAND_INDEX] >= IRRIGATION_WETLAND)
+        for coord in civilization.known_tiles
+    ):
+        return error("invalid_research", "irrigation needs a river or wetland among its fields")
+    if topic is CapabilityId.FISHING and not any(
+        state.world_map.tile(item.tile).has_water
+        or any(
+            state.world_map.contains(other) and state.world_map.tile(other).terrain is Terrain.WATER
+            for other in item.tile.neighbors()
+        )
+        for item in civilization.settlements
+    ):
+        return error("invalid_research", "fishing needs water at or beside a settlement")
+    return None
+
+
+WETLAND_INDEX = COVER_CLASSES.index(CoverClass.WETLAND)
+MAX_MATERIALS_TARGET = 5_000
+IRRIGATION_WETLAND = WET_FIELD
+"""A field with this much wetland (basis points), or a river, can be irrigated."""
+
+
+def _decree_error(command: Decree, state: WorldState) -> CommandError | None:
+    if command.kind is DecreeKind.MATERIALS_RESERVE_TARGET:
+        if not rules_for(state.rules_version).cover_mechanics:
+            return CommandError(
+                command_id=command.command_id,
+                code="invalid_decree",
+                message="this world's rules have no gathering, so no materials target",
+            )
+        if not 0 <= command.value <= MAX_MATERIALS_TARGET:
+            return CommandError(
+                command_id=command.command_id,
+                code="invalid_decree",
+                message=f"a materials target is 0 to {MAX_MATERIALS_TARGET} timber",
+            )
+        return None
+    if command.kind is not DecreeKind.HOUSING_POLICY:
+        return None
+    if not rules_for(state.rules_version).houses:
+        return CommandError(
+            command_id=command.command_id,
+            code="invalid_decree",
+            message="this world's rules have no houses, so no housing policy",
+        )
+    if not 0 <= command.value <= 100:
+        return CommandError(
+            command_id=command.command_id,
+            code="invalid_decree",
+            message="a housing policy is the spare room to keep, from 0 to 100 percent",
+        )
+    return None
+
+
 def _found_institution_error(
     command: DirectOrder,
     civilization_id: EntityId,
@@ -1189,9 +2099,11 @@ def _found_institution_error(
     site = settlement_at(civilization, next(iter(places))) if len(places) == 1 else None
     if site is None:
         return error("invalid_institution", "founders work together at one of their settlements")
+    if kind in CIVIC_KINDS and not rules_for(state.rules_version).ranks:
+        return error("invalid_institution", f"this world's rules have no {kind.value}")
     spec = INSTITUTIONS[kind]
     known = {record.capability for record in civilization.capabilities}
-    if not spec.needs & known:
+    if spec.needs and not spec.needs & known:
         needs = " or ".join(sorted(item.value for item in spec.needs))
         return error("missing_capability", f"a {kind.value} needs {needs}")
     if (site.settlement_id, kind) in founding or any(
@@ -1199,6 +2111,28 @@ def _found_institution_error(
         for item in civilization.institutions
     ):
         return error("invalid_institution", f"the settlement already has a {kind.value}")
+    if rules_for(state.rules_version).ranks:
+        held = settlement_rank(civilization, site.settlement_id)
+        floor = INSTITUTION_RANK.get(kind)
+        if floor is not None and not at_least(held, floor):
+            return error(
+                "rank_required", f"a {kind.value} needs a {floor.value.replace('_', ' ')} or above"
+            )
+        slots = INSTITUTION_SLOTS[held]
+        if kind is not SEAT and slots is not None:
+            kept = sum(
+                item.settlement_id == site.settlement_id and item.kind is not SEAT
+                for item in civilization.institutions
+            ) + sum(
+                settlement_id == site.settlement_id and other is not SEAT
+                for settlement_id, other in founding
+            )
+            if kept >= slots:
+                return error(
+                    "rank_required",
+                    f"a {held.value.replace('_', ' ')} keeps at most {slots} institution(s)"
+                    " besides its hall",
+                )
     for resource, quantity in spec.materials.items():
         if _short(civilization, site.tile, reserved, resource, quantity):
             return error("insufficient_materials", f"not enough {resource} for the {kind.value}")
@@ -1275,7 +2209,12 @@ def _courier_error(
         or route[-1] not in {settlement.tile for settlement in civilization.settlements}
         or any(tile not in civilization.known_tiles for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=known_spans(state, civilization_id),
+        )
     ):
         return error("invalid_route", "a courier walks from the spies to one of its settlements")
     return None
@@ -1335,7 +2274,12 @@ def _journey_error(
         or any(tile not in civilization.known_tiles for tile in route)
         or any(not state.world_map.contains(tile) for tile in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=known_spans(state, civilization_id),
+        )
     ):
         return error(
             "invalid_route",
@@ -1385,7 +2329,12 @@ def _craft_error(
         return CommandError(command_id=command.command_id, code=code, message=message)
 
     item = command.craft_item
-    if item is None or item not in RECIPES or not command.worker_ids:
+    if (
+        item is None
+        or item not in RECIPES
+        or not command.worker_ids
+        or (item in GOODS_RECIPES and not rules_for(state.rules_version).sites)
+    ):
         return error("invalid_craft", "the armoury makes a known kit or engine, with workers")
     if len(set(command.worker_ids)) != len(command.worker_ids):
         return error("invalid_craft", "each worker is named once")
@@ -1400,6 +2349,12 @@ def _craft_error(
         people[person_id].skills.get(needed.value, 0) > 0 for person_id in command.worker_ids
     ):
         return error("unqualified_worker", f"making {item} needs someone who knows {needed}")
+    if rules_for(state.rules_version).ranks and item in ARMOURY_GEAR:
+        away = _travelling_people(state, civilization_id) | _garrisoned_people(
+            state, civilization_id
+        )
+        if workshop not in serving_tiles(civilization, InstitutionKind.ARMOURY, away):
+            return error("building_required", f"{item} is made only at an open armoury")
     for resource, quantity in craft_materials(item, command.craft_quantity).items():
         if _short(civilization, workshop, reserved, resource, quantity):
             return error("insufficient_materials", f"not enough {resource} to make {item}")
@@ -1456,6 +2411,15 @@ def _storehouse_error(
         current = house.grade
     if rank(target) <= rank(current):
         return error("invalid_storehouse", "an upgrade raises the storehouse's grade")
+    if rules_for(state.rules_version).ranks:
+        held = settlement_rank(civilization, site.settlement_id)
+        for grade in steps(current, target):
+            floor = STOREHOUSE_RANK.get(grade)
+            if floor is not None and not at_least(held, floor):
+                return error(
+                    "rank_required",
+                    f"a {grade.value} needs a {floor.value.replace('_', ' ')} or above",
+                )
     for grade in steps(current, target):
         needed = STOREHOUSE_GRADES[grade].capability
         if needed is not None and not any(
@@ -1479,9 +2443,48 @@ def _walls_of(civilization: CivilizationState, tile: HexCoord) -> Walls | None:
     )
 
 
-def _wall_materials(civilization: CivilizationState, command: DirectOrder) -> dict[Resource, int]:
+def ring_order(
+    civilization: CivilizationState,
+    settlement_id: EntityId,
+    command: DirectOrder,
+    day: int,
+    *,
+    placed: bool = False,
+) -> tuple[WallRing, tuple[int, ...], tuple[WallGrade | None, ...], dict[Resource, int]]:
+    """Rules version 3: a wall order's ring, the sections it works on, their grades, and what
+    it takes from the store. With `placed` (defence rules), towers stand on sections."""
+    ring = ring_for(civilization, settlement_id, day)
+    towers = 0
+    if command.kind is DirectOrderKind.BUILD_TOWERS:
+        towers = len(command.section_ids) if command.section_ids else command.tower_count
+    chosen, grades, materials = ring_work(
+        ring,
+        target=(
+            command.wall_grade
+            if command.kind is DirectOrderKind.BUILD_WALLS
+            or (command.kind is DirectOrderKind.BUILD_WORKS and command.work is DefenceWork.CITADEL)
+            else None
+        ),
+        repair=command.kind is DirectOrderKind.REPAIR_WALLS,
+        towers=towers,
+        count=command.wall_sections,
+        named=command.section_ids,
+        work=command.work if command.kind is DirectOrderKind.BUILD_WORKS else None,
+        placed=placed,
+    )
+    return ring, chosen, grades, materials
+
+
+def _wall_materials(
+    state: WorldState, civilization: CivilizationState, command: DirectOrder
+) -> dict[Resource, int]:
     """What a validated wall or tower order takes from its settlement's store."""
     tile = civilization.population.people[command.worker_ids[0]].location
+    if rules_for(state.rules_version).town_plans:
+        site = settlement_at(civilization, tile)
+        assert site is not None
+        placed = rules_for(state.rules_version).town_defence
+        return ring_order(civilization, site.settlement_id, command, state.day, placed=placed)[3]
     walls = _walls_of(civilization, tile)
     current = walls.grade if walls is not None else None
     if command.kind is DirectOrderKind.BUILD_TOWERS:
@@ -1519,6 +2522,17 @@ def _walls_error(
     busy = {job.settlement_id for job in civilization.wall_jobs}
     if site.settlement_id in busy or site.tile in walling:
         return error("invalid_walls", "that settlement's walls are already being worked on")
+    if (
+        command.kind is DirectOrderKind.BUILD_WORKS
+        and not rules_for(state.rules_version).town_defence
+    ):
+        return error("invalid_works", "this world's rules have no defensive works")
+    if command.section_ids and not rules_for(state.rules_version).town_defence:
+        return error("invalid_walls", "this world's rules do not name wall sections")
+    if rules_for(state.rules_version).town_plans:
+        return _ring_walls_error(command, civilization, site.settlement_id, state, reserved)
+    if command.wall_sections is not None:
+        return error("invalid_walls", "walls go up by the section only in planned towns")
     walls = _walls_of(civilization, site.tile)
     current = walls.grade if walls is not None else None
     skills = [people[person_id].skills for person_id in command.worker_ids]
@@ -1551,10 +2565,177 @@ def _walls_error(
     for capability in needed:
         if not any(item.get(capability.value, 0) > 0 for item in skills):
             return error("unqualified_worker", f"this work needs someone who knows {capability}")
-    for resource, quantity in _wall_materials(civilization, command).items():
+    for resource, quantity in _wall_materials(state, civilization, command).items():
         if _short(civilization, site.tile, reserved, resource, quantity):
             return error("insufficient_materials", f"not enough {resource} for the walls")
     return None
+
+
+def _ring_walls_error(
+    command: DirectOrder,
+    civilization: CivilizationState,
+    settlement_id: EntityId,
+    state: WorldState,
+    reserved: Reserved,
+) -> CommandError | None:
+    """Rules version 3: raise the ring's weakest sections, repair its damaged ones, or add
+    towers to a complete ring."""
+
+    def error(code: str, message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code=code, message=message)
+
+    placed = rules_for(state.rules_version).town_defence
+    named = command.section_ids
+    if named:
+        count = len(ring_for(civilization, settlement_id, state.day).sections)
+        if command.wall_sections is not None:
+            return error("invalid_walls", "name the sections or count them, not both")
+        if len(set(named)) != len(named):
+            return error("invalid_walls", "each section is named once")
+        if any(index >= count for index in named):
+            outside = next(index for index in named if index >= count)
+            return error("invalid_walls", f"section {outside} is not in this ring")
+    ring, chosen, grades, materials = ring_order(
+        civilization, settlement_id, command, state.day, placed=placed
+    )
+    needed: list[CapabilityId]
+    if command.kind is DirectOrderKind.BUILD_WORKS and command.work not in (
+        None,
+        DefenceWork.GATEHOUSE,
+    ):
+        assert command.work is not None
+        refused = _ring_works_error(command.work, command, civilization, ring, state)
+        if refused is not None:
+            return error("invalid_works", refused)
+        needed = _works_skills(command.work, command.wall_grade)
+    elif command.kind is DirectOrderKind.BUILD_WORKS:
+        if command.work is None or not named:
+            return error("invalid_works", "a works order names its work and its sections")
+        if command.wall_grade is not None:
+            return error("invalid_works", "only a citadel names a grade")
+        for index in named:
+            section = ring.sections[index]
+            if not section.gate or section.grade is None:
+                return error("invalid_works", f"section {index} is not a standing gate")
+            if section.gatehouse:
+                return error("invalid_works", f"section {index} already has a gatehouse")
+        needed = sorted(
+            {tower_spec(grade).capability for grade in grades if grade is not None},
+            key=lambda item: item.value,
+        )
+    elif command.kind is DirectOrderKind.REPAIR_WALLS:
+        damaged = set(damaged_sections(ring))
+        for index in named:
+            if index not in damaged:
+                return error("invalid_walls", f"section {index} is not damaged")
+        if not chosen:
+            return error("invalid_walls", "only damaged sections are repaired")
+        needed = [
+            capability
+            for grade in sorted({grade for grade in grades if grade is not None}, key=wall_rank)
+            if (capability := WALL_GRADES[grade].capability) is not None
+        ]
+    elif command.kind is DirectOrderKind.BUILD_TOWERS:
+        adding = len(named) if named else command.tower_count
+        if not ring.complete or adding < 1:
+            return error("invalid_walls", "towers are added, one or more, to a complete ring")
+        standing = set(tower_positions(ring))
+        for index in named:
+            if index in standing:
+                return error("invalid_walls", f"section {index} already has a tower")
+        if ring.towers + adding > tower_cap(ring):
+            return error("invalid_walls", f"this ring carries at most {tower_cap(ring)} towers")
+        grade = weakest(ring)
+        assert grade is not None
+        needed = [tower_spec(grade).capability]
+    else:
+        target = command.wall_grade
+        if target is None or command.tower_count:
+            return error("invalid_walls", "a wall order names the grade to raise sections to")
+        for index in named:
+            if wall_rank(ring.sections[index].grade) >= wall_rank(target):
+                return error("invalid_walls", f"section {index} already stands at that grade")
+        if not chosen:
+            return error("invalid_walls", "every section already stands at that grade")
+        lowest = min(grades, key=wall_rank)
+        needed = [
+            capability
+            for grade in wall_steps(lowest, target)
+            if (capability := WALL_GRADES[grade].capability) is not None
+        ]
+    people = civilization.population.people
+    skills = [people[person_id].skills for person_id in command.worker_ids]
+    for capability in needed:
+        if not any(item.get(capability.value, 0) > 0 for item in skills):
+            return error("unqualified_worker", f"this work needs someone who knows {capability}")
+    tile = next(
+        item.tile for item in civilization.settlements if item.settlement_id == settlement_id
+    )
+    for resource, quantity in materials.items():
+        if _short(civilization, tile, reserved, resource, quantity):
+            return error("insufficient_materials", f"not enough {resource} for the walls")
+    return None
+
+
+def _ring_works_error(
+    work: DefenceWork,
+    command: DirectOrder,
+    civilization: CivilizationState,
+    ring: WallRing,
+    state: WorldState,
+) -> str | None:
+    """Rules version 3 defence: why a ditch, a moat, stakes or a citadel cannot be raised."""
+    if command.section_ids:
+        return f"a {work} is not raised on named sections"
+    if work is DefenceWork.CITADEL and command.wall_grade is None:
+        return "a citadel names the grade of its walls"
+    if work is not DefenceWork.CITADEL and command.wall_grade is not None:
+        return "only a citadel names a grade"
+    half = ring.built * 2 >= len(ring.sections)
+    if work is DefenceWork.DITCH:
+        if ring.ditch:
+            return "this ring already has a ditch"
+        if not half:
+            return "a ditch is dug round a ring at least half built"
+    elif work is DefenceWork.MOAT:
+        if ring.ditch >= MOAT:
+            return "this ring already has a moat"
+        if not ring.ditch:
+            return "a moat is flooded from a ditch"
+        tile = next(
+            item.tile
+            for item in civilization.settlements
+            if item.settlement_id == ring.settlement_id
+        )
+        if not water_near(state.world_map, tile):
+            return "a moat needs water on or beside the settlement"
+    elif work is DefenceWork.STAKES:
+        if ring.stakes:
+            return "stakes already stand round this ring"
+        if not half:
+            return "stakes are set round a ring at least half built"
+    else:
+        plan = civilization.town_plans.get(ring.settlement_id) or DEFAULT_PLAN
+        if plan.keep is not Place.CENTRE:
+            return "a citadel is raised round a keep at the centre"
+        if ring.ring < 2 or not ring.complete:
+            return "a citadel stands inside a complete ring of radius 2 or more"
+        if ring.settlement_id in civilization.citadels:
+            return "this settlement already has a citadel"
+    return None
+
+
+def _works_skills(work: DefenceWork, grade: WallGrade | None) -> list[CapabilityId]:
+    """What a ditch, a moat, stakes or a citadel needs its builders to know."""
+    if work is DefenceWork.STAKES:
+        return [CapabilityId.TIMBERCRAFT]
+    if work is DefenceWork.CITADEL and grade is not None:
+        return [
+            capability
+            for step in wall_steps(None, grade)
+            if (capability := WALL_GRADES[step].capability) is not None
+        ]
+    return []
 
 
 def besieged(state: WorldState, civilization_id: EntityId) -> dict[HexCoord, set[HexCoord]]:
@@ -1695,12 +2876,25 @@ def _toll_error(
         or (len(route) == 1 and tile != civilization.start_center)
         or any(step not in civilization.known_tiles for step in route)
         or any(first.distance(second) != 1 for first, second in pairwise(route))
-        or not passable(state.world_map, route[1:])
+        or not passable(
+            state.world_map,
+            route[1:],
+            start=route[0],
+            bridges=known_spans(state, civilization_id),
+        )
     ):
         return error(
             "invalid_route",
             "a deposit route leads over known land to one of this civilization's settlements",
         )
+    if rules_for(state.rules_version).ranks:
+        deposit = settlement_at(civilization, route[-1])
+        assert deposit is not None
+        if not at_least(settlement_rank(civilization, deposit.settlement_id), TOLL_RANK):
+            return error(
+                "rank_required",
+                f"a toll's takings go to a {TOLL_RANK.value.replace('_', ' ')} or above",
+            )
     return None
 
 
@@ -1742,6 +2936,116 @@ def _treaty_end_error(
     return None
 
 
+COUNTED_ORDERS = frozenset(
+    {
+        DirectOrderKind.START_PROJECT,
+        DirectOrderKind.FOUND_INSTITUTION,
+        DirectOrderKind.STAFF_INSTITUTION,
+        DirectOrderKind.BUILD_STOREHOUSE,
+        DirectOrderKind.BUILD_WALLS,
+        DirectOrderKind.BUILD_TOWERS,
+        DirectOrderKind.REPAIR_WALLS,
+        DirectOrderKind.CRAFT_EQUIPMENT,
+        DirectOrderKind.RESEARCH,
+        DirectOrderKind.DRILL,
+    }
+)
+"""Work at home whose workers an order may count instead of naming (rules version 2)."""
+
+
+def _plan_error(
+    command: DirectOrder, civilization_id: EntityId, state: WorldState, planning: set[EntityId]
+) -> CommandError | None:
+    """Validate a design for one of this civilization's settlements, once a council."""
+
+    def error(message: str) -> CommandError:
+        return CommandError(
+            command_id=command.command_id, code="invalid_town_plan", message=message
+        )
+
+    if not rules_for(state.rules_version).town_plans:
+        return error("this world's rules have no town plans")
+    if command.town_plan is None or command.settlement_id is None:
+        return error("a plan order names its settlement and gives its design")
+    civilization = state.civilizations[civilization_id]
+    settlement = next(
+        (item for item in civilization.settlements if item.settlement_id == command.settlement_id),
+        None,
+    )
+    if settlement is None:
+        return error("only this civilization's own settlements are planned")
+    if settlement.settlement_id in planning:
+        return error("a settlement is planned once a council")
+    problem = site_error(state.world_map, settlement.tile, command.town_plan)
+    if problem is not None:
+        return error(problem)
+    if (
+        settlement.settlement_id in civilization.citadels
+        and command.town_plan.keep is not Place.CENTRE
+    ):
+        return error("a settlement with a citadel keeps its keep at the centre")
+    return None
+
+
+def _defence_error(
+    command: DirectOrder, civilization_id: EntityId, state: WorldState, defending: set[EntityId]
+) -> CommandError | None:
+    """Validate a standing defence order for one of this civilization's settlements."""
+
+    def error(message: str) -> CommandError:
+        return CommandError(command_id=command.command_id, code="invalid_defence", message=message)
+
+    if not rules_for(state.rules_version).town_defence:
+        return error("this world's rules have no defence orders")
+    if command.defence is None or command.settlement_id is None:
+        return error("a defence order names its settlement and gives its defence")
+    civilization = state.civilizations[civilization_id]
+    if command.settlement_id not in {item.settlement_id for item in civilization.settlements}:
+        return error("only this civilization's own settlements are defended by its orders")
+    if command.settlement_id in defending:
+        return error("a settlement's defence is set once a council")
+    return None
+
+
+def _counted_workers(
+    command: DirectOrder, civilization_id: EntityId, state: WorldState, busy: set[EntityId]
+) -> tuple[DirectOrder, CommandError | None]:
+    """A counted order with the people it takes named: the lowest-numbered idle grown-ups
+    at its settlement, none already busy or set to another order in this council."""
+
+    def refused(code: str, message: str) -> tuple[DirectOrder, CommandError | None]:
+        return command, CommandError(command_id=command.command_id, code=code, message=message)
+
+    if not rules_for(state.rules_version).worker_counts:
+        return refused("invalid_workers", "this world's rules take named workers only")
+    if command.kind not in COUNTED_ORDERS:
+        return refused("invalid_workers", "a worker count goes with work at home")
+    if command.worker_ids:
+        return refused("invalid_workers", "name the workers or count them, not both")
+    if command.worker_count is None or command.settlement_id is None:
+        return refused("invalid_workers", "a worker count names its settlement")
+    civilization = state.civilizations[civilization_id]
+    settlement = next(
+        (item for item in civilization.settlements if item.settlement_id == command.settlement_id),
+        None,
+    )
+    if settlement is None:
+        return refused("unknown_settlement", "no such settlement of this civilization")
+    chosen = idle_at(
+        civilization.population.people.table,
+        settlement.tile,
+        busy,
+        command.worker_count,
+        fit=command.kind is DirectOrderKind.DRILL,
+    )
+    if len(chosen) < command.worker_count:
+        return refused(
+            "too_few_idle_workers",
+            f"{len(chosen)} idle at {settlement.settlement_id}, {command.worker_count} asked",
+        )
+    return command.model_copy(update={"worker_ids": tuple(chosen)}), None
+
+
 def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandValidation:
     if envelope.civilization_id not in state.civilizations:
         return CommandValidation(
@@ -1765,6 +3069,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     couriered: set[EntityId] = set()
     founding: set[tuple[EntityId, InstitutionKind]] = set()
     restaffed: set[EntityId] = set()
+    starting_houses: set[EntityId] = set()
+    rules = rules_for(state.rules_version)
     teaching_load: dict[EntityId, int] = {}
     for assignment in state.civilizations[envelope.civilization_id].teaching_assignments:
         teaching_load[assignment.teacher_id] = teaching_load.get(assignment.teacher_id, 0) + 1
@@ -1772,6 +3078,8 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     committed_travellers: set[EntityId] = set()
     committed_at_home: set[EntityId] = set()
     tolled: set[HexCoord] = set()
+    planning: set[EntityId] = set()
+    defending: set[EntityId] = set()
     researching: set[CapabilityId] = set()
     teaching_people = {
         person_id
@@ -1781,6 +3089,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
     already_travelling = _travelling_people(state, envelope.civilization_id)
     garrisoned = _garrisoned_people(state, envelope.civilization_id)
     drilling = _drilling_people(state, envelope.civilization_id)
+    working = {
+        person_id
+        for order in state.civilizations[envelope.civilization_id].work_orders
+        for person_id in order.worker_ids
+    }
     reserved_cargo: Reserved = {}
     upgrading: set[EntityId] = set()
     walling: set[HexCoord] = set()
@@ -1799,6 +3112,25 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
         seen.add(command.command_id)
         if isinstance(command, DirectOrder):
             command_error: CommandError | None = None
+            if command.worker_count is not None or (
+                command.settlement_id is not None and command.kind not in SETTLEMENT_ORDERS
+            ):
+                # Counted workers become named ones; every check below then sees them.
+                command, counted_error = _counted_workers(
+                    command,
+                    envelope.civilization_id,
+                    state,
+                    already_travelling
+                    | garrisoned
+                    | drilling
+                    | teaching_people
+                    | working
+                    | committed_travellers
+                    | committed_at_home,
+                )
+                if counted_error is not None:
+                    errors.append(counted_error)
+                    continue
             if command.kind is DirectOrderKind.START_PROJECT and (
                 command.project_id is None or command.project_kind is None
             ):
@@ -1846,6 +3178,12 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         command_id=command.command_id,
                         code="invalid_expedition",
                         message="start-expedition order requires an ID, explorers, and route",
+                    )
+                elif len(set(command.explorer_ids)) != len(command.explorer_ids):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="invalid_expedition",
+                        message="an explorer is named twice",
                     )
                 elif command.expedition_id in seen_expeditions or any(
                     expedition.expedition_id == command.expedition_id
@@ -1904,6 +3242,21 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         command_id=command.command_id,
                         code="invalid_treaty",
                         message="peace terms go with a peace offer, and a party pays tribute",
+                    )
+                elif (
+                    command.peace_terms is not None
+                    and rules.ranks
+                    and command.peace_terms.tribute_payer is not None
+                    and command.peace_terms.tribute_payer == command.recipient_civilization_id
+                    and not realm_at_least(
+                        state.civilizations[envelope.civilization_id].realm_rank_reached,
+                        TRIBUTE_RANK,
+                    )
+                ):
+                    command_error = CommandError(
+                        command_id=command.command_id,
+                        code="rank_required",
+                        message=f"only a {TRIBUTE_RANK.value} or an empire can demand tribute",
                     )
                 elif (
                     command.peace_terms is not None
@@ -2198,7 +3551,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 homes = {settlement.tile for settlement in civilization.settlements}
                 people = civilization.population.people
                 reason = (
-                    research_error(command.research_topic, civilization.capabilities)
+                    research_error(
+                        command.research_topic,
+                        civilization.capabilities,
+                        civil=rules.civil_research,
+                    )
                     if command.research_topic is not None
                     else "names no topic"
                 )
@@ -2210,6 +3567,10 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                         code="invalid_research",
                         message=f"this research {reason}",
                     )
+                elif command.research_topic in CIVIL_TOPICS and (
+                    civil_error := _civil_research_error(command, state, envelope.civilization_id)
+                ):
+                    command_error = civil_error
                 elif not command.worker_ids or len(set(command.worker_ids)) != len(
                     command.worker_ids
                 ):
@@ -2233,6 +3594,15 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             if command.kind in WALL_ORDERS and command_error is None:
                 command_error = _walls_error(
                     command, envelope.civilization_id, state, reserved_cargo, walling
+                )
+            if (
+                command.kind is DirectOrderKind.START_PROJECT
+                and command.project_kind is ProjectKind.SHELTER
+                and rules.houses
+                and command_error is None
+            ):
+                command_error = _shelter_error(
+                    command, envelope.civilization_id, state, reserved_cargo, starting_houses
                 )
             if command.kind is DirectOrderKind.FOUND_INSTITUTION and command_error is None:
                 command_error = _found_institution_error(
@@ -2259,6 +3629,10 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                 )
             if command.kind is DirectOrderKind.SET_TOLL and command_error is None:
                 command_error = _toll_error(command, envelope.civilization_id, state, tolled)
+            if command.kind is DirectOrderKind.PLAN_SETTLEMENT and command_error is None:
+                command_error = _plan_error(command, envelope.civilization_id, state, planning)
+            if command.kind is DirectOrderKind.SET_DEFENCE and command_error is None:
+                command_error = _defence_error(command, envelope.civilization_id, state, defending)
             if command.kind is DirectOrderKind.START_TEACHING and command_error is None:
                 assert command.teacher_id is not None
                 assert command.capability is not None
@@ -2299,13 +3673,11 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     or route[0] not in locations
                     or any(not state.world_map.contains(tile) for tile in route)
                     or any(first.distance(second) != 1 for first, second in pairwise(route))
-                    or not passable(
+                    or not _known_route_passable(
                         state.world_map,
-                        (
-                            tile
-                            for tile in route[1:]
-                            if tile in state.civilizations[envelope.civilization_id].known_tiles
-                        ),
+                        route,
+                        frozenset(state.civilizations[envelope.civilization_id].known_tiles),
+                        known_spans(state, envelope.civilization_id),
                     )
                 ):
                     command_error = CommandError(
@@ -2357,7 +3729,12 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
                     or any(tile not in civilization.known_tiles for tile in command.route)
                     or any(not state.world_map.contains(tile) for tile in command.route)
                     or any(first.distance(second) != 1 for first, second in pairwise(command.route))
-                    or not passable(state.world_map, command.route[1:])
+                    or not passable(
+                        state.world_map,
+                        command.route[1:],
+                        start=command.route[0],
+                        bridges=known_spans(state, envelope.civilization_id),
+                    )
                 ):
                     command_error = CommandError(
                         command_id=command.command_id,
@@ -2409,6 +3786,12 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             committed_at_home.update(home_duty)
             if command.kind is DirectOrderKind.SET_TOLL:
                 tolled.add(command.route[0])
+            if command.kind is DirectOrderKind.PLAN_SETTLEMENT:
+                assert command.settlement_id is not None
+                planning.add(command.settlement_id)
+            if command.kind is DirectOrderKind.SET_DEFENCE:
+                assert command.settlement_id is not None
+                defending.add(command.settlement_id)
             if command.kind is DirectOrderKind.RESEARCH and command.research_topic is not None:
                 researching.add(command.research_topic)
             civilization = state.civilizations[envelope.civilization_id]
@@ -2438,8 +3821,14 @@ def validate_envelope(envelope: CommandEnvelope, state: WorldState) -> CommandVa
             if command.kind in WALL_ORDERS:
                 site_tile = civilization.population.people[command.worker_ids[0]].location
                 _reserve(
-                    civilization, site_tile, reserved_cargo, _wall_materials(civilization, command)
+                    civilization,
+                    site_tile,
+                    reserved_cargo,
+                    _wall_materials(state, civilization, command),
                 )
                 walling.add(site_tile)
+        elif (decree_error := _decree_error(command, state)) is not None:
+            errors.append(decree_error)
+            continue
         accepted.append(command)
     return CommandValidation(accepted=tuple(accepted), errors=tuple(errors))

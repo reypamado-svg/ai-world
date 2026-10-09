@@ -4,9 +4,11 @@ from logistics_helpers import (
     OneShotSovereign,
     clear_journey_id,
     envelope,
+    river,
     treaty_world,
 )
 
+from sovereign_world.bridges import Bridge
 from sovereign_world.commands import (
     DirectOrder,
     DirectOrderKind,
@@ -16,7 +18,7 @@ from sovereign_world.commands import (
 from sovereign_world.diplomacy import TreatyEndKind, TreatyKind
 from sovereign_world.engine import TransitionResult, _share_maps, _toll_rules, advance_day
 from sovereign_world.exploration import Observation
-from sovereign_world.hexmap import HexCoord, Terrain
+from sovereign_world.hexmap import HexCoord, Terrain, edge_key
 from sovereign_world.ids import EntityId
 from sovereign_world.logistics import JourneyKind, JourneyOutcome, NoticeKind
 from sovereign_world.resources import Resource
@@ -25,7 +27,7 @@ from sovereign_world.roads import Road, RoadGrade
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.territory import Garrison, HeldControl, Settlement, Territory, TileOwner
 from sovereign_world.tolls import TollPost, cargo_charge
-from sovereign_world.travel import entry_cost
+from sovereign_world.travel import DEEP_FLOW, entry_cost
 
 
 def _world(kind: TreatyKind | None = TreatyKind.TRADE):
@@ -41,6 +43,9 @@ def _world(kind: TreatyKind | None = TreatyKind.TRADE):
         tiles=tuple(
             replace(tile, terrain=Terrain.GRASSLAND) if tile.coord in band else tile
             for tile in state.world_map.tiles
+        ),
+        rivers=tuple(
+            edge for edge in state.world_map.rivers if edge.a not in band and edge.b not in band
         ),
     )
     civilization = state.civilizations[home]
@@ -469,3 +474,51 @@ def test_cargo_tolls_never_take_all_of_anything() -> None:
     assert cargo_charge({Resource.STONE: 1, Resource.TIMBER: 2}, 2_000) == {Resource.TIMBER: 1}
     assert cargo_charge({Resource.STONE: 100}, 2_000) == {Resource.STONE: 20}
     assert cargo_charge({Resource.STONE: 100}, 0) == {}
+
+
+def _moat(state: WorldState, route: tuple[HexCoord, ...]) -> tuple[HexCoord, HexCoord]:
+    """Deep rivers sealing both lanes round the post at route[3]; returns one moat border."""
+    q, r = route[2].q, route[2].r
+    up, down = HexCoord(q + 1, r - 1), HexCoord(q, r + 1)
+    for outside, inside in (
+        (route[2], up),
+        (HexCoord(q, r - 1), up),
+        (route[2], down),
+        (HexCoord(q - 1, r + 1), down),
+    ):
+        river(state, outside, inside, DEEP_FLOW)
+    return edge_key(route[2], up)
+
+
+def test_a_way_round_uses_only_bridges_the_party_knows_of() -> None:
+    for builder_is_home, avoided in ((False, False), (True, True)):
+        state, home, route, _ = _relocation_world()
+        third = sorted(state.civilizations)[2]
+        a, b = _moat(state, route)
+        builder = home if builder_is_home else third
+        state.bridges = (Bridge(a=a, b=b, civilization_id=builder, built_day=0),)
+        _set_provisions(state, 9)
+
+        state, results = _run(state, 8)
+
+        # A rival's bridge out of sight is unknown, so it cannot be planned over.
+        assert bool(_events(results, "toll_avoided")) is avoided, builder
+        [journey] = state.journeys
+        if not avoided:
+            assert journey.outcome is JourneyOutcome.TURNED_BACK
+
+
+def test_roads_join_across_a_deep_river_only_by_a_bridge() -> None:
+    state, home, rival, _, route = _world()
+    _road(state, home, *route[:4])
+    _road(state, rival, *route[4:])
+    river(state, route[3], route[4], DEEP_FLOW)
+
+    state, results = _run(state, 2)
+    assert not _events(results, "roads_joined"), "nobody can cross between the two roads"
+    assert state.joined_roads == ()
+
+    a, b = edge_key(route[3], route[4])
+    state.bridges = (Bridge(a=a, b=b, civilization_id=home, built_day=state.day),)
+    state, results = _run(state, 1)
+    assert _events(results, "roads_joined")

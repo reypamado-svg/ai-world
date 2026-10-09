@@ -1,4 +1,6 @@
-"""Military research: scholars at home work toward new knowledge, point by point."""
+"""Research: scholars at home work toward new knowledge, point by point.
+
+Every world knows the military topics; rules version 2 adds the civil ones."""
 
 from __future__ import annotations
 
@@ -28,7 +30,7 @@ class Topic:
     requires: tuple[CapabilityId, ...] = ()
 
 
-TOPICS: dict[CapabilityId, Topic] = {
+MILITARY_TOPICS: dict[CapabilityId, Topic] = {
     topic.capability: topic
     for topic in (
         Topic(CapabilityId.ARCHERY, 300, (CapabilityId.TIMBERCRAFT,)),
@@ -45,6 +47,23 @@ TOPICS: dict[CapabilityId, Topic] = {
     )
 }
 """What can be researched, what it costs, and what must already be known."""
+CIVIL_TOPICS: dict[CapabilityId, Topic] = {
+    topic.capability: topic
+    for topic in (
+        Topic(CapabilityId.WRITING, 250),
+        Topic(CapabilityId.IRRIGATION, 300, (CapabilityId.CULTIVATION,)),
+        Topic(CapabilityId.HERBAL_CARE, 200),
+        Topic(CapabilityId.FISHING, 150),
+        Topic(CapabilityId.SURVEYING, 300, (CapabilityId.WRITING,)),
+        Topic(
+            CapabilityId.ORGANIZED_LOGISTICS,
+            400,
+            (CapabilityId.WRITING, CapabilityId.SURVEYING),
+        ),
+    )
+}
+"""Rules version 2: the arts of a settled people."""
+TOPICS: dict[CapabilityId, Topic] = {**MILITARY_TOPICS, **CIVIL_TOPICS}
 
 
 class ResearchAssignment(BaseModel):
@@ -68,9 +87,11 @@ def knows(records: tuple[CapabilityRecord, ...], capability: CapabilityId) -> bo
     return any(record.capability is capability for record in records)
 
 
-def research_error(topic: CapabilityId, records: tuple[CapabilityRecord, ...]) -> str | None:
+def research_error(
+    topic: CapabilityId, records: tuple[CapabilityRecord, ...], *, civil: bool = False
+) -> str | None:
     """Why this civilization cannot research the topic now, if it cannot."""
-    if topic not in TOPICS:
+    if topic not in MILITARY_TOPICS and not (civil and topic in CIVIL_TOPICS):
         return "not a research topic"
     if knows(records, topic):
         return "already known"

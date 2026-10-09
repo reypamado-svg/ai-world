@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
@@ -10,9 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sovereign_world.hexmap import HexCoord, WorldMap
 from sovereign_world.ids import EntityId
-from sovereign_world.people import Person
+from sovereign_world.people import CopyOnRead, Person
 from sovereign_world.roads import RoadGrade
-from sovereign_world.travel import DAY, MAX_PROGRESS, Roads, entry_cost
+from sovereign_world.travel import DAY, MAX_PROGRESS, NO_BRIDGES, Bridges, Roads, entry_cost
 
 
 class ExpeditionStatus(StrEnum):
@@ -60,7 +61,7 @@ class Expedition(BaseModel):
 @dataclass(frozen=True, slots=True)
 class ExpeditionDayResult:
     expeditions: tuple[Expedition, ...]
-    people: dict[EntityId, Person]
+    people: Mapping[EntityId, Person]
     observations: tuple[Observation, ...]
     observed_tiles: tuple[HexCoord, ...]
     returned_ids: tuple[EntityId, ...]
@@ -70,13 +71,14 @@ class ExpeditionDayResult:
 
 def advance_expeditions(
     expeditions: tuple[Expedition, ...],
-    people: dict[EntityId, Person],
+    people: Mapping[EntityId, Person],
     world_map: WorldMap,
     day: int,
     *,
     observations: tuple[Observation, ...] = (),
     owners: dict[HexCoord, EntityId] | None = None,
     roads: Roads | None = None,
+    bridges: Bridges = NO_BRIDGES,
 ) -> ExpeditionDayResult:
     """Advance each active expedition toward its next tile and refresh its private map.
 
@@ -84,9 +86,7 @@ def advance_expeditions(
     the expedition, which observes the water it cannot cross. Explorers note who owns
     each tile they enter, and the grade of any road on it.
     """
-    updated_people = {
-        person_id: person.model_copy(deep=True) for person_id, person in people.items()
-    }
+    updated_people = CopyOnRead(people)
     owners = owners or {}
     roads = roads or {}
     observation_by_tile = {observation.tile: observation for observation in observations}
@@ -138,7 +138,7 @@ def advance_expeditions(
             if not world_map.contains(destination) or location.distance(destination) != 1:
                 status = ExpeditionStatus.FAILED
                 break
-            cost = entry_cost(world_map, destination, roads)
+            cost = entry_cost(world_map, destination, roads, origin=location, bridges=bridges)
             if cost is None:
                 observation_by_tile[destination] = Observation(
                     tile=destination,

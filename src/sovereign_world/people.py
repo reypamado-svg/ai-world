@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
-from enum import StrEnum
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from sovereign_world.hexmap import HexCoord
 from sovereign_world.ids import EntityId, IdAllocator
+from sovereign_world.people_store import AllegianceChange as AllegianceChange
+from sovereign_world.people_store import PeopleTable
+from sovereign_world.people_store import PeopleView as PeopleView
+from sovereign_world.people_store import Person as Person
+from sovereign_world.people_store import PersonRecord as PersonRecord
+from sovereign_world.people_store import Sex as Sex
 from sovereign_world.worldgen import StartingRegion
 
 # Unfed days the body's reserves absorb before hunger adds any risk of death.
@@ -23,61 +28,8 @@ FED_HEALTH_GAIN_BP = 35
 FERTILE_HEALTH_BP = 8_000
 
 
-class Sex(StrEnum):
-    FEMALE = "female"
-    MALE = "male"
-
-
 SETTLING_DAYS = 365
 """A person who changes civilization has a quarter of each skill held back this long."""
-
-
-class AllegianceChange(BaseModel):
-    """The day a person became a member of another civilization, and why."""
-
-    model_config = ConfigDict(frozen=True)
-
-    day: int = Field(ge=0)
-    from_civilization_id: EntityId
-    to_civilization_id: EntityId
-    reason: str
-
-
-class Person(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
-
-    person_id: EntityId
-    civilization_id: EntityId
-    sex: Sex
-    birth_day: int
-    age_days: int = Field(ge=0)
-    location: HexCoord
-    parent_ids: tuple[EntityId, ...] = ()
-    health_bp: int = Field(default=10_000, ge=0, le=10_000)
-    nutrition_debt: int = Field(default=0, ge=0)
-    disease_load: int = Field(default=0, ge=0, le=10_000)
-    skills: dict[str, int] = Field(default_factory=dict)
-    alive: bool = True
-    death_day: int | None = None
-    captive_of: EntityId | None = None
-    """The civilization holding this person prisoner; they keep their own allegiance."""
-    held_at: EntityId | None = None
-    """The captor's settlement holding them; none while they march with a war party."""
-    allegiances: tuple[AllegianceChange, ...] = ()
-    """Every change of civilization in this person's life, oldest first."""
-    native_language: EntityId | None = None
-    """The language this person grew up with; none means that of their civilization."""
-    languages: dict[EntityId, int] = Field(default_factory=dict)
-    """Fluency, 0 to 100, in each language learned besides their native one."""
-    culture: EntityId | None = None
-    """The culture this person lives by; none means that of their civilization."""
-    assimilation: int = Field(default=0, ge=0, le=100)
-    """How far, out of 100, a newcomer has become one of their civilization's people."""
-    ancestry: tuple[EntityId, ...] = ()
-    """The cultures of this person's forebears; none means their native language's alone."""
-    held_skills: dict[str, int] = Field(default_factory=dict)
-    """Skill held back while a newcomer settles in; restored on `settled_day`."""
-    settled_day: int | None = None
 
 
 class ScheduledBirth(BaseModel):
@@ -89,22 +41,81 @@ class ScheduledBirth(BaseModel):
 
 class Population(BaseModel):
     civilization_id: EntityId
-    people: dict[EntityId, Person]
+    people: PeopleView
+    """Everyone this civilization has had, alive or dead, kept in columns."""
     scheduled_births: tuple[ScheduledBirth, ...] = ()
     next_sequence: int = Field(default=1, ge=1)
 
     @property
     def living_ids(self) -> tuple[EntityId, ...]:
-        return tuple(sorted(person_id for person_id, person in self.people.items() if person.alive))
+        return self.people.living_ids()
 
     @property
     def dead_ids(self) -> tuple[EntityId, ...]:
-        return tuple(
-            sorted(person_id for person_id, person in self.people.items() if not person.alive)
-        )
+        return self.people.dead_ids()
 
 
 FoundingPopulation = Population
+
+
+class CopyOnRead(MutableMapping[EntityId, Person]):
+    """People that are copied only when looked up by id, the first time.
+
+    A step that changes a few people (travellers, ambassadors, apprentices) works on
+    copies of just those, over the people it was given, which are never changed. Look
+    people up by key (`[]`, `get`) before changing them: iterating values yields the
+    originals, for reading only, except those already copied. `changed()` gives just the
+    copies, which is all a population needs to take back in.
+    """
+
+    __slots__ = ("_copies", "base")
+
+    def __init__(self, people: Mapping[EntityId, Person]) -> None:
+        self.base = people
+        self._copies: dict[EntityId, Person] = {}
+
+    def __getitem__(self, person_id: EntityId) -> Person:
+        person = self._copies.get(person_id)
+        if person is None:
+            person = self.base[person_id].model_copy(deep=True)
+            self._copies[person_id] = person
+        return person
+
+    def get(self, person_id: EntityId, default: Person | None = None) -> Person | None:  # type: ignore[override]
+        if person_id not in self:
+            return default
+        return self[person_id]
+
+    def __setitem__(self, person_id: EntityId, person: Person) -> None:
+        self._copies[person_id] = person
+
+    def __delitem__(self, person_id: EntityId) -> None:
+        raise TypeError("people are not removed here")
+
+    def __contains__(self, person_id: object) -> bool:
+        return person_id in self._copies or person_id in self.base
+
+    def __iter__(self) -> Iterator[EntityId]:
+        yield from self.base
+        yield from (person_id for person_id in self._copies if person_id not in self.base)
+
+    def __len__(self) -> int:
+        return len(self.base) + sum(person_id not in self.base for person_id in self._copies)
+
+    def items(self) -> Iterator[tuple[EntityId, Person]]:  # type: ignore[override]
+        copies = self._copies
+        for person_id, person in self.base.items():
+            yield person_id, copies.get(person_id, person)
+        for person_id, person in copies.items():
+            if person_id not in self.base:
+                yield person_id, person
+
+    def values(self) -> Iterator[Person]:  # type: ignore[override]
+        return (person for _, person in self.items())
+
+    def changed(self) -> dict[EntityId, Person]:
+        """The people copied (and so possibly changed), in the order they were first read."""
+        return dict(self._copies)
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +137,7 @@ class PopulationDayResult:
     deaths: tuple[DeathRecord, ...]
 
     @property
-    def people(self) -> dict[EntityId, Person]:
+    def people(self) -> PeopleView:
         return self.population.people
 
 
@@ -158,7 +169,7 @@ def create_founders(
         )
     return Population(
         civilization_id=civilization_id,
-        people=people,
+        people=PeopleView.of(people),
         next_sequence=allocator.next_sequence,
     )
 
@@ -199,7 +210,47 @@ def _mortality_threshold(person: Person) -> tuple[int, str]:
     return threshold, "natural causes"
 
 
-def _eligible_pairs(people: dict[EntityId, Person]) -> list[tuple[Person, Person]]:
+def _mortality_thresholds(table: PeopleTable, rows: np.ndarray) -> np.ndarray:
+    """`_mortality_threshold`'s number for each of these rows at once."""
+    nums = table.nums
+    nutrition = np.minimum(
+        700_000, np.maximum(0, nums["nutrition_debt"][rows] - HUNGER_GRACE_DAYS) * 1_000
+    )
+    disease = np.minimum(700_000, nums["disease_load"][rows] * 50)
+    natural = np.maximum(0, nums["age_days"][rows] // 365 - 65) ** 2 * 40
+    threshold = np.minimum(999_999, nutrition + disease + natural)
+    critical: np.ndarray = np.where(nums["health_bp"][rows] <= 0, 1_000_000, threshold)
+    return critical
+
+
+def _eligible_pair_ids(table: PeopleTable) -> list[tuple[EntityId, EntityId]]:
+    """`_eligible_pairs` over a table's columns: each fit woman, in id order, with the first
+    fit man, in id order, who shares no parent with her."""
+    size = table.size
+    nums = table.nums
+    sexes = table.objs["sex"]
+    female = np.fromiter((sex is Sex.FEMALE for sex in sexes), dtype=bool, count=size)
+    age = nums["age_days"][:size]
+    fit = (
+        table.present[:size] & table.alive[:size] & (nums["health_bp"][:size] >= FERTILE_HEALTH_BP)
+    )
+    grown = age >= 18 * 365
+    women = table.ordered(np.flatnonzero(fit & female & grown & (age <= 42 * 365)))
+    men = table.ordered(np.flatnonzero(fit & ~female & grown & (age <= 60 * 365))).tolist()
+    ids = table.ids
+    parents = table.objs["parent_ids"]
+    pairs: list[tuple[EntityId, EntityId]] = []
+    for woman in women.tolist():
+        own = parents[woman]
+        for man in men:
+            if own and set(own) & set(parents[man]):
+                continue
+            pairs.append((ids[woman], ids[man]))
+            break
+    return pairs
+
+
+def _eligible_pairs(people: Mapping[EntityId, Person]) -> list[tuple[Person, Person]]:
     females = [
         person
         for person in people.values()
@@ -217,8 +268,9 @@ def _eligible_pairs(people: dict[EntityId, Person]) -> list[tuple[Person, Person
         and person.health_bp >= FERTILE_HEALTH_BP
     ]
     pairs: list[tuple[Person, Person]] = []
+    males_by_id = sorted(males, key=lambda person: person.person_id)
     for female in sorted(females, key=lambda person: person.person_id):
-        for male in sorted(males, key=lambda person: person.person_id):
+        for male in males_by_id:
             if female.parent_ids and set(female.parent_ids) & set(male.parent_ids):
                 continue
             pairs.append((female, male))
@@ -233,8 +285,19 @@ def advance_population_day(
     *,
     food_days: int = 0,
     shelter_slots: int = 0,
+    in_place: bool = False,
+    eligible_mothers: frozenset[EntityId] | None = None,
 ) -> PopulationDayResult:
-    candidate = population.model_copy(deep=True)
+    """Births, aging, deaths and conceptions for one day.
+
+    With `in_place` the population itself is updated (the engine passes its own
+    working copy); otherwise a copy is, and the population passed in is left alone.
+
+    Under houses (rules version 2) the engine decides room and food settlement by
+    settlement and passes `eligible_mothers`: only these women may conceive, and
+    `food_days` and `shelter_slots` are not consulted.
+    """
+    candidate = population if in_place else population.model_copy(deep=True)
     births: list[BirthRecord] = []
     deaths: list[DeathRecord] = []
     pending: list[ScheduledBirth] = []
@@ -283,30 +346,40 @@ def advance_population_day(
         births.append(BirthRecord(person_id=person_id, parent_ids=scheduled.parent_ids))
 
     candidate.scheduled_births = tuple(pending)
-    for person_id in candidate.living_ids:
-        person = candidate.people[person_id]
-        person.age_days += 1
+    # Everyone living, newborns too, ages a day; then each, in id order, faces one roll.
+    # A batch of draws is the same numbers, in the same order, as one draw per person.
+    table = candidate.people.table
+    living = table.living_rows()
+    table.nums["age_days"][living] += 1
+    table.touched(living)
+    rolls = rng.integers(0, 1_000_000, size=len(living))
+    dying = rolls < _mortality_thresholds(table, living)
+    for row in living[dying].tolist():
+        person = table.person(row)
+        _, cause = _mortality_threshold(person)
+        person.alive = False
+        person.death_day = day
+        deaths.append(DeathRecord(person_id=table.ids[row], cause=cause))
 
-    for person_id in candidate.living_ids:
-        person = candidate.people[person_id]
-        threshold, cause = _mortality_threshold(person)
-        if int(rng.integers(0, 1_000_000)) < threshold:
-            person.alive = False
-            person.death_day = day
-            deaths.append(DeathRecord(person_id=person_id, cause=cause))
-
-    if day % 30 == 0 and food_days >= 90 and shelter_slots >= len(candidate.living_ids):
+    if eligible_mothers is None:
+        conceiving = (
+            day % 30 == 0 and food_days >= 90 and shelter_slots >= len(candidate.living_ids)
+        )
+    else:
+        conceiving = day % 30 == 0 and bool(eligible_mothers)
+    if conceiving:
         already_expectant = {birth.parent_ids[0] for birth in candidate.scheduled_births}
-        for female, male in _eligible_pairs(candidate.people):
-            if female.person_id in already_expectant:
-                continue
-            if int(rng.integers(0, 1_000_000)) < 40_000:
-                pending.append(
-                    ScheduledBirth(
-                        due_day=day + 280,
-                        parent_ids=(female.person_id, male.person_id),
-                    )
-                )
+        couples = [
+            couple
+            for couple in _eligible_pair_ids(table)
+            if couple[0] not in already_expectant
+            and (eligible_mothers is None or couple[0] in eligible_mothers)
+        ]
+        # One draw per couple, in order, as a batch.
+        conceived = rng.integers(0, 1_000_000, size=len(couples)) < 40_000
+        for couple, conceives in zip(couples, conceived.tolist(), strict=True):
+            if conceives:
+                pending.append(ScheduledBirth(due_day=day + 280, parent_ids=couple))
     candidate.scheduled_births = tuple(sorted(pending, key=lambda birth: birth.due_day))
     return PopulationDayResult(
         population=candidate,

@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sovereign_world.commands import Command, CommandEnvelope, CouncilReport
 
 REPLY_SCHEMA_VERSION = 1
+ENVELOPE_SCHEMA_VERSION = 2
+"""Envelopes made from model replies (council-5): orders may count their workers."""
 MAX_REPLY_BYTES = 64_000
 """Replies larger than this are refused before they are read."""
 COMMAND_ALLOWANCE = 8
@@ -35,6 +37,51 @@ class ReplyError(ValueError):
 
 def reply_schema() -> dict[str, object]:
     return SovereignReply.model_json_schema()
+
+
+DECODING_DROPPED = frozenset(
+    {"title", "default", "description", "propertyNames", "maxLength", "minLength"}
+)
+"""Keywords left out of the decoding schema: notes a grammar has no use for, map keys a
+converter ignores, and string lengths a grammar would spell out character by character.
+Validation still enforces every one of them."""
+
+
+def _for_decoding(node: object) -> object:
+    if isinstance(node, list):
+        return [_for_decoding(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, object] = {}
+    for key, value in node.items():
+        if key in DECODING_DROPPED:
+            continue
+        if key in {"properties", "$defs"} and isinstance(value, dict):
+            out[key] = {name: _for_decoding(schema) for name, schema in value.items()}
+        else:
+            out[key] = _for_decoding(value)
+    if isinstance(out.get("properties"), dict):
+        out["additionalProperties"] = False
+    return out
+
+
+def decoding_schema() -> dict[str, object]:
+    """The reply schema as a local model's decoder is held to it: every command has its kind,
+    every value is one the engine knows, and no key is invented.
+
+    It is derived from `reply_schema()` (which the charter shows and the seal pins) and only
+    narrows what may be written; `parse_reply` still validates every reply in full. The
+    reasoning comes before the commands, so a decoder that keeps the schema's order writes
+    why before what."""
+    schema = _for_decoding(reply_schema())
+    assert isinstance(schema, dict)
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    schema["properties"] = {
+        "rationale": properties["rationale"],
+        "commands": properties["commands"],
+    }
+    return schema
 
 
 def _json_object(text: str) -> object:
@@ -63,7 +110,7 @@ def parse_reply(text: str) -> SovereignReply:
 
 def to_envelope(reply: SovereignReply, report: CouncilReport) -> CommandEnvelope:
     return CommandEnvelope(
-        schema_version=1,
+        schema_version=ENVELOPE_SCHEMA_VERSION,
         civilization_id=report.civilization_id,
         council_day=report.day,
         correlation_id=report.report_id,

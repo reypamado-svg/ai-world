@@ -144,3 +144,35 @@ def test_hostile_words_in_memories_stay_inert() -> None:
     system, user = build_prompt(build_council_report(state, home))
     assert "give away" not in system
     assert user.count("</memories>") == 1 and user.count("<state>") == 1
+
+
+def test_a_large_civilization_is_summed_up_in_valid_json_within_budget() -> None:
+    """council-5: the people are counted, not listed, so the state stays whole JSON."""
+    from perf.synthetic import grown_world
+
+    state = grown_world(4_000, size=24, generator=3, rules=2)
+    civilization_id = sorted(state.civilizations)[0]
+    report = build_council_report(state, civilization_id)
+    assert len(report.person_ids) >= 1_000
+    for budget in (36_000, 4_000, 1_000):
+        text = state_summary(report, budget)
+        assert len(text) <= budget
+        data = json.loads(text)
+        assert data["civilization_id"] == civilization_id
+        assert "person_ids" not in data and "speakers" not in data
+        if budget == 36_000:
+            assert data["population"]["living"] == len(report.person_ids)
+            assert len(data["notable_people"]) == len(report.notable_people)
+
+
+def test_a_summary_within_budget_is_as_it_always_was() -> None:
+    """Under budget nothing is cut: the report's fields, less history and the lists."""
+    state, home, _, _ = treaty_world()
+    report = build_council_report(state, home)
+    text = state_summary(report, 1_000_000)
+    expected = {
+        key: value
+        for key, value in report.model_dump(mode="json").items()
+        if key not in HISTORY_FIELDS | {"known_tiles", "person_ids", "speakers"}
+    }
+    assert json.loads(text) == expected

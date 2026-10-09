@@ -38,7 +38,8 @@ def test_truncated_journal_tail_is_ignored(tmp_path: Path) -> None:
 
     records = store.read_records()
 
-    assert len(records) == 2
+    # A format-2 journal opens with its header, then a record per day.
+    assert [record.type for record in records] == ["header", "transition", "transition"]
 
 
 def test_append_discards_a_truncated_tail_before_writing(tmp_path: Path) -> None:
@@ -49,7 +50,8 @@ def test_append_discards_a_truncated_tail_before_writing(tmp_path: Path) -> None
     result = advance_day(state, StableRng(30))
     store.append_transition(result.state, result.events)
 
-    assert len(WorldStore(tmp_path).read_records()) == 3
+    records = WorldStore(tmp_path).read_records()
+    assert [record.type for record in records].count("transition") == 3
 
 
 def test_corrupt_complete_record_reports_byte_offset(tmp_path: Path) -> None:
@@ -64,4 +66,5 @@ def test_corrupt_complete_record_reports_byte_offset(tmp_path: Path) -> None:
     with pytest.raises(JournalCorruption) as captured:
         store.read_records()
 
-    assert captured.value.offset == 0
+    header_line = store.journal_path.read_bytes().split(b"\n", 1)[0]
+    assert captured.value.offset == len(header_line) + 1, "the first day follows the header"

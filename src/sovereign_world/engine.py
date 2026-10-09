@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from itertools import batched
@@ -24,6 +24,7 @@ from sovereign_world.armoury import (
     personal_kits,
     settlement_bonus_after_engines,
 )
+from sovereign_world.bridges import Bridge, bridged_edges
 from sovereign_world.capabilities import (
     CapabilityId,
     CapabilityRecord,
@@ -41,16 +42,34 @@ from sovereign_world.commands import (
     DirectOrderKind,
     ProjectKind,
     build_council_report,
+    council_day,
     crisis_council_due,
+    idle_at,
     journey_supplies,
     known_roads,
+    known_spans,
     known_tolls,
+    ring_order,
     sight_of,
     trade_partners,
     validate_envelope,
     war_party_carry,
 )
 from sovereign_world.culture import ASSIMILATION_INTERVAL, ancestry, assimilate, culture
+from sovereign_world.defence import (
+    FIGHTER_ARMS,
+    MIN_LINE,
+    RESERVE_JOINS_ROUND,
+    SALLY_PURSUIT_BP,
+    SALLY_TOWER_HITS_BP,
+    VETERAN_TOWER_HITS_BP,
+    Arms,
+    Crews,
+    DefenceOrder,
+    DefenceOrderSpec,
+    Posture,
+    is_craftsman,
+)
 from sovereign_world.diplomacy import (
     ActiveTreaty,
     Contact,
@@ -85,25 +104,43 @@ from sovereign_world.exploration import (
     Observation,
     advance_expeditions,
 )
-from sovereign_world.hexmap import HexCoord
+from sovereign_world.hexmap import HexCoord, WorldMap
+from sovereign_world.housing import (
+    ABANDONED_DECAY_DAYS,
+    ABANDONED_GRACE_DAYS,
+    STORMED_SHARE,
+    HouseJob,
+    Housing,
+    affordable_grade,
+    best_grade,
+    founding_housing,
+    house_materials,
+    residents_by_settlement,
+    slots_of,
+)
 from sovereign_world.ids import EntityId
 from sovereign_world.institutions import (
+    ARMOURY_DAY,
+    HALL_STRENGTH,
     HEALING_FACTOR,
     INSTITUTIONS,
     SCHOOL_TEACHING_DAYS,
+    TRAINING_CAP_BONUS,
     WORKSHOP_DAY,
     Institution,
     InstitutionKind,
     serving_tiles,
     staff_of,
 )
-from sovereign_world.languages import LEARNING_INTERVAL, learn, native
+from sovereign_world.land import food_capacity, stone_capacity, timber_capacity
+from sovereign_world.languages import LEARNING_INTERVAL, learn_tables, native
 from sovereign_world.logistics import (
     CARGO_UNITS_PER_CARRIER,
     INTERNAL_KINDS,
     MAX_TRAVELLERS,
     SPYING_KINDS,
     TRAVEL_HAZARD_CAUSE,
+    BridgeBuilt,
     Journey,
     JourneyKind,
     JourneyOutcome,
@@ -118,14 +155,29 @@ from sovereign_world.logistics import (
     provisions_needed,
 )
 from sovereign_world.people import (
+    FED_HEALTH_GAIN_BP,
     SETTLING_DAYS,
+    UNFED_HEALTH_LOSS_BP,
     AllegianceChange,
     Person,
     advance_population_day,
     go_hungry,
     recover,
 )
+from sovereign_world.people_store import PeopleTable, PeopleView, place_code
+from sovereign_world.ranks import (
+    CITY_RESEARCH_BONUS,
+    CIVIL_HALF_RATE_RANK,
+    RealmRank,
+    SettlementRank,
+    institutions_open,
+    next_realm_rank,
+    next_settlement_rank,
+    realm_at_least,
+    settlement_facts,
+)
 from sovereign_world.research import (
+    CIVIL_TOPICS,
     DISCOVERED_SKILL,
     DOCTRINE_DRILL_CAP,
     POINTS_PER_SCHOLAR,
@@ -135,9 +187,44 @@ from sovereign_world.research import (
     knows,
 )
 from sovereign_world.resources import Inventory, InventoryDelta, Resource
+from sovereign_world.rings import (
+    CITADEL_PLUNDER_BP,
+    DITCH,
+    MOAT,
+    Citadel,
+    WallRing,
+    WallSection,
+    battered_citadel,
+    battered_ring,
+    facing_sections,
+    ring_defence_bp,
+    ring_for,
+    ring_from_ruin,
+    ring_grade,
+    ring_job_done,
+    ring_salvage,
+    ruin_walls,
+    sections_done,
+    set_ring,
+    sheltered,
+    tower_cap,
+    tower_positions,
+    unspent,
+    weakest,
+)
 from sovereign_world.rng import StableRng
 from sovereign_world.roads import Road, RoadView, grade_below, grades_of
+from sovereign_world.rules import rules_for
 from sovereign_world.scripted import Sovereign
+from sovereign_world.sites import (
+    FIND_KINDS,
+    FINDS,
+    PRODUCT,
+    RUIN_LORE,
+    YIELD_PER_WORKER_DAY,
+    SiteKind,
+    SiteSighting,
+)
 from sovereign_world.state import WorldState, validate_world
 from sovereign_world.stores import (
     STOREHOUSE_GRADES,
@@ -146,8 +233,10 @@ from sovereign_world.stores import (
     StorehouseJob,
     enlarge,
     has,
+    held_captives,
     holdings,
     put,
+    rows_by_store,
     set_store,
     settlement_at,
     shrink,
@@ -160,6 +249,7 @@ from sovereign_world.stores import (
 )
 from sovereign_world.stores import grade_below as storehouse_grade_below
 from sovereign_world.territory import (
+    REACH_CAP,
     SETTLEMENT_SPACING,
     Claim,
     Garrison,
@@ -168,10 +258,23 @@ from sovereign_world.territory import (
     visible_tiles,
 )
 from sovereign_world.tolls import TollGate, TollPost, TollRules, TollView
-from sovereign_world.travel import travel_days, way_to
+from sovereign_world.townplan import (
+    DEFAULT_PLAN,
+    HILL_FORT_BP,
+    KEEP_DEFENCE_BP,
+    MARKET_ROOM,
+    WATER_WORKSHOP_DAY,
+    Place,
+    PlanStyle,
+    TownPlan,
+    default_plan,
+)
+from sovereign_world.travel import crossing, travel_days, way_to
 from sovereign_world.walls import (
+    TOWER_HITS_BP,
     WALL_GRADES,
     WALL_HIT,
+    DefenceWork,
     WallJob,
     Walls,
     battered,
@@ -180,6 +283,7 @@ from sovereign_world.walls import (
     tower_materials,
     wall_bonus_after_engines,
 )
+from sovereign_world.walls import rank as wall_rank
 from sovereign_world.walls import step_materials as wall_step_materials
 from sovereign_world.war import (
     ARMS,
@@ -190,11 +294,14 @@ from sovereign_world.war import (
     DRILL_DAYS_PER_POINT,
     ESCAPE_BP,
     MIN_BESIEGERS,
+    PURSUIT_BP,
     RISING_RATIO,
     SETTLEMENT_DEFENCE_BP,
+    VETERAN,
     WOUND_MAX,
     WOUND_MIN,
     Battle,
+    BattleOutcome,
     BattleReport,
     Drill,
     Occupation,
@@ -342,6 +449,26 @@ def _settle_arrival(state: WorldState, journey: Journey, provisions: int) -> lis
         civilization.settlements = tuple(
             sorted((*civilization.settlements, settlement), key=lambda item: item.settlement_id)
         )
+        if rules_for(state.rules_version).houses:
+            # Settlers raise huts as they arrive.
+            civilization.housing = dict(
+                sorted(
+                    {
+                        **civilization.housing,
+                        settlement.settlement_id: founding_housing(len(arrivals)),
+                    }.items()
+                )
+            )
+        if rules_for(state.rules_version).town_plans:
+            # A new settlement starts with the plain plan until its council designs it.
+            civilization.town_plans = dict(
+                sorted(
+                    {
+                        **civilization.town_plans,
+                        settlement.settlement_id: default_plan(settlement.settlement_id, state.day),
+                    }.items()
+                )
+            )
         ruin = next((item for item in state.ruins if item.tile == destination), None)
         if ruin is not None:
             _resettle(state, civilization_id, settlement.settlement_id, ruin)
@@ -432,6 +559,7 @@ DISPATCH_EVENT = {
     JourneyKind.PETITION: "people_released",
     JourneyKind.SALVAGE: "salvagers_dispatched",
     JourneyKind.SPY: "spies_dispatched",
+    JourneyKind.EXTRACTION: "extractors_dispatched",
 }
 RETURNED_EVENT = {
     JourneyKind.ROADWORK: "road_crew_returned",
@@ -441,6 +569,7 @@ RETURNED_EVENT = {
     JourneyKind.PETITION: "petitioners_returned",
     JourneyKind.SALVAGE: "salvagers_returned",
     JourneyKind.SPY: "spies_returned",
+    JourneyKind.EXTRACTION: "extractors_returned",
 }
 PLUNDER_ORDER = (
     Resource.FOOD,
@@ -537,6 +666,7 @@ def _dispatch_journey(
         departed_day=state.day,
         objective=command.war_objective if kind is JourneyKind.CAMPAIGN else None,
         watch_days=command.watch_days if kind is JourneyKind.SPY else 0,
+        work_days=command.work_days if kind is JourneyKind.EXTRACTION else 0,
         wreck_roads=command.wreck_roads and kind is JourneyKind.CAMPAIGN,
         carry_per_person=(
             war_party_carry(civilization)
@@ -637,8 +767,8 @@ def _change_allegiance(
     origin = state.civilizations[origin_id]
     destination = state.civilizations[destination_id]
     _release_duties(state, origin_id, frozenset(person_ids))
-    origin_people = dict(origin.population.people)
-    destination_people = dict(destination.population.people)
+    origin_people = origin.population.people
+    destination_people = destination.population.people
     for person_id in person_ids:
         person = origin_people.pop(person_id)
         held = {skill: value // 4 for skill, value in person.skills.items() if value // 4}
@@ -676,7 +806,6 @@ def _change_allegiance(
     )
     origin.population = origin.population.model_copy(
         update={
-            "people": origin_people,
             "scheduled_births": tuple(
                 birth
                 for birth in origin.population.scheduled_births
@@ -686,7 +815,6 @@ def _change_allegiance(
     )
     destination.population = destination.population.model_copy(
         update={
-            "people": destination_people,
             "scheduled_births": tuple(
                 sorted(
                     (*destination.population.scheduled_births, *following_mother),
@@ -748,7 +876,9 @@ def _release_duties(
 def _settle_newcomers(state: WorldState) -> None:
     """A year after changing civilization, a person has their held-back skill again."""
     for civilization in state.civilizations.values():
-        for person in civilization.population.people.values():
+        table = civilization.population.people.table
+        for row in table.rows_where_set("settled_day").tolist():
+            person = table.person(row)
             if person.settled_day is not None and state.day >= person.settled_day:
                 person.skills = {
                     skill: person.skills.get(skill, 0) + person.held_skills.get(skill, 0)
@@ -803,6 +933,10 @@ def _cede(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
         if person.alive and person.captive_of == giver_id and person.held_at == sid
     )
     events = _free_captives(state, held_there, "released")
+    for job in giver.house_jobs:
+        if job.settlement_id == sid:
+            put(giver, tile, job.unused_materials())
+    giver.house_jobs = tuple(item for item in giver.house_jobs if item.settlement_id != sid)
     inventory = store(giver, sid)
     giver.settlements = tuple(item for item in giver.settlements if item.settlement_id != sid)
     giver.stores = {key: value for key, value in giver.stores.items() if key != sid}
@@ -830,6 +964,31 @@ def _cede(state: WorldState, treaty: ActiveTreaty) -> list[DomainEvent]:
         )
     )
     giver.walls = tuple(item for item in giver.walls if item.settlement_id != sid)
+    if sid in giver.defence_orders:
+        # The new owner's council has not yet said how the town defends itself.
+        giver.defence_orders = {
+            key: value for key, value in giver.defence_orders.items() if key != sid
+        }
+    if sid in giver.wall_rings:
+        taker.wall_rings = dict(sorted({**taker.wall_rings, sid: giver.wall_rings[sid]}.items()))
+        giver.wall_rings = {key: value for key, value in giver.wall_rings.items() if key != sid}
+    if sid in giver.citadels:
+        taker.citadels = dict(sorted({**taker.citadels, sid: giver.citadels[sid]}.items()))
+        giver.citadels = {key: value for key, value in giver.citadels.items() if key != sid}
+    if sid in giver.housing:
+        taker.housing = dict(sorted({**taker.housing, sid: giver.housing[sid]}.items()))
+        giver.housing = {key: value for key, value in giver.housing.items() if key != sid}
+    if sid in giver.town_plans:
+        # The town keeps its streets and walls' line under its new owner.
+        taker.town_plans = dict(sorted({**taker.town_plans, sid: giver.town_plans[sid]}.items()))
+        giver.town_plans = {key: value for key, value in giver.town_plans.items() if key != sid}
+    if sid in giver.ranks_reached:
+        taker.ranks_reached = dict(
+            sorted({**taker.ranks_reached, sid: giver.ranks_reached[sid]}.items())
+        )
+        giver.ranks_reached = {
+            key: value for key, value in giver.ranks_reached.items() if key != sid
+        }
     giver.storehouse_jobs = tuple(
         item for item in giver.storehouse_jobs if item.settlement_id != sid
     )
@@ -936,6 +1095,7 @@ def _advance_journeys(
             treaty.treaty_id for treaty in state.active_treaties if treaty.in_force
         ),
         world_map=state.world_map,
+        forage_bonus=rules_for(state.rules_version).cover_mechanics,
         arrival_allowed=lambda journey: _arrival_allowed(state, journey),
         roads=grades_of(state.roads),
         tolls=_toll_rules(state),
@@ -943,11 +1103,12 @@ def _advance_journeys(
             journey.kind is JourneyKind.CAMPAIGN
             and (_enemy_at(state, journey, tile) is not None or _wreckable(state, journey, tile))
         ),
+        bridges=bridged_edges(state.bridges),
     )
     state.journeys = result.journeys
     for civilization_id, people in result.people_by_civilization.items():
         civilization = state.civilizations[civilization_id]
-        civilization.population = civilization.population.model_copy(update={"people": people})
+        civilization.population.people.update(people)
     kinds = {journey.journey_id: journey.kind for journey in result.journeys}
     events: list[DomainEvent] = []
     for journey_id in result.delayed_ids:
@@ -1008,6 +1169,8 @@ def _advance_journeys(
         )
     for built in result.roads_built:
         events.append(_record_road(state, built))
+    for spanned in result.bridges_built:
+        events.append(_record_bridge(state, spanned))
     for halt in result.roadwork_stopped:
         events.append(
             _event(
@@ -1047,6 +1210,17 @@ def _advance_journeys(
             continue
         if journey.kind is JourneyKind.SALVAGE:
             events.extend(_salvage(state, journey))
+            continue
+        if journey.kind is JourneyKind.EXTRACTION:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "extractors_at_work",
+                    str(journey.sender_civilization_id),
+                    str(journey.journey_id),
+                )
+            )
             continue
         if journey.kind is JourneyKind.SPY:
             events.append(
@@ -1273,11 +1447,11 @@ def _advance_journeys(
             )
         )
         if journey.kind is JourneyKind.SPY and survivors:
-            people = state.civilizations[sender_id].population.people
+            spies = state.civilizations[sender_id].population.people
             for person_id in survivors:
-                people[person_id].skills = {
-                    **people[person_id].skills,
-                    SPYCRAFT: people[person_id].skills.get(SPYCRAFT, 0) + 1,
+                spies[person_id].skills = {
+                    **spies[person_id].skills,
+                    SPYCRAFT: spies[person_id].skills.get(SPYCRAFT, 0) + 1,
                 }
             if journey.findings is not None:
                 events.append(_file_spy_report(state, journey, by_courier=False))
@@ -1365,6 +1539,10 @@ def _toll_rules(state: WorldState) -> TollRules:
         known_tiles={
             civilization_id: frozenset(civilization.known_tiles)
             for civilization_id, civilization in state.civilizations.items()
+        },
+        known_bridges={
+            civilization_id: known_spans(state, civilization_id)
+            for civilization_id in state.civilizations
         },
     )
 
@@ -1601,7 +1779,11 @@ def _send_deposit(
     provisions = (
         provisions_needed(
             journey_days(
-                JourneyKind.DEPOSIT, state.world_map, post.deposit_route, grades_of(state.roads)
+                JourneyKind.DEPOSIT,
+                state.world_map,
+                post.deposit_route,
+                grades_of(state.roads),
+                bridges=bridged_edges(state.bridges),
             ),
             len(couriers),
         )
@@ -1742,6 +1924,7 @@ def _share_maps(state: WorldState, treaty: ActiveTreaty) -> None:
 def _joined_roads(state: WorldState) -> list[DomainEvent]:
     """Note when a continuous road first links a settlement of each trade partner."""
     road_tiles = {road.tile for road in state.roads}
+    spans = bridged_edges(state.bridges)
     joined: list[EntityId] = []
     events: list[DomainEvent] = []
     for treaty in state.active_treaties:
@@ -1768,6 +1951,10 @@ def _joined_roads(state: WorldState) -> list[DomainEvent]:
                 break
             for neighbor in sorted(tile.neighbors()):
                 if neighbor in road_tiles and neighbor not in seen:
+                    # A road is continuous only where a traveller can cross: a deep river
+                    # between two road tiles joins them only once it is bridged.
+                    if crossing(state.world_map, tile, neighbor, spans) is None:
+                        continue
                     seen.add(neighbor)
                     length[neighbor] = length[tile] + 1
                     frontier.append(neighbor)
@@ -1879,10 +2066,9 @@ def _enemy_at(state: WorldState, journey: Journey, tile: HexCoord) -> EntityId |
         )
         if not (at_war or targeted):
             continue
-        if any(
-            person.alive and person.location == tile and person.captive_of is None
-            for person in state.civilizations[civilization_id].population.people.values()
-        ):
+        table = state.civilizations[civilization_id].population.people.table
+        free = table.mask(alive=True, captive=False)
+        if np.any(free & (table.loc_code[: table.size] == place_code(tile))):
             hostile.append(civilization_id)
     if journey.recipient_civilization_id in hostile:
         return journey.recipient_civilization_id
@@ -2058,9 +2244,30 @@ def _fight(
         and journey.sender_civilization_id == enemy
         and any(person_id in marching for person_id in journey.traveller_ids)
     ]
+    # Rules version 3: the settlement's standing order decides who stands in the line, who
+    # waits in reserve and who is kept back.
+    ordered = at_home and rules_for(state.rules_version).town_defence
+    stance, line, reserve, held_back = (
+        _arrange_defence(state, enemy, tile, home_side)
+        if ordered
+        else (DefenceOrderSpec(), list(home_side), [], [])
+    )
+    arms_of = {item: enemy_people[item].skills.get(ARMS, 0) for item in (*line, *reserve)}
+    # Rules version 3 defence: catapults in the store are crewed by the last of the line in
+    # id order, who fight at half strength, as the attackers' crews do.
+    stored = supplies.get(Resource.CATAPULT, 0) if ordered else 0
+    home_engines = crewed_engines(len(line), {Resource.CATAPULT: stored}) if stored else {}
+    home_crew = set(line[len(line) - crew_needed(home_engines) :]) if home_engines else set()
     # Home defenders arm from their store; defending war parties use what they carry.
     formations = knows(state.civilizations[enemy].capabilities, CapabilityId.SPEAR_FORMATIONS)
-    defender_kits = kit_assignment(home_side, personal_kits(dict(supplies)), formations=formations)
+    by_practice = stance.arms_priority is Arms.VETERANS
+    armed = sorted([*line, *reserve], key=lambda item: (-arms_of[item], item))
+    defender_kits = kit_assignment(
+        armed if by_practice else [*line, *reserve],
+        personal_kits(dict(supplies)),
+        formations=formations,
+        ordered=by_practice,
+    )
     for journey in defending_parties:
         defender_kits.update(
             kit_assignment(
@@ -2073,9 +2280,18 @@ def _fight(
     walls = _walls_at(state, enemy, tile) if at_home else None
     towers = manned_towers(walls.towers, len(home_side)) if walls is not None else 0
     defenders = [
-        fighter(enemy_people[person_id], defender_kits.get(person_id), attacking=False)
-        for person_id in [*home_side, *marching]
+        fighter(
+            enemy_people[person_id],
+            defender_kits.get(person_id),
+            attacking=False,
+            crewing=person_id in home_crew,
+        )
+        for person_id in [*line, *marching]
     ]
+    waiting = tuple(
+        fighter(enemy_people[person_id], defender_kits.get(person_id), attacking=False)
+        for person_id in reserve
+    )
     terrain_bp = defence_bonus_bp(state.world_map.tile(tile).terrain, settlement=False)
     walls_bp = (
         settlement_bonus_after_engines(SETTLEMENT_DEFENCE_BP, working)
@@ -2084,6 +2300,37 @@ def _fight(
         if at_home
         else BASIS
     )
+    if at_home and rules_for(state.rules_version).town_plans:
+        towers, terrain_bp, walls_bp = _planned_defence(
+            state, enemy, tile, working, len(line) if ordered else len(home_side), terrain_bp
+        )
+    tower_hits: tuple[int, ...] = ()
+    if ordered and towers and stance.tower_crews is Crews.DRILLED:
+        # The best fighters man the towers, two to each; a tower of two veterans hits more.
+        best = sorted(line, key=lambda item: (-arms_of[item], item))
+        tower_hits = tuple(
+            VETERAN_TOWER_HITS_BP
+            if all(arms_of[item] >= VETERAN for item in best[2 * index : 2 * index + 2])
+            else TOWER_HITS_BP
+            for index in range(towers)
+        )
+    # Rules version 3 defence: a besieged town's sally fights under its towers' cover.
+    sally = _sally(state, party, enemy, tile, marching)
+    cover_bp, covering = 0, 0
+    chase = {"attackers": PURSUIT_BP, "defenders": PURSUIT_BP}
+    if sally is not None:
+        siege, side = sally
+        covering, complete = _sally_cover(state, siege)
+        chase[side] = SALLY_PURSUIT_BP if complete else PURSUIT_BP
+        if side == "attackers":
+            cover_bp = covering * SALLY_TOWER_HITS_BP
+        else:
+            towers, tower_hits = covering, (SALLY_TOWER_HITS_BP,) * covering
+    # Rules version 3: a home side whose store cannot feed it a day is short of supplies.
+    supplied = supplies.get(Resource.FOOD, 0) >= len(line) + len(reserve) if ordered else True
+    # Rules version 3 defence: a citadel takes the defenders in if the town is lost.
+    home = settlement_at(state.civilizations[enemy], tile) if ordered else None
+    refuge = home is not None and home.settlement_id in state.civilizations[enemy].citadels
     battle_id = EntityId(f"battle:{state.day:06d}:{party.journey_id}")
     outcome = resolve_battle(
         attackers,
@@ -2091,7 +2338,7 @@ def _fight(
         defence_bp=terrain_bp * walls_bp // BASIS,
         attacker_morale_bp=morale_bp(attackers, at_home=False, supplied=True),
         defender_morale_bp=(
-            morale_bp(defenders, at_home=True, supplied=True)
+            morale_bp([*defenders, *waiting], at_home=True, supplied=supplied)
             if at_home and home_side
             else morale_bp(defenders, at_home=False, supplied=True)
         ),
@@ -2099,6 +2346,14 @@ def _fight(
         stream=f"day:{state.day}:war:{battle_id}",
         catapults=working.get(Resource.CATAPULT, 0),
         towers=towers,
+        tower_hits_bp=tower_hits,
+        defender_reserve=waiting,
+        reserve_joins_round=RESERVE_JOINS_ROUND,
+        defender_refuge=refuge,
+        defender_catapults=home_engines.get(Resource.CATAPULT, 0),
+        attacker_cover_bp=cover_bp,
+        attacker_pursuit_bp=chase["attackers"],
+        defender_pursuit_bp=chase["defenders"],
     )
     battle = Battle(
         battle_id=battle_id,
@@ -2107,7 +2362,7 @@ def _fight(
         attacker_id=sender,
         defender_id=enemy,
         attackers=tuple(attacker_ids),
-        defenders=tuple(sorted([*home_side, *marching])),
+        defenders=tuple(sorted([*line, *reserve, *marching])),
         rounds=outcome.rounds,
         winner_id=sender if outcome.attackers_won else enemy,
         casualties=outcome.casualties,
@@ -2128,6 +2383,56 @@ def _fight(
             r=tile.r,
         )
     )
+    if held_back:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "held_back",
+                str(enemy),
+                str(battle_id),
+                count=len(held_back),
+                posture=stance.posture.value,
+            )
+        )
+    if home_engines:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "engines_manned",
+                str(enemy),
+                str(battle_id),
+                catapults=home_engines[Resource.CATAPULT],
+                crew=crew_needed(home_engines),
+            )
+        )
+    if sally is not None and (covering or chase[sally[1]] != PURSUIT_BP):
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "sally_covered",
+                str(sally[0].defender_id),
+                str(battle_id),
+                towers=covering,
+                pursuit_bp=chase[sally[1]],
+            )
+        )
+    if outcome.reserve_round:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "reserve_joined",
+                str(enemy),
+                str(battle_id),
+                round=outcome.reserve_round,
+                count=len(reserve),
+            )
+        )
+    if home is not None:
+        events.extend(_after_home_battle(state, enemy, home.settlement_id, battle_id, outcome))
     events.extend(_hurt(state, battle))
     events.append(
         _event(
@@ -2190,6 +2495,9 @@ def _fight(
         events.append(_event(state, EventPhase.MOVEMENT, "side_broke", str(sender), str(battle_id)))
     else:
         events.append(_event(state, EventPhase.MOVEMENT, "side_broke", str(enemy), str(battle_id)))
+        stormed = settlement_at(state.civilizations[enemy], tile) if at_home else None
+        if stormed is not None:
+            events.extend(_lose_houses(state, enemy, stormed.settlement_id, "stormed"))
     _replace_journey(state, party)
     # A routed party lets its prisoners go; then the winners take their own captives.
     routed = [
@@ -2204,6 +2512,81 @@ def _fight(
     events.extend(_take_captives(state, battle, at_home))
     party = next(item for item in state.journeys if item.journey_id == party.journey_id)
     return party, events
+
+
+def _sally(
+    state: WorldState, party: Journey, enemy: EntityId, tile: HexCoord, marching: list[EntityId]
+) -> tuple[Siege, str] | None:
+    """Rules version 3 defence: a besieged town's war party fighting its own camp's
+    besiegers on the camp tile, and the side it stands on: "attackers" when it falls on the
+    camp, "defenders" when the camp falls on it first."""
+    if not rules_for(state.rules_version).town_defence:
+        return None
+    sender = party.sender_civilization_id
+    for siege in state.sieges:
+        if not siege.active or siege.camp != tile:
+            continue
+        if (
+            siege.defender_id == sender
+            and siege.besieger_id == enemy
+            and party.route[0] == siege.settlement_tile
+        ):
+            return siege, "attackers"
+        if (
+            siege.besieger_id == sender
+            and siege.defender_id == enemy
+            and siege.journey_id == party.journey_id
+            and marching
+        ):
+            return siege, "defenders"
+    return None
+
+
+def _sally_cover(state: WorldState, siege: Siege) -> tuple[int, bool]:
+    """The manned towers on the sections facing a camp, and whether the ring is complete.
+    Those who stayed at home man them, two to a tower."""
+    ring = state.civilizations[siege.defender_id].wall_rings.get(siege.settlement_id)
+    if ring is None:
+        return 0, False
+    if not ring.towers:
+        return 0, ring.complete
+    facing = facing_sections(ring, siege.settlement_tile.direction_to(siege.camp))
+    standing = facing & set(tower_positions(ring))
+    stayed, _ = _defenders(state, siege.defender_id, siege.settlement_tile)
+    return manned_towers(len(standing), len(stayed)), ring.complete
+
+
+def _after_home_battle(
+    state: WorldState,
+    civilization_id: EntityId,
+    settlement_id: EntityId,
+    battle_id: EntityId,
+    outcome: BattleOutcome,
+) -> list[DomainEvent]:
+    """Rules version 3 defence: the stakes round the town are spent, and if the town was
+    lost its people fell back to the citadel."""
+    events: list[DomainEvent] = []
+    civilization = state.civilizations[civilization_id]
+    ring = civilization.wall_rings.get(settlement_id)
+    if ring is not None and ring.stakes:
+        set_ring(civilization, ring.model_copy(update={"stakes": False}))
+        events.append(
+            _event(
+                state, EventPhase.MOVEMENT, "stakes_cleared", str(civilization_id), str(battle_id)
+            )
+        )
+    if outcome.attackers_won and settlement_id in civilization.citadels:
+        events.append(
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "fell_back_to_citadel",
+                str(civilization_id),
+                str(battle_id),
+                settlement=str(settlement_id),
+            )
+        )
+    return events
 
 
 def _room(state: WorldState, party: Journey) -> int:
@@ -2241,10 +2624,19 @@ def _plunder(
             tile,
             enemy,
         )
-    # Raiders empty the store of the settlement they beat, never the whole civilization's.
+    # Raiders empty the store of the settlement they beat, never the whole civilization's;
+    # under rules version 3 defence, only half of it while its people hold the citadel.
+    site = settlement_at(victim, tile)
+    share = (
+        CITADEL_PLUNDER_BP
+        if rules_for(state.rules_version).town_defence
+        and site is not None
+        and site.settlement_id in victim.citadels
+        else BASIS
+    )
     from_store: dict[Resource, int] = {}
     for resource in PLUNDER_ORDER:
-        grab = min(store_at(victim, tile).quantities.get(resource, 0), room)
+        grab = min(store_at(victim, tile).quantities.get(resource, 0) * share // BASIS, room)
         if grab:
             from_store[resource] = grab
             taken[resource] = taken.get(resource, 0) + grab
@@ -2349,6 +2741,34 @@ def _captive(state: WorldState, person_id: EntityId) -> Person | None:
     return None
 
 
+def _fitted(journey: Journey, travellers: tuple[EntityId, ...]) -> Journey:
+    """The party with fewer carriers: what the others carried goes with them, so the food packed
+    (and, if that is not enough, gear, in reverse resource order) is cut to what the rest can
+    bear. A party that still fits keeps its load exactly."""
+    capacity = journey.carry_per_person * len(travellers)
+    campaign = journey.kind is JourneyKind.CAMPAIGN
+
+    def gear(cargo: dict[Resource, int]) -> int:
+        return cargo_load(cargo) if campaign else sum(cargo.values())
+
+    cargo = dict(journey.cargo)
+    packed = journey.provisions_packed
+    if gear(cargo) + packed > capacity:
+        packed = max(capacity - gear(cargo), 0)
+        for resource in sorted(cargo, reverse=True):
+            while cargo[resource] and gear(cargo) > capacity:
+                cargo[resource] -= 1
+        cargo = {resource: count for resource, count in cargo.items() if count}
+    return journey.model_copy(
+        update={
+            "traveller_ids": travellers,
+            "cargo": cargo,
+            "provisions_packed": packed,
+            "provisions": min(journey.provisions, packed),
+        }
+    )
+
+
 def _take_captives(state: WorldState, battle: Battle, at_home: bool) -> list[DomainEvent]:
     """The winners hold the fighters they caught: at home, or marching with the party."""
     if not battle.captured:
@@ -2361,7 +2781,7 @@ def _take_captives(state: WorldState, battle: Battle, at_home: bool) -> list[Dom
         if journey.active and taken & set(journey.traveller_ids):
             left = tuple(item for item in journey.traveller_ids if item not in taken)
             journey = (
-                journey.model_copy(update={"traveller_ids": left})
+                _fitted(journey, left)
                 if left
                 else journey.model_copy(
                     update={
@@ -2488,6 +2908,95 @@ def _catch(
     return events
 
 
+def _advance_extraction(state: WorldState) -> list[DomainEvent]:
+    """Rules version 2: workers at a deposit or quarry take what they can each day, and turn
+    home when their days are done, their packs are full, the site is spent, or none is left."""
+    events: list[DomainEvent] = []
+    sites = {site.tile: site for site in state.sites}
+    for journey in sorted(state.journeys, key=lambda item: item.journey_id):
+        if not journey.working:
+            continue
+        people = state.civilizations[journey.sender_civilization_id].population.people
+        living = sum(
+            (person := people.get(person_id)) is not None and person.alive
+            for person_id in journey.traveller_ids
+        )
+        site = sites[journey.route[-1]]
+        room = (
+            journey.carry_per_person * len(journey.traveller_ids)
+            - journey.provisions_packed
+            - sum(journey.cargo.values())
+        )
+        taken = min(living * YIELD_PER_WORKER_DAY[site.kind], site.remaining, max(room, 0))
+        cargo = dict(journey.cargo)
+        if taken:
+            product = PRODUCT[site.kind]
+            cargo[product] = cargo.get(product, 0) + taken
+            site = site.model_copy(
+                update={
+                    "remaining": site.remaining - taken,
+                    "opened_day": site.opened_day if site.opened_day is not None else state.day,
+                    "spent_day": state.day if site.remaining == taken else None,
+                }
+            )
+            sites[site.tile] = site
+            events.append(
+                _event(
+                    state,
+                    EventPhase.WORK,
+                    "site_worked",
+                    str(journey.sender_civilization_id),
+                    str(site.site_id),
+                    units=taken,
+                    product=product.value,
+                )
+            )
+            if site.remaining == 0:
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.WORK,
+                        "site_exhausted",
+                        str(journey.sender_civilization_id),
+                        str(site.site_id),
+                    )
+                )
+        worked = journey.days_worked + (1 if living else 0)
+        reason = (
+            "no_one_left"
+            if not living
+            else "spent"
+            if site.remaining == 0
+            else "full"
+            if room - taken <= 0
+            else "done"
+            if worked >= journey.work_days
+            else None
+        )
+        update: dict[str, object] = {"cargo": cargo, "days_worked": worked}
+        if reason is not None:
+            update |= {
+                "working": False,
+                "phase": JourneyPhase.RETURNING,
+                "outcome": JourneyOutcome.DELIVERED if cargo else JourneyOutcome.FAILED,
+                "carrying_cargo": bool(cargo),
+            }
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "extractors_left_site",
+                    str(journey.sender_civilization_id),
+                    str(journey.journey_id),
+                    reason=reason,
+                    units=sum(cargo.values()),
+                )
+            )
+        _replace_journey(state, journey.model_copy(update=update))
+    state.sites = tuple(sites[tile] for tile in sorted(sites))
+    return events
+
+
 def _advance_espionage(state: WorldState, rng: StableRng) -> list[DomainEvent]:
     """Spies on watch look around, or are found out; couriers on foreign land may be stopped."""
     events: list[DomainEvent] = []
@@ -2562,6 +3071,7 @@ def _advance_espionage(state: WorldState, rng: StableRng) -> list[DomainEvent]:
             (item for item in target.walls if item.settlement_id == settlement.settlement_id),
             None,
         )
+        ring = target.wall_rings.get(settlement.settlement_id)
         truth = _truth(state, target_id, settlement)
         seen = observe(
             settlement_id=settlement.settlement_id,
@@ -2571,8 +3081,8 @@ def _advance_espionage(state: WorldState, rng: StableRng) -> list[DomainEvent]:
             residents=truth["residents"],
             fighters=truth["fighters"],
             store_units=truth["store_units"],
-            wall_grade=None if walls is None else walls.grade,
-            towers=0 if walls is None else walls.towers,
+            wall_grade=ring_grade(ring) if walls is None else walls.grade,
+            towers=(0 if ring is None else ring.towers) if walls is None else walls.towers,
             works=truth["works"],
             spies=living,
             roll=roll,
@@ -2715,7 +3225,7 @@ def _free_captives(
     taken_ids = {journey.journey_id for journey in state.journeys}
     for (civilization_id, tile), group in sorted(walking.items()):
         homes = frozenset(item.tile for item in state.civilizations[civilization_id].settlements)
-        route = way_to(state.world_map, tile, homes)
+        route = way_to(state.world_map, tile, homes, bridges=bridged_edges(state.bridges))
         if route is None or len(route) < 2:
             continue
         for chunk in batched(group, MAX_TRAVELLERS):
@@ -2774,15 +3284,13 @@ def _march_captives(state: WorldState) -> frozenset[EntityId]:
 def _escapes(state: WorldState, rng: StableRng) -> list[DomainEvent]:
     """At every council, each captive has a chance to slip away and walk home."""
     roll = rng.stream(f"day:{state.day}:captives:escape")
+    # One draw per living captive, by civilization and then id.
     escaped = tuple(
-        person_id
+        table.ids[row]
         for civilization_id in sorted(state.civilizations)
-        for person_id, person in sorted(
-            state.civilizations[civilization_id].population.people.items()
-        )
-        if person.alive
-        and person.captive_of is not None
-        and int(roll.integers(0, BASIS)) < ESCAPE_BP
+        for table in (state.civilizations[civilization_id].population.people.table,)
+        for row in table.ordered(np.flatnonzero(table.mask(alive=True, captive=True))).tolist()
+        if int(roll.integers(0, BASIS)) < ESCAPE_BP
     )
     return _free_captives(state, escaped, "escaped") if escaped else []
 
@@ -3000,13 +3508,9 @@ def _working(state: WorldState, civilization_id: EntityId) -> bool:
     civilization = state.civilizations[civilization_id]
     away = _away(state)
     held = {item.settlement_id for item in state.occupations if item.active}
-    homes = {
-        person.location
-        for person_id, person in civilization.population.people.items()
-        if person.alive and person.captive_of is None and person_id not in away
-    }
+    homes = set(np.unique(_home_codes(civilization.population.people.table, away)).tolist())
     return any(
-        settlement.tile in homes and settlement.settlement_id not in held
+        place_code(settlement.tile) in homes and settlement.settlement_id not in held
         for settlement in civilization.settlements
     )
 
@@ -3015,7 +3519,7 @@ def _advance_civilizations(state: WorldState) -> list[DomainEvent]:
     """Eliminate the civilizations with no one left, track the homeless and break them up,
     and record the endings of the world."""
     events: list[DomainEvent] = []
-    council = state.day % state.config.council_interval_days == 0
+    council = council_day(state)
     for civilization_id in sorted(state.civilizations):
         civilization = state.civilizations[civilization_id]
         if civilization.eliminated_day is not None:
@@ -3100,7 +3604,9 @@ def _break_up(state: WorldState, civilization_id: EntityId) -> list[DomainEvent]
     events: list[DomainEvent] = []
     taken = {journey.journey_id for journey in state.journeys}
     for (here, recipient, gate), group in sorted(groups.items()):
-        route = way_to(state.world_map, here, frozenset({gate}))
+        route = way_to(
+            state.world_map, here, frozenset({gate}), bridges=bridged_edges(state.bridges)
+        )
         if route is None or len(route) < 2:
             continue
         for chunk in batched(group, MAX_TRAVELLERS):
@@ -3187,7 +3693,8 @@ def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent
                     item for item in civilization.storehouses if item.settlement_id == sid
                 ),
                 walls=next(
-                    (item for item in civilization.walls if item.settlement_id == sid), None
+                    (item for item in civilization.walls if item.settlement_id == sid),
+                    ruin_walls(civilization.wall_rings.get(sid)),
                 ),
             )
         )
@@ -3211,6 +3718,14 @@ def _eliminate(state: WorldState, civilization_id: EntityId) -> list[DomainEvent
         }
     )
     civilization.settlements = ()
+    civilization.housing = {}
+    civilization.house_jobs = ()
+    civilization.ranks_reached = {}
+    civilization.town_plans = {}
+    civilization.wall_rings = {}
+    civilization.defence_orders = {}
+    civilization.citadels = {}
+    civilization.realm_rank_reached = RealmRank.CHIEFDOM
     civilization.stores = {}
     civilization.inventory = Inventory(capacity=0)
     civilization.storehouses = ()
@@ -3232,7 +3747,7 @@ def _salvage(state: WorldState, journey: Journey) -> list[DomainEvent]:
     """Salvagers at a ruin load what they can bear from its store and turn for home."""
     ruin = next((item for item in state.ruins if item.tile == journey.route[-1]), None)
     if ruin is None:
-        return []
+        return _find(state, journey) if rules_for(state.rules_version).sites else []
     # Room is what the party set out able to bear, less the food it packed.
     room = journey.carry_per_person * len(journey.traveller_ids) - journey.provisions_packed
     left = dict(ruin.store.quantities)
@@ -3272,6 +3787,78 @@ def _salvage(state: WorldState, journey: Journey) -> list[DomainEvent]:
     ]
 
 
+def _find(state: WorldState, journey: Journey) -> list[DomainEvent]:
+    """Rules version 2: the first party at an ancient ruin or a trove takes what it holds."""
+    site = next(
+        (
+            item
+            for item in state.sites
+            if item.tile == journey.route[-1] and item.kind in FIND_KINDS
+        ),
+        None,
+    )
+    sender = journey.sender_civilization_id
+    if site is None or site.remaining == 0:
+        _replace_journey(state, journey.model_copy(update={"outcome": JourneyOutcome.FAILED}))
+        return [
+            _event(
+                state,
+                EventPhase.MOVEMENT,
+                "site_empty",
+                str(sender),
+                str(journey.journey_id),
+            )
+        ]
+    room = journey.carry_per_person * len(journey.traveller_ids) - journey.provisions_packed
+    taken: dict[Resource, int] = {}
+    for resource, quantity in FINDS[site.kind].items():
+        grab = min(quantity, max(room, 0))
+        if grab:
+            taken[resource] = grab
+            room -= grab
+    state.sites = tuple(
+        item.model_copy(update={"remaining": 0, "opened_day": state.day, "spent_day": state.day})
+        if item.site_id == site.site_id
+        else item
+        for item in state.sites
+    )
+    if taken:
+        _replace_journey(
+            state,
+            journey.model_copy(
+                update={"cargo": dict(sorted(taken.items())), "carrying_cargo": True}
+            ),
+        )
+    lore: dict[str, int | str] = {}
+    if site.kind is SiteKind.ANCIENT_RUIN:
+        # The ruin's writings teach a civil art the finders do not know, once studied.
+        civilization = state.civilizations[sender]
+        topic = next(
+            (item for item in CIVIL_TOPICS if not knows(civilization.capabilities, item)), None
+        )
+        if topic is not None:
+            civilization.research_points = dict(
+                sorted(
+                    {
+                        **civilization.research_points,
+                        topic: civilization.research_points.get(topic, 0) + RUIN_LORE,
+                    }.items()
+                )
+            )
+            lore = {"topic": topic.value, "points": RUIN_LORE}
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "ruin_explored" if site.kind is SiteKind.ANCIENT_RUIN else "trove_found",
+            str(sender),
+            str(site.site_id),
+            units=sum(taken.values()),
+            **lore,
+        )
+    ]
+
+
 def _resettle(
     state: WorldState, civilization_id: EntityId, settlement_id: EntityId, ruin: Ruin
 ) -> None:
@@ -3290,7 +3877,12 @@ def _resettle(
             key=lambda item: item.storehouse_id,
         )
     )
-    if ruin.walls is not None:
+    if ruin.walls is not None and rules_for(state.rules_version).town_plans:
+        set_ring(
+            civilization,
+            ring_from_ruin(ring_for(civilization, settlement_id, state.day), ruin.walls, state.day),
+        )
+    elif ruin.walls is not None:
         civilization.walls = tuple(
             sorted(
                 (
@@ -3603,7 +4195,13 @@ def _hold_occupation(state: WorldState, party: Journey, rng: StableRng) -> list[
         )
         party = party.model_copy(update={"plunder": dict(sorted(plunder.items()))})
         _replace_journey(state, party)
-    home = travel_days(state.world_map, tuple(reversed(party.route))[1:], grades_of(state.roads))
+    home = travel_days(
+        state.world_map,
+        tuple(reversed(party.route))[1:],
+        grades_of(state.roads),
+        start=party.route[-1],
+        bridges=bridged_edges(state.bridges),
+    )
     if not taken and party.provisions < len(living) * home:
         events.extend(_withdraw(state, party, OccupationEnd.STARVED))
     return events
@@ -3620,6 +4218,7 @@ def _burn_storehouse(state: WorldState, command: DirectOrder) -> list[DomainEven
         STOREHOUSE_GRADES[below].capacity if below is not None else 0
     )
     burned = shrink(owner, occupation.tile, lost_room)
+    housing_events = _lose_houses(state, occupation.owner_id, house.settlement_id, "burned")
     owner.storehouses = tuple(
         item
         for item in (
@@ -3639,7 +4238,8 @@ def _burn_storehouse(state: WorldState, command: DirectOrder) -> list[DomainEven
             str(house.storehouse_id),
             grade=below.value if below is not None else "none",
             lost=sum(burned.values()),
-        )
+        ),
+        *housing_events,
     ]
 
 
@@ -3769,15 +4369,107 @@ def _hold_camp(state: WorldState, party: Journey, rng: StableRng) -> list[Domain
     ]
     if len(living) < MIN_BESIEGERS:
         return _break_camp(state, party, SiegeEnd.TOO_FEW)
-    home = travel_days(state.world_map, tuple(reversed(party.route))[1:], grades_of(state.roads))
+    home = travel_days(
+        state.world_map,
+        tuple(reversed(party.route))[1:],
+        grades_of(state.roads),
+        start=party.route[-1],
+        bridges=bridged_edges(state.bridges),
+    )
     if party.provisions < len(living) * home:
         return _break_camp(state, party, SiegeEnd.STARVED)
     catapults = crewed_engines(len(living), engines_in(party.cargo)).get(Resource.CATAPULT, 0)
-    if not catapults:
+    town = _town_catapults(state, siege) if rules_for(state.rules_version).town_defence else 0
+    if not catapults and not town:
         return []
     roll = rng.stream(f"day:{state.day}:siege:{siege.siege_id}")
-    hits = sum(int(roll.integers(0, BASIS)) < CATAPULT_HITS_BP for _ in range(catapults))
-    return _bombard(state, siege, hits, roll) if hits else []
+    events: list[DomainEvent] = []
+    if catapults:
+        hits = sum(int(roll.integers(0, BASIS)) < CATAPULT_HITS_BP for _ in range(catapults))
+        if hits:
+            events.extend(_bombard(state, siege, hits, roll))
+    if town:
+        # Rules version 3 defence: the town's catapults answer, after the camp's own.
+        events.extend(_counter_battery(state, siege, living, town, roll))
+    return events
+
+
+def _town_catapults(state: WorldState, siege: Siege) -> int:
+    """Catapults in a besieged town's store that its able people at home can crew, once the
+    town has seen the camp."""
+    if siege.defender_learned_day is None:
+        return 0
+    civilization = state.civilizations[siege.defender_id]
+    stored = store_at(civilization, siege.settlement_tile).quantities.get(Resource.CATAPULT, 0)
+    if not stored:
+        return 0
+    hands, _ = _defenders(state, siege.defender_id, siege.settlement_tile)
+    return crewed_engines(len(hands), {Resource.CATAPULT: stored}).get(Resource.CATAPULT, 0)
+
+
+def _counter_battery(
+    state: WorldState,
+    siege: Siege,
+    living: list[EntityId],
+    catapults: int,
+    roll: np.random.Generator,
+) -> list[DomainEvent]:
+    """Each of the town's catapults fires at the camp: whether it hits, whom and how hard
+    are always drawn, so the draws are the same whatever is hit."""
+    events: list[DomainEvent] = []
+    people = state.civilizations[siege.besieger_id].population.people
+    targets = sorted(living)
+    hits = dead = 0
+    for _ in range(catapults):  # COUNTER_BATTERY_DRAWS draws each
+        hit = int(roll.integers(0, BASIS)) < CATAPULT_HITS_BP
+        pick = int(roll.integers(0, max(len(targets), 1)))
+        wound = int(roll.integers(WOUND_MIN, WOUND_MAX + 1))
+        if not hit or not targets:
+            continue
+        victim = people[targets.pop(pick)]
+        hits += 1
+        if wound >= victim.health_bp:
+            victim.health_bp = 0
+            victim.alive = False
+            victim.death_day = state.day
+            dead += 1
+            events.append(
+                _event(
+                    state,
+                    EventPhase.DEATH,
+                    "person_died",
+                    str(siege.besieger_id),
+                    str(victim.person_id),
+                    cause="bombardment",
+                )
+            )
+        else:
+            victim.health_bp -= wound
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "person_wounded",
+                    str(siege.besieger_id),
+                    str(victim.person_id),
+                    damage=wound,
+                )
+            )
+    if not hits:
+        return events
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "camp_bombarded",
+            str(siege.defender_id),
+            str(siege.siege_id),
+            catapults=catapults,
+            hits=hits,
+            dead=dead,
+        ),
+        *events,
+    ]
 
 
 def _bombard(
@@ -3785,6 +4477,32 @@ def _bombard(
 ) -> list[DomainEvent]:
     """Catapult hits batter the walls, or wound people in a settlement without them."""
     events: list[DomainEvent] = []
+    ring = state.civilizations[siege.defender_id].wall_rings.get(siege.settlement_id)
+    if ring is not None and ring.built:
+        # Rules version 3: each hit lands on the most battered standing section.
+        after_ring, hit = battered_ring(ring, hits)
+        set_ring(state.civilizations[siege.defender_id], after_ring)
+        for index in dict.fromkeys(index for index, _ in hit):
+            section = after_ring.sections[index]
+            events.append(
+                _event(
+                    state,
+                    EventPhase.MOVEMENT,
+                    "wall_section_fell"
+                    if section.grade is not ring.sections[index].grade
+                    else "wall_section_damaged",
+                    str(siege.besieger_id),
+                    str(siege.settlement_id),
+                    section=index,
+                    grade=section.grade.value if section.grade is not None else "none",
+                    strength=section.strength,
+                )
+            )
+        return events
+    citadel = state.civilizations[siege.defender_id].citadels.get(siege.settlement_id)
+    if citadel is not None:
+        # Rules version 3 defence: with no wall standing, the catapults turn on the citadel.
+        return _batter_citadel(state, siege, citadel, hits)
     walls = _walls_at(state, siege.defender_id, siege.settlement_tile)
     if walls is not None:
         after, fell = battered(walls, hits * WALL_HIT)
@@ -3847,6 +4565,34 @@ def _bombard(
                 )
             )
     return events
+
+
+def _batter_citadel(
+    state: WorldState, siege: Siege, citadel: Citadel, hits: int
+) -> list[DomainEvent]:
+    civilization = state.civilizations[siege.defender_id]
+    after = battered_citadel(citadel, hits)
+    civilization.citadels = {
+        key: value
+        for key, value in (
+            (key, after if key == siege.settlement_id else value)
+            for key, value in civilization.citadels.items()
+        )
+        if value is not None
+    }
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "citadel_damaged"
+            if after is not None and after.grade is citadel.grade
+            else "citadel_fell",
+            str(siege.besieger_id),
+            str(siege.settlement_id),
+            grade=after.grade.value if after is not None else "none",
+            strength=after.strength if after is not None else 0,
+        )
+    ]
 
 
 def _siege_order(
@@ -4059,6 +4805,322 @@ def _advance_storehouses(state: WorldState) -> list[DomainEvent]:
     return events
 
 
+def _gather(
+    world_map: WorldMap,
+    tiles: Sequence[HexCoord],
+    larder: Inventory,
+    hands: int,
+    target: int,
+) -> tuple[Inventory, dict[Resource, int]]:
+    """Rules version 2: spare hands gather timber up to the target, then stone up to half
+    of it, as fast as the woods and rock allow. A tool in store doubles one gatherer's day."""
+    gathered: dict[Resource, int] = {}
+    for resource, goal, most in (
+        (Resource.TIMBER, target, timber_capacity(world_map, tiles)),
+        (Resource.STONE, target // 2, stone_capacity(world_map, tiles)),
+    ):
+        if hands <= 0:
+            break
+        tools = min(larder.quantities.get(Resource.TOOL, 0), hands)
+        room = larder.capacity - larder.total_units
+        units = min(hands + tools, most, goal - larder.quantities.get(resource, 0), room)
+        if units <= 0:
+            continue
+        larder = larder.apply_delta(InventoryDelta(changes={resource: units}))
+        gathered[resource] = units
+        # A gatherer with a tool brings in two units, so fewer hands are spent.
+        hands -= units - min(tools, units // 2)
+    return larder, gathered
+
+
+def _expire_decrees(state: WorldState) -> list[DomainEvent]:
+    """Rules version 2: a decree ends when its days run out, unless a council renews it."""
+    events: list[DomainEvent] = []
+    for civilization_id in sorted(state.active_decrees):
+        decrees = state.active_decrees[civilization_id]
+        for kind in sorted(key for key in decrees if not key.endswith("_expires")):
+            expires = decrees.get(f"{kind}_expires")
+            if expires is not None and expires <= state.day:
+                del decrees[kind]
+                del decrees[f"{kind}_expires"]
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.COMMAND,
+                        "decree_expired",
+                        str(civilization_id),
+                        decree=kind,
+                    )
+                )
+    return events
+
+
+def _start_houses(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> list[DomainEvent]:
+    """Builders take the timber and stone for their houses from their settlement's store."""
+    civilization = state.civilizations[civilization_id]
+    assert command.project_id is not None
+    site = settlement_at(
+        civilization, civilization.population.people[command.worker_ids[0]].location
+    )
+    assert site is not None
+    grade = command.house_grade or best_grade(civilization.capabilities)
+    return [
+        _open_house_job(
+            state,
+            civilization_id,
+            HouseJob(
+                job_id=command.project_id,
+                settlement_id=site.settlement_id,
+                tile=site.tile,
+                worker_ids=tuple(sorted(command.worker_ids)),
+                grade=grade,
+                count=command.house_count,
+                started_day=state.day,
+            ),
+            "council",
+        )
+    ]
+
+
+def _open_house_job(
+    state: WorldState, civilization_id: EntityId, job: HouseJob, source: str
+) -> DomainEvent:
+    civilization = state.civilizations[civilization_id]
+    take(civilization, job.tile, house_materials(job.grade, job.count))
+    civilization.house_jobs = tuple(
+        sorted((*civilization.house_jobs, job), key=lambda item: item.job_id)
+    )
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "house_work_started",
+        str(civilization_id),
+        str(job.job_id),
+        settlement=str(job.settlement_id),
+        grade=job.grade.value,
+        count=job.count,
+        source=source,
+    )
+
+
+def _apply_housing_policy(state: WorldState) -> list[DomainEvent]:
+    """Rules version 2: under a housing policy, a settlement short of spare room sets its two
+    lowest-numbered idle grown-ups to raising a house, if its store can pay for one."""
+    events: list[DomainEvent] = []
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        target = state.active_decrees.get(civilization_id, {}).get("housing_policy", 0)
+        if target <= 0 or civilization.eliminated_day is not None:
+            continue
+        residents = residents_by_settlement(state, civilization_id)
+        busy = _busy_at_home(state, civilization_id)
+        building = {job.settlement_id for job in civilization.house_jobs}
+        people = civilization.population.people
+        for settlement in civilization.settlements:
+            sid = settlement.settlement_id
+            if sid in building:
+                continue
+            count = len(residents.get(sid, ()))
+            spare = slots_of(civilization, sid) - count
+            if spare * 100 >= target * max(count, 1):
+                continue
+            # The best house the store can pay for; huts when stone runs short.
+            grade = (
+                affordable_grade(
+                    civilization.capabilities,
+                    store_at(civilization, settlement.tile).quantities,
+                )
+                if rules_for(state.rules_version).cover_mechanics
+                else best_grade(civilization.capabilities)
+            )
+            if grade is None or not has(civilization, settlement.tile, house_materials(grade, 1)):
+                continue
+            idle = idle_at(people.table, settlement.tile, busy, 2)
+            if len(idle) < 2:
+                continue
+            events.append(
+                _open_house_job(
+                    state,
+                    civilization_id,
+                    HouseJob(
+                        job_id=EntityId(f"house-job:{sid}:{state.day}"),
+                        settlement_id=sid,
+                        tile=settlement.tile,
+                        worker_ids=tuple(idle),
+                        grade=grade,
+                        count=1,
+                        started_day=state.day,
+                    ),
+                    "housing_policy",
+                )
+            )
+            busy.update(idle)
+    return events
+
+
+def _busy_at_home(state: WorldState, civilization_id: EntityId) -> set[EntityId]:
+    """People already bound to a duty, on the road, or in a garrison."""
+    civilization = state.civilizations[civilization_id]
+    return (
+        _away(state)
+        | {person_id for garrison in civilization.garrisons for person_id in garrison.member_ids}
+        | {person_id for drill in civilization.drills for person_id in drill.person_ids}
+        | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids}
+        | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
+        | {person_id for job in civilization.wall_jobs for person_id in job.worker_ids}
+        | {person_id for job in civilization.house_jobs for person_id in job.worker_ids}
+        | {person_id for item in civilization.research for person_id in item.scholar_ids}
+        | {
+            person_id
+            for item in civilization.teaching_assignments
+            for person_id in (item.teacher_id, item.apprentice_id)
+        }
+        | {person_id for order in civilization.work_orders for person_id in order.worker_ids}
+        | staff_of(civilization)
+    )
+
+
+def _advance_houses(state: WorldState) -> list[DomainEvent]:
+    """Builders at the site put in a day each, and each house stands as soon as it is done.
+    Houses of a settlement left empty for a year begin to fall, one a month."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        people = civilization.population.people
+        kept: list[HouseJob] = []
+        for job in civilization.house_jobs:
+            living = [person_id for person_id in job.worker_ids if people[person_id].alive]
+            present = sum(
+                people[person_id].location == job.tile and person_id not in away
+                for person_id in living
+            )
+            before = job.built()
+            present += _workshop_bonus(state, civilization_id, job.tile, present, away)
+            job = job.model_copy(update={"person_days_done": job.person_days_done + present})
+            after = job.built()
+            if after > before:
+                housing = civilization.housing.get(job.settlement_id) or Housing()
+                civilization.housing = dict(
+                    sorted(
+                        {
+                            **civilization.housing,
+                            job.settlement_id: housing.plus(job.grade, after - before),
+                        }.items()
+                    )
+                )
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.PROJECT,
+                        "house_built",
+                        str(civilization_id),
+                        str(job.job_id),
+                        settlement=str(job.settlement_id),
+                        grade=job.grade.value,
+                        count=after - before,
+                        slots=slots_of(civilization, job.settlement_id),
+                    )
+                )
+            if after == job.count:
+                continue
+            if not living:
+                # With every builder dead, the unused materials go back into the store.
+                put(civilization, job.tile, job.unused_materials())
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.PROJECT,
+                        "house_work_stopped",
+                        str(civilization_id),
+                        str(job.job_id),
+                        built=after,
+                    )
+                )
+                continue
+            kept.append(job)
+        civilization.house_jobs = tuple(kept)
+        if not civilization.housing:
+            continue
+        residents = residents_by_settlement(state, civilization_id)
+        for sid in sorted(civilization.housing):
+            housing = civilization.housing[sid]
+            if residents.get(sid):
+                if housing.empty_since is not None:
+                    civilization.housing = {
+                        **civilization.housing,
+                        sid: housing.model_copy(update={"empty_since": None}),
+                    }
+                continue
+            if housing.empty_since is None:
+                civilization.housing = {
+                    **civilization.housing,
+                    sid: housing.model_copy(update={"empty_since": state.day}),
+                }
+                continue
+            empty_days = state.day - housing.empty_since
+            if (
+                empty_days >= ABANDONED_GRACE_DAYS
+                and (empty_days - ABANDONED_GRACE_DAYS) % ABANDONED_DECAY_DAYS == 0
+            ):
+                events.extend(_lose_houses(state, civilization_id, sid, "abandoned"))
+    return events
+
+
+def _lose_houses(
+    state: WorldState, civilization_id: EntityId, settlement_id: EntityId, cause: str
+) -> list[DomainEvent]:
+    """Rules version 2: a stormed or burned settlement loses a quarter of its houses, an
+    abandoned one a house at a time; the meanest fall first."""
+    if not rules_for(state.rules_version).houses:
+        return []
+    civilization = state.civilizations[civilization_id]
+    housing = civilization.housing.get(settlement_id)
+    if housing is None or not housing.count:
+        return []
+    count = 1 if cause == "abandoned" else housing.count // STORMED_SHARE
+    if not count:
+        return []
+    left, lost = housing.minus(count)
+    civilization.housing = {**civilization.housing, settlement_id: left}
+    outside: dict[str, int] = {}
+    if rules_for(state.rules_version).town_plans and cause != "abandoned":
+        # Rules version 3: the houses beyond the wall line burn first.
+        plan = civilization.town_plans.get(settlement_id) or DEFAULT_PLAN
+        outside["outside"] = min(lost, sheltered(plan.wall_ring, housing.count)[1])
+    return [
+        _event(
+            state,
+            EventPhase.MOVEMENT,
+            "houses_lost",
+            str(civilization_id),
+            str(settlement_id),
+            cause=cause,
+            count=lost,
+            **outside,
+        )
+    ]
+
+
+def _armoury_bonus(
+    state: WorldState,
+    civilization_id: EntityId,
+    tile: HexCoord,
+    present: int,
+    away: set[EntityId],
+) -> int:
+    """Rules version 2: every second day, each worker making equipment at a settlement with an
+    open armoury does a day extra."""
+    if not present or state.day % ARMOURY_DAY or not rules_for(state.rules_version).ranks:
+        return 0
+    civilization = state.civilizations[civilization_id]
+    site = supplying(civilization, tile)
+    tiles = serving_tiles(civilization, InstitutionKind.ARMOURY, away)
+    return present if site is not None and site.tile in tiles else 0
+
+
 def _workshop_bonus(
     state: WorldState,
     civilization_id: EntityId,
@@ -4066,11 +5128,19 @@ def _workshop_bonus(
     present: int,
     away: set[EntityId],
 ) -> int:
-    """Every fourth day, each worker at a settlement with an open workshop does a day extra."""
-    if not present or state.day % WORKSHOP_DAY:
+    """Every fourth day, each worker at a settlement with an open workshop does a day extra
+    (every third day with the craft quarter by the water, rules version 3)."""
+    if not present:
         return 0
     civilization = state.civilizations[civilization_id]
     site = supplying(civilization, tile)
+    every = WORKSHOP_DAY
+    if site is not None and rules_for(state.rules_version).town_plans:
+        plan = civilization.town_plans.get(site.settlement_id)
+        if plan is not None and plan.craft_quarter is Place.BY_WATER:
+            every = WATER_WORKSHOP_DAY
+    if state.day % every:
+        return 0
     tiles = serving_tiles(civilization, InstitutionKind.WORKSHOP, away)
     return present if site is not None and site.tile in tiles else 0
 
@@ -4136,22 +5206,32 @@ def _learn_by_sight(state: WorldState) -> list[DomainEvent]:
         if civilization.eliminated_day is not None:
             continue
         people = civilization.population.people
+        table = people.table
         # Ruins in sight of its settlements, or of its own people wherever they stand.
         seen = sight[civilization_id] | visible_tiles(
-            state.world_map,
-            (
-                person.location
-                for person in people.values()
-                if person.alive and person.captive_of is None
-            ),
+            state.world_map, table.places(np.flatnonzero(table.mask(alive=True, captive=False)))
         )
         intel = {view.ruin.tile: view for view in civilization.ruin_intel}
         for tile in sorted(seen & set(ruins)):
             intel[tile] = RuinView(ruin=ruins[tile], as_of_day=state.day)
             events.extend(_learn_fallen(state, civilization_id, ruins[tile].former_civilization_id))
         civilization.ruin_intel = tuple(intel[tile] for tile in sorted(intel))
+        # Sites seen worked or emptied, as they stand today; one never seen touched is known
+        # as it was made, so only a touched site is remembered.
+        if state.sites:
+            sightings = {item.site_id: item for item in civilization.site_sightings}
+            for site in state.sites:
+                if site.tile in seen and site.remaining < site.richness:
+                    sightings[site.site_id] = SiteSighting(
+                        site_id=site.site_id, remaining=site.remaining, as_of_day=state.day
+                    )
+            civilization.site_sightings = tuple(sightings[key] for key in sorted(sightings))
         # Those who joined a civilization on the day it died out know it is gone.
-        for change in (change for person in people.values() for change in person.allegiances):
+        for change in (
+            change
+            for changes in table.column("allegiances", table.rows_where_set("allegiances"))
+            for change in changes
+        ):
             origin = state.civilizations.get(change.from_civilization_id)
             if (
                 origin is not None
@@ -4177,9 +5257,11 @@ def _assimilate(state: WorldState) -> list[DomainEvent]:
     """A month among their new people brings each newcomer closer to them."""
     events: list[DomainEvent] = []
     for civilization_id in sorted(state.civilizations):
-        people = state.civilizations[civilization_id].population.people
-        for person_id in sorted(people):
-            person = people[person_id]
+        table = state.civilizations[civilization_id].population.people.table
+        # Only newcomers living by another culture have anything to assimilate.
+        for row in table.ordered(table.rows_where_set("culture")).tolist():
+            person = table.person(row)
+            person_id = table.ids[row]
             origin = person.culture
             if assimilate(person):
                 events.append(
@@ -4351,6 +5433,421 @@ def _advance_institutions(state: WorldState) -> list[DomainEvent]:
     return events
 
 
+def _set_defence(state: WorldState, civilization_id: EntityId, command: DirectOrder) -> DomainEvent:
+    """Record how a settlement fights when attacked; it holds until changed."""
+    assert command.defence is not None and command.settlement_id is not None
+    civilization = state.civilizations[civilization_id]
+    spec = command.defence
+    order = DefenceOrder(
+        **spec.model_dump(), settlement_id=command.settlement_id, set_day=state.day
+    )
+    civilization.defence_orders = dict(
+        sorted({**civilization.defence_orders, command.settlement_id: order}.items())
+    )
+    return _event(
+        state,
+        EventPhase.COMMAND,
+        "defence_set",
+        str(civilization_id),
+        str(command.settlement_id),
+        posture=spec.posture.value,
+        reserve_bp=spec.reserve_bp,
+        tower_crews=spec.tower_crews.value,
+        arms_priority=spec.arms_priority.value,
+    )
+
+
+def _arrange_defence(
+    state: WorldState, civilization_id: EntityId, tile: HexCoord, home_side: list[EntityId]
+) -> tuple[DefenceOrderSpec, list[EntityId], list[EntityId], list[EntityId]]:
+    """Rules version 3: a settlement's standing order applied to the people at home: its
+    line, its reserve and those held back, each in id order."""
+    civilization = state.civilizations[civilization_id]
+    site = settlement_at(civilization, tile)
+    order: DefenceOrderSpec = (
+        civilization.defence_orders.get(site.settlement_id, DefenceOrderSpec())
+        if site is not None
+        else DefenceOrderSpec()
+    )
+    people = civilization.population.people
+    standing = list(home_side)
+    if order.posture is Posture.FIGHTERS:
+        fighters = [item for item in standing if people[item].skills.get(ARMS, 0) >= FIGHTER_ARMS]
+        standing = fighters if len(fighters) >= MIN_LINE else standing
+    elif order.posture is Posture.CRAFTSMEN_BACK:
+        keep = [item for item in standing if not is_craftsman(people[item].skills)]
+        standing = keep or standing
+    kept = set(standing)
+    held_back = [item for item in home_side if item not in kept]
+    count = -(-len(standing) * order.reserve_bp // 10_000)
+    count = min(count, max(len(standing) - 1, 0))
+    weakest = sorted(standing, key=lambda item: (people[item].skills.get(ARMS, 0), item))
+    reserve = sorted(weakest[:count])
+    waiting = set(reserve)
+    line = [item for item in standing if item not in waiting]
+    return order, line, reserve, held_back
+
+
+def _plan_settlement(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> list[DomainEvent]:
+    """Record a settlement's design; it costs nothing until something is built to it.
+
+    Moving the wall line (a new ring or new gates) pulls the old ring down: half of what its
+    sections and towers cost comes back, and wall work on it stops with its unused materials
+    returned. A market moved to or from the store adds or takes its store room.
+    """
+    assert command.town_plan is not None and command.settlement_id is not None
+    civilization = state.civilizations[civilization_id]
+    spec = command.town_plan
+    old = civilization.town_plans.get(command.settlement_id) or DEFAULT_PLAN
+    events: list[DomainEvent] = []
+    if (old.wall_ring, old.gates) != (spec.wall_ring, spec.gates):
+        events.extend(_pull_down_ring(state, civilization_id, command.settlement_id))
+    tile = next(
+        item.tile
+        for item in civilization.settlements
+        if item.settlement_id == command.settlement_id
+    )
+    was, now = old.market is Place.BY_STORE, spec.market is Place.BY_STORE
+    if now and not was:
+        enlarge(civilization, tile, MARKET_ROOM)
+    elif was and not now:
+        lost = shrink(civilization, tile, MARKET_ROOM)
+        if lost:
+            events.append(
+                _event(
+                    state,
+                    EventPhase.COMMAND,
+                    "goods_lost",
+                    str(civilization_id),
+                    str(command.settlement_id),
+                    **{str(resource): quantity for resource, quantity in lost.items()},
+                )
+            )
+    plan = TownPlan(**spec.model_dump(), settlement_id=command.settlement_id, planned_day=state.day)
+    civilization.town_plans = dict(
+        sorted({**civilization.town_plans, command.settlement_id: plan}.items())
+    )
+    events.insert(
+        0,
+        _event(
+            state,
+            EventPhase.COMMAND,
+            "settlement_planned",
+            str(civilization_id),
+            str(command.settlement_id),
+            style=spec.style.value,
+            keep=spec.keep.value,
+            wall_ring=spec.wall_ring,
+            gates=",".join(str(gate) for gate in spec.gates),
+        ),
+    )
+    return events
+
+
+def _pull_down_ring(
+    state: WorldState, civilization_id: EntityId, settlement_id: EntityId
+) -> list[DomainEvent]:
+    """Take a settlement's ring down for a new line: half its cost back, and its wall work
+    stopped with the unused materials returned."""
+    civilization = state.civilizations[civilization_id]
+    ring = civilization.wall_rings.get(settlement_id)
+    jobs = [job for job in civilization.wall_jobs if job.settlement_id == settlement_id]
+    if ring is None and not jobs:
+        return []
+    returned: dict[Resource, int] = {}
+    for part in (ring_salvage(ring) if ring is not None else {}, *map(unspent, jobs)):
+        for resource, quantity in part.items():
+            returned[resource] = returned.get(resource, 0) + quantity
+    civilization.wall_jobs = tuple(
+        job for job in civilization.wall_jobs if job.settlement_id != settlement_id
+    )
+    civilization.wall_rings = {
+        key: value for key, value in civilization.wall_rings.items() if key != settlement_id
+    }
+    tile = next(
+        item.tile for item in civilization.settlements if item.settlement_id == settlement_id
+    )
+    put(civilization, tile, dict(sorted(returned.items())))
+    return [
+        _event(
+            state,
+            EventPhase.COMMAND,
+            "walls_salvaged",
+            str(civilization_id),
+            str(settlement_id),
+            sections=ring.built if ring is not None else 0,
+            towers=ring.towers if ring is not None else 0,
+            jobs_stopped=len(jobs),
+            **{str(resource): quantity for resource, quantity in sorted(returned.items())},
+        )
+    ]
+
+
+def _start_ring_work(
+    state: WorldState, civilization_id: EntityId, command: DirectOrder
+) -> DomainEvent:
+    """Rules version 3: take the materials for every section or tower now; the builders then
+    raise the sections one at a time."""
+    civilization = state.civilizations[civilization_id]
+    tile = civilization.population.people[command.worker_ids[0]].location
+    site = settlement_at(civilization, tile)
+    assert site is not None
+    ring, chosen, grades, materials = ring_order(
+        civilization,
+        site.settlement_id,
+        command,
+        state.day,
+        placed=rules_for(state.rules_version).town_defence,
+    )
+    job_id = EntityId(f"wall-job:{civilization_id}:{state.day}:{command.command_id}")
+    if not has(civilization, tile, materials):
+        return _event(
+            state, EventPhase.PROJECT, "walls_unfunded", str(civilization_id), str(job_id)
+        )
+    take(civilization, tile, materials)
+    set_ring(civilization, ring)
+    building = command.kind is DirectOrderKind.BUILD_WALLS
+    works = command.work if command.kind is DirectOrderKind.BUILD_WORKS else None
+    standing = [grade for grade in grades if grade is not None]
+    if building:
+        start = min(grades, key=wall_rank) if grades else None
+    elif command.kind is DirectOrderKind.REPAIR_WALLS or works is not None:
+        start = min(standing, key=wall_rank)
+    else:
+        start = weakest(ring)
+    towers = 0
+    if command.kind is DirectOrderKind.BUILD_TOWERS:
+        towers = len(chosen) if chosen else command.tower_count
+    job = WallJob(
+        job_id=job_id,
+        settlement_id=site.settlement_id,
+        tile=tile,
+        worker_ids=tuple(sorted(command.worker_ids)),
+        start_grade=start,
+        target=command.wall_grade if building else None,
+        towers=towers,
+        repair=command.kind is DirectOrderKind.REPAIR_WALLS,
+        started_day=state.day,
+        sections=chosen,
+        section_grades=grades,
+        work=works,
+    )
+    civilization.wall_jobs = (*civilization.wall_jobs, job)
+    if works is not None:
+        return _event(
+            state,
+            EventPhase.PROJECT,
+            "works_started",
+            str(civilization_id),
+            str(site.settlement_id),
+            work=works.value,
+            sections=",".join(str(index) for index in chosen),
+        )
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "wall_work_started",
+        str(civilization_id),
+        str(site.settlement_id),
+        target=job.target.value if job.target is not None else "repair" if job.repair else "towers",
+        towers=job.towers,
+        sections=len(chosen),
+    )
+
+
+def _advance_ring_job(
+    state: WorldState,
+    civilization_id: EntityId,
+    job: WallJob,
+    present: int,
+    builders_alive: bool,
+) -> tuple[WallJob | None, list[DomainEvent]]:
+    """Rules version 3: a day's work on a ring; each section or tower stands as its share of
+    the work is done. The job is kept until done, or ends with its builders."""
+    civilization = state.civilizations[civilization_id]
+    events: list[DomainEvent] = []
+    ring = ring_for(civilization, job.settlement_id, state.day)
+    before = sections_done(job) if job.sections else job.towers_built()
+    job = job.model_copy(update={"person_days_done": job.person_days_done + present})
+    if job.towers and job.sections:
+        # Rules version 3 defence: each tower rises on its named section, if it still stands.
+        raised = [
+            index
+            for index in job.sections[before : sections_done(job)]
+            if ring.sections[index].grade is not None
+        ]
+        if raised:
+            placed = sorted({*tower_positions(ring), *raised})[: tower_cap(ring)]
+            ring = ring.model_copy(update={"towers": len(placed), "tower_sections": tuple(placed)})
+            set_ring(civilization, ring)
+            events.append(
+                _event(
+                    state,
+                    EventPhase.PROJECT,
+                    "towers_built",
+                    str(civilization_id),
+                    str(job.settlement_id),
+                    towers=ring.towers,
+                    sections=",".join(str(index) for index in raised),
+                )
+            )
+    elif job.work is not None and job.work is not DefenceWork.GATEHOUSE:
+        if ring_job_done(job):
+            events.append(_finish_works(state, civilization_id, job, ring))
+    elif job.sections:
+        sections = list(ring.sections)
+        for step in range(before, sections_done(job)):
+            index = job.sections[step]
+            section = sections[index]
+            if job.target is not None:
+                sections[index] = WallSection(
+                    grade=job.target,
+                    strength=WALL_GRADES[job.target].strength,
+                    gate=section.gate,
+                )
+                kind = "wall_section_built"
+            elif job.work is not None:
+                if section.grade is None or not section.gate or section.gatehouse:
+                    continue
+                sections[index] = section.model_copy(update={"gatehouse": True})
+                kind = "gatehouse_built"
+            elif section.grade is not None and section.grade is job.section_grades[step]:
+                sections[index] = section.model_copy(
+                    update={"strength": WALL_GRADES[section.grade].strength}
+                )
+                kind = "wall_section_repaired"
+            else:
+                continue
+            grade = sections[index].grade
+            assert grade is not None
+            events.append(
+                _event(
+                    state,
+                    EventPhase.PROJECT,
+                    kind,
+                    str(civilization_id),
+                    str(job.settlement_id),
+                    section=index,
+                    grade=grade.value,
+                    standing=sum(item.grade is not None for item in sections),
+                    of=len(sections),
+                )
+            )
+        if events:
+            built_day = state.day if job.target is not None else ring.built_day
+            set_ring(
+                civilization,
+                ring.model_copy(update={"sections": tuple(sections), "built_day": built_day}),
+            )
+    elif job.towers_built() > before:
+        towers = min(ring.towers + job.towers_built() - before, tower_cap(ring))
+        set_ring(civilization, ring.model_copy(update={"towers": towers}))
+        events.append(
+            _event(
+                state,
+                EventPhase.PROJECT,
+                "towers_built",
+                str(civilization_id),
+                str(job.settlement_id),
+                towers=towers,
+            )
+        )
+    if ring_job_done(job):
+        return None, events
+    if not builders_alive:
+        # With every builder dead, the materials not yet used go back into the store.
+        put(civilization, job.tile, unspent(job))
+        events.append(
+            _event(
+                state,
+                EventPhase.PROJECT,
+                "wall_work_stopped",
+                str(civilization_id),
+                str(job.settlement_id),
+            )
+        )
+        return None, events
+    return job, events
+
+
+def _finish_works(
+    state: WorldState, civilization_id: EntityId, job: WallJob, ring: WallRing
+) -> DomainEvent:
+    """Rules version 3 defence: a ditch, a moat or stakes go round the ring, or the citadel
+    stands, once all of their work is done."""
+    civilization = state.civilizations[civilization_id]
+    work = job.work
+    assert work is not None
+    if work is DefenceWork.CITADEL:
+        grade = job.section_grades[0]
+        assert grade is not None
+        civilization.citadels = dict(
+            sorted(
+                {
+                    **civilization.citadels,
+                    job.settlement_id: Citadel(
+                        grade=grade, strength=WALL_GRADES[grade].strength, built_day=state.day
+                    ),
+                }.items()
+            )
+        )
+    elif work is DefenceWork.STAKES:
+        set_ring(civilization, ring.model_copy(update={"stakes": True}))
+    else:
+        set_ring(
+            civilization,
+            ring.model_copy(update={"ditch": MOAT if work is DefenceWork.MOAT else DITCH}),
+        )
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "works_built",
+        str(civilization_id),
+        str(job.settlement_id),
+        work=work.value,
+    )
+
+
+def _planned_defence(
+    state: WorldState,
+    civilization_id: EntityId,
+    tile: HexCoord,
+    engines: dict[Resource, int],
+    home_defenders: int,
+    terrain_bp: int,
+) -> tuple[int, int, int]:
+    """Rules version 3: a settlement's manned towers, ground and walls bonuses at home.
+
+    Its walls count for the share of the ring built and of the houses inside it; a keep at
+    the centre with its hall open strengthens the settlement, and a hill fort its ground.
+    """
+    civilization = state.civilizations[civilization_id]
+    site = settlement_at(civilization, tile)
+    if site is None:
+        return 0, terrain_bp, settlement_bonus_after_engines(SETTLEMENT_DEFENCE_BP, engines)
+    plan = civilization.town_plans.get(site.settlement_id) or DEFAULT_PLAN
+    ring = civilization.wall_rings.get(site.settlement_id)
+    housing = civilization.housing.get(site.settlement_id)
+    houses = housing.count if housing is not None else 0
+    keep = plan.keep is Place.CENTRE and site.tile in serving_tiles(
+        civilization, InstitutionKind.HALL, _away(state)
+    )
+    base = KEEP_DEFENCE_BP if keep else SETTLEMENT_DEFENCE_BP
+    walls_bp = (
+        settlement_bonus_after_engines(base, engines)
+        * ring_defence_bp(
+            ring, engines, houses, assault=rules_for(state.rules_version).town_defence
+        )
+        // BASIS
+    )
+    if plan.style is PlanStyle.HILL_FORT:
+        terrain_bp += HILL_FORT_BP
+    towers = manned_towers(ring.towers, home_defenders) if ring is not None else 0
+    return towers, terrain_bp, walls_bp
+
+
 def _walls_at(state: WorldState, civilization_id: EntityId, tile: HexCoord) -> Walls | None:
     civilization = state.civilizations[civilization_id]
     site = settlement_at(civilization, tile)
@@ -4423,6 +5920,7 @@ def _advance_walls(state: WorldState) -> list[DomainEvent]:
     """Builders at the site put in a day each; each finished grade or tower stands at once."""
     events: list[DomainEvent] = []
     away = _away(state)
+    ringed = rules_for(state.rules_version).town_plans
     for civilization_id in sorted(state.civilizations):
         civilization = state.civilizations[civilization_id]
         people = civilization.population.people
@@ -4433,6 +5931,15 @@ def _advance_walls(state: WorldState) -> list[DomainEvent]:
                 people[person_id].location == job.tile and person_id not in away
                 for person_id in living
             )
+            if ringed:
+                present += _workshop_bonus(state, civilization_id, job.tile, present, away)
+                still, ring_events = _advance_ring_job(
+                    state, civilization_id, job, present, bool(living)
+                )
+                events.extend(ring_events)
+                if still is not None:
+                    kept.append(still)
+                continue
             before_grade, before_towers = job.built(), job.towers_built()
             present += _workshop_bonus(state, civilization_id, job.tile, present, away)
             job = job.model_copy(update={"person_days_done": job.person_days_done + present})
@@ -4547,6 +6054,7 @@ def _advance_crafting(state: WorldState) -> list[DomainEvent]:
                 for person_id in job.worker_ids
             )
             present += _workshop_bonus(state, civilization_id, job.workshop, present, away)
+            present += _armoury_bonus(state, civilization_id, job.workshop, present, away)
             job = job.model_copy(update={"person_days_done": job.person_days_done + present})
             if not job.done:
                 kept.append(job)
@@ -4576,6 +6084,18 @@ def _advance_research(state: WorldState) -> list[DomainEvent]:
         homes = {settlement.tile for settlement in civilization.settlements}
         people = civilization.population.people
         points = dict(civilization.research_points)
+        cities = {
+            settlement.tile
+            for settlement in civilization.settlements
+            if civilization.ranks_reached.get(settlement.settlement_id) is SettlementRank.CITY
+        }
+        # A great realm's civil learning needs a school or archive to keep pace.
+        slow_civil = (
+            rules_for(state.rules_version).civil_research
+            and realm_at_least(civilization.realm_rank_reached, CIVIL_HALF_RATE_RANK)
+            and not serving_tiles(civilization, InstitutionKind.SCHOOL, away)
+            and not serving_tiles(civilization, InstitutionKind.ARCHIVE, away)
+        )
         kept: list[ResearchAssignment] = []
         for assignment in civilization.research:
             present = [
@@ -4588,8 +6108,11 @@ def _advance_research(state: WorldState) -> list[DomainEvent]:
             earned = sum(
                 POINTS_PER_SCHOLAR
                 + (WRITING_BONUS if person.skills.get(CapabilityId.WRITING.value, 0) > 0 else 0)
+                + (CITY_RESEARCH_BONUS if person.location in cities else 0)
                 for person in present
             )
+            if assignment.topic in CIVIL_TOPICS and slow_civil:
+                earned //= 2
             points[assignment.topic] = points.get(assignment.topic, 0) + earned
             assignment = assignment.model_copy(update={"days_done": assignment.days_done + 1})
             if assignment.active:
@@ -4665,6 +6188,11 @@ def _advance_drills(state: WorldState) -> list[DomainEvent]:
         civilization = state.civilizations[civilization_id]
         homes = {settlement.tile for settlement in civilization.settlements}
         people = civilization.population.people
+        grounds = (
+            serving_tiles(civilization, InstitutionKind.TRAINING_GROUNDS, away)
+            if rules_for(state.rules_version).ranks
+            else set()
+        )
         kept: list[Drill] = []
         for drill in civilization.drills:
             present = [
@@ -4687,8 +6215,9 @@ def _advance_drills(state: WorldState) -> list[DomainEvent]:
                 for person_id in present:
                     person = people[person_id]
                     current = person.skills.get(ARMS, 0)
-                    if current < cap:
-                        person.skills = {**person.skills, ARMS: min(current + gained, cap)}
+                    reach = cap + TRAINING_CAP_BONUS if person.location in grounds else cap
+                    if current < reach:
+                        person.skills = {**person.skills, ARMS: min(current + gained, reach)}
             if drill.active:
                 kept.append(drill)
             else:
@@ -4703,6 +6232,27 @@ def _advance_drills(state: WorldState) -> list[DomainEvent]:
                 )
         civilization.drills = tuple(kept)
     return events
+
+
+def _record_bridge(state: WorldState, built: BridgeBuilt) -> DomainEvent:
+    """Bridge a river border; every traveller crosses it at plain cost from now on."""
+    bridge = Bridge(
+        a=built.a, b=built.b, civilization_id=built.civilization_id, built_day=state.day
+    )
+    state.bridges = tuple(sorted((*state.bridges, bridge), key=lambda item: (item.a, item.b)))
+    return _event(
+        state,
+        EventPhase.PROJECT,
+        "bridge_built",
+        str(built.civilization_id),
+        _tile_id(built.a),
+        depth=built.depth,
+        journey=str(built.journey_id),
+        q=built.a.q,
+        r=built.a.r,
+        across_q=built.b.q,
+        across_r=built.b.r,
+    )
 
 
 def _record_road(state: WorldState, built: RoadBuilt) -> DomainEvent:
@@ -4769,19 +6319,95 @@ def _residents(state: WorldState) -> dict[EntityId, int]:
             if expedition.status is ExpeditionStatus.ACTIVE
             for person_id in expedition.explorer_ids
         }
+        codes = _home_codes(civilization.population.people.table, away_here)
         for settlement in civilization.settlements:
-            counts[settlement.settlement_id] = sum(
-                person.alive
-                and person.location == settlement.tile
-                and person_id not in away_here
-                and person.captive_of is None
-                for person_id, person in civilization.population.people.items()
+            counts[settlement.settlement_id] = int(
+                np.count_nonzero(codes == place_code(settlement.tile))
             )
     return counts
 
 
+def _home_codes(table: PeopleTable, away: Iterable[EntityId]) -> np.ndarray:
+    """Where each living, free person not away stands, as place codes, in row order."""
+    rows = np.flatnonzero(table.mask(alive=True, captive=False))
+    away_rows = table.rows_of(away)
+    if len(away_rows):
+        rows = rows[~np.isin(rows, away_rows)]
+    codes: np.ndarray = table.loc_code[rows]
+    return codes
+
+
 def _tile_id(tile: HexCoord) -> str:
     return f"tile:{tile.q},{tile.r}"
+
+
+def _hall_bonuses(state: WorldState) -> dict[EntityId, int]:
+    """Rules version 2: settlements whose hall is open reach a little further."""
+    away = _away(state)
+    bonuses: dict[EntityId, int] = {}
+    for civilization in state.civilizations.values():
+        halls = serving_tiles(civilization, InstitutionKind.HALL, away)
+        for settlement in civilization.settlements:
+            if settlement.tile in halls:
+                bonuses[settlement.settlement_id] = HALL_STRENGTH
+    return bonuses
+
+
+def _advance_ranks(state: WorldState) -> list[DomainEvent]:
+    """Rules version 2: each settlement, and then the realm, moves at most one rank a month."""
+    events: list[DomainEvent] = []
+    away = _away(state)
+    for civilization_id in sorted(state.civilizations):
+        civilization = state.civilizations[civilization_id]
+        if civilization.eliminated_day is not None:
+            continue
+        own = civilization.population.people
+        residents = {
+            sid: sum(person_id in own for person_id in people)
+            for sid, people in residents_by_settlement(state, civilization_id).items()
+        }
+        open_at = institutions_open(civilization, away)
+        known = frozenset(record.capability for record in civilization.capabilities)
+        ranks: dict[EntityId, SettlementRank] = {}
+        for settlement in civilization.settlements:
+            sid = settlement.settlement_id
+            current = civilization.ranks_reached.get(sid, SettlementRank.VILLAGE)
+            facts = settlement_facts(civilization, sid, residents.get(sid, 0), open_at)
+            rank = next_settlement_rank(current, facts, known)
+            if rank is not current:
+                events.append(
+                    _event(
+                        state,
+                        EventPhase.WORK,
+                        "settlement_rank_changed",
+                        str(civilization_id),
+                        str(sid),
+                        rank=rank.value,
+                        previous=current.value,
+                    )
+                )
+            if rank is not SettlementRank.VILLAGE:
+                ranks[sid] = rank
+        civilization.ranks_reached = ranks
+        current_realm = civilization.realm_rank_reached
+        everyone = {
+            settlement.settlement_id: ranks.get(settlement.settlement_id, SettlementRank.VILLAGE)
+            for settlement in civilization.settlements
+        }
+        realm = next_realm_rank(current_realm, state, civilization_id, everyone, open_at)
+        if realm is not current_realm:
+            civilization.realm_rank_reached = realm
+            events.append(
+                _event(
+                    state,
+                    EventPhase.WORK,
+                    "realm_rank_changed",
+                    str(civilization_id),
+                    rank=realm.value,
+                    previous=current_realm.value,
+                )
+            )
+    return events
 
 
 def _advance_territory(state: WorldState) -> list[DomainEvent]:
@@ -4824,13 +6450,19 @@ def _advance_territory(state: WorldState) -> list[DomainEvent]:
         garrisoned,
         grades_of(state.roads),
         besieged=frozenset(siege.settlement_id for siege in state.sieges if siege.active),
+        bridges=bridged_edges(state.bridges),
         occupied={
             occupation.settlement_id: occupation.occupier_id
             for occupation in state.occupations
             if occupation.active
         },
+        bonuses=_hall_bonuses(state) if rules_for(state.rules_version).ranks else None,
+        reach_cap=REACH_CAP if rules_for(state.rules_version).reach_cap else None,
     )
-    state.territory = result.territory
+    # Set without checking it again: advance_territory builds it in canonical order, and
+    # checking 30,000 entries a day on a large map costs a third of a second.
+    object.__setattr__(state, "territory", result.territory)
+    state.__pydantic_fields_set__.add("territory")
     owner_of_source = {
         **{
             settlement.settlement_id: settlement.civilization_id
@@ -4879,7 +6511,7 @@ def _run_councils(
     sovereigns: Mapping[EntityId, Sovereign],
 ) -> list[DomainEvent]:
     events: list[DomainEvent] = []
-    monthly = state.day % state.config.council_interval_days == 0
+    regular = council_day(state)
     for civilization_id in sorted(sovereigns):
         if (
             civilization_id not in state.civilizations
@@ -4889,11 +6521,11 @@ def _run_councils(
         sovereign = sovereigns[civilization_id]
         # Sovereigns that take them are also called to council by a crisis.
         crisis = (
-            not monthly
+            not regular
             and getattr(sovereign, "crisis_councils", False)
             and crisis_council_due(state, civilization_id)
         )
-        if not (monthly or crisis):
+        if not (regular or crisis):
             continue
         if crisis:
             state.civilizations[civilization_id].last_crisis_council = state.day
@@ -4916,6 +6548,13 @@ def _run_councils(
             if isinstance(command, Decree):
                 decrees[command.kind.value] = command.value
                 decrees[f"{command.kind.value}_expires"] = state.day + command.duration_days
+            elif (
+                isinstance(command, DirectOrder)
+                and command.kind is DirectOrderKind.START_PROJECT
+                and command.project_kind is ProjectKind.SHELTER
+                and rules_for(state.rules_version).houses
+            ):
+                events.extend(_start_houses(state, civilization_id, command))
             elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.START_PROJECT
@@ -4968,6 +6607,12 @@ def _run_councils(
             elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.SET_TOLL:
                 events.append(_set_toll(state, civilization_id, command))
             elif (
+                isinstance(command, DirectOrder) and command.kind is DirectOrderKind.PLAN_SETTLEMENT
+            ):
+                events.extend(_plan_settlement(state, civilization_id, command))
+            elif isinstance(command, DirectOrder) and command.kind is DirectOrderKind.SET_DEFENCE:
+                events.append(_set_defence(state, civilization_id, command))
+            elif (
                 isinstance(command, DirectOrder)
                 and command.kind is DirectOrderKind.CRAFT_EQUIPMENT
                 and command.craft_item is not None
@@ -4980,7 +6625,10 @@ def _run_councils(
             ):
                 events.append(_start_storehouse(state, civilization_id, command))
             elif isinstance(command, DirectOrder) and command.kind in WALL_ORDERS:
-                events.append(_start_walls(state, civilization_id, command))
+                if rules_for(state.rules_version).town_plans:
+                    events.append(_start_ring_work(state, civilization_id, command))
+                else:
+                    events.append(_start_walls(state, civilization_id, command))
             elif isinstance(command, DirectOrder) and command.kind in CAMP_ORDERS:
                 events.extend(_siege_order(state, civilization_id, command))
             elif (
@@ -5097,7 +6745,8 @@ def _run_councils(
                             *civilization.expeditions,
                             Expedition(
                                 expedition_id=command.expedition_id,
-                                explorer_ids=command.explorer_ids,
+                                # In id order, whatever order the council named them in.
+                                explorer_ids=tuple(sorted(command.explorer_ids)),
                                 route=command.route,
                             ),
                         ),
@@ -5290,6 +6939,81 @@ def _run_councils(
     return events
 
 
+_NO_ROWS = np.zeros(0, dtype=np.int64)
+
+
+def _go_hungry_rows(table: PeopleTable, rows: np.ndarray) -> None:
+    """`go_hungry` for each of these rows at once."""
+    if not len(rows):
+        return
+    nums = table.nums
+    nums["nutrition_debt"][rows] += 1
+    nums["health_bp"][rows] = np.maximum(0, nums["health_bp"][rows] - UNFED_HEALTH_LOSS_BP)
+    table.touched(rows)
+
+
+def _recover_rows(table: PeopleTable, fed: list[np.ndarray], healing: set[HexCoord]) -> None:
+    """`recover` for each living person in these rows, once, or `HEALING_FACTOR` times
+    where a healers' house serves: debt halves each time, health rises each time."""
+    if not fed:
+        return
+    rows = np.unique(np.concatenate(fed))
+    rows = rows[table.present[rows] & table.alive[rows]]
+    if not len(rows):
+        return
+    times = np.ones(len(rows), dtype=np.int64)
+    if healing:
+        codes = np.fromiter((place_code(tile) for tile in healing), dtype=np.int64)
+        times[np.isin(table.loc_code[rows], codes)] = HEALING_FACTOR
+    nums = table.nums
+    nums["nutrition_debt"][rows] >>= times
+    nums["health_bp"][rows] = np.minimum(
+        10_000, nums["health_bp"][rows] + FED_HEALTH_GAIN_BP * times
+    )
+    table.touched(rows)
+
+
+class _PeopleOf(Mapping[EntityId, Person]):
+    """A civilization's people together with the captives it holds, by id."""
+
+    def __init__(self, people: PeopleView, held: Mapping[EntityId, Person]) -> None:
+        self._people = people
+        self._held = held
+
+    def __getitem__(self, person_id: EntityId) -> Person:
+        person = self._people.get(person_id)
+        return self._held[person_id] if person is None else person
+
+    def __iter__(self) -> Iterator[EntityId]:
+        yield from self._people
+        yield from self._held
+
+    def __len__(self) -> int:
+        return len(self._people) + len(self._held)
+
+
+class _Without(Mapping[EntityId, Person]):
+    """A civilization's people, less some who are elsewhere."""
+
+    def __init__(self, people: PeopleView, absent: set[EntityId]) -> None:
+        self._people = people
+        self._absent = absent
+
+    def __getitem__(self, person_id: EntityId) -> Person:
+        if person_id in self._absent:
+            raise KeyError(person_id)
+        return self._people[person_id]
+
+    def __contains__(self, person_id: object) -> bool:
+        return person_id not in self._absent and person_id in self._people
+
+    def __iter__(self) -> Iterator[EntityId]:
+        return (person_id for person_id in self._people if person_id not in self._absent)
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+
 def advance_day(
     state: WorldState,
     rng: StableRng,
@@ -5303,7 +7027,9 @@ def advance_day(
     }
     candidate.active_decrees = deepcopy(state.active_decrees)
     events: list[DomainEvent] = []
-    if candidate.day % candidate.config.council_interval_days == 0:
+    if rules_for(candidate.rules_version).decrees_expire:
+        events.extend(_expire_decrees(candidate))
+    if council_day(candidate):
         for civilization_id in sorted(candidate.civilizations):
             events.extend(_refuse_unanswered(candidate, civilization_id))
     if sovereigns is not None:
@@ -5319,15 +7045,14 @@ def advance_day(
             observations=civilization.observations,
             owners=candidate.territory.owner_of(),
             roads=grades_of(candidate.roads),
+            bridges=bridged_edges(candidate.bridges),
         )
         civilization.expeditions = expedition_result.expeditions
         civilization.observations = expedition_result.observations
         civilization.known_tiles = tuple(
             observation.tile for observation in civilization.observations
         )
-        civilization.population = civilization.population.model_copy(
-            update={"people": expedition_result.people}
-        )
+        civilization.population.people.update(expedition_result.people)
         for tile in expedition_result.observed_tiles:
             events.append(
                 _event(
@@ -5425,6 +7150,7 @@ def advance_day(
         rng=rng,
         world_map=candidate.world_map,
         roads=grades_of(candidate.roads),
+        bridges=bridged_edges(candidate.bridges),
         briefed=frozenset(
             civilization_id
             for civilization_id, civilization in candidate.civilizations.items()
@@ -5434,7 +7160,7 @@ def advance_day(
     candidate.diplomatic_missions = diplomacy_result.missions
     for civilization_id, people in diplomacy_result.people_by_civilization.items():
         civilization = candidate.civilizations[civilization_id]
-        civilization.population = civilization.population.model_copy(update={"people": people})
+        civilization.population.people.update(people)
     for message in diplomacy_result.delivered:
         # Any word from a party that broke a treaty makes plain the treaty is over.
         _tell_treaty_ends(
@@ -5581,14 +7307,19 @@ def advance_day(
     events.extend(journey_events)
     events.extend(_resolve_war(candidate, rng))
     events.extend(_advance_espionage(candidate, rng))
+    if rules_for(candidate.rules_version).sites:
+        events.extend(_advance_extraction(candidate))
     fed_on_the_road = fed_on_the_road | _march_captives(candidate)
     events.extend(_check_tribute(candidate))
     _settle_newcomers(candidate)
-    if candidate.day % candidate.config.council_interval_days == 0:
+    if council_day(candidate):
         events.extend(_escapes(candidate, rng))
     events.extend(_advance_drills(candidate))
     events.extend(_advance_crafting(candidate))
     events.extend(_advance_storehouses(candidate))
+    if rules_for(candidate.rules_version).houses:
+        events.extend(_apply_housing_policy(candidate))
+        events.extend(_advance_houses(candidate))
     events.extend(_advance_walls(candidate))
     events.extend(_advance_institutions(candidate))
     events.extend(_advance_research(candidate))
@@ -5615,6 +7346,7 @@ def advance_day(
             | {person_id for job in civilization.craft_jobs for person_id in job.worker_ids}
             | {person_id for job in civilization.storehouse_jobs for person_id in job.worker_ids}
             | {person_id for job in civilization.wall_jobs for person_id in job.worker_ids}
+            | {person_id for job in civilization.house_jobs for person_id in job.worker_ids}
             | {
                 person_id
                 for assignment in civilization.research
@@ -5623,33 +7355,24 @@ def advance_day(
             | staff_of(civilization)
         )
         # Captives are fed by whoever holds them, not by their own civilization.
-        home_living = tuple(
-            person_id
-            for person_id in civilization.population.living_ids
-            if person_id not in away
-            and civilization.population.people[person_id].captive_of is None
-        )
+        table = civilization.population.people.table
+        home_rows = table.living_rows()
+        home_rows = home_rows[~table.captive[home_rows]]
+        away_rows = table.rows_of(away)
+        if len(away_rows):
+            home_rows = home_rows[~np.isin(home_rows, away_rows)]
         decrees = candidate.active_decrees.get(civilization_id, {})
         reserve_days = decrees.get("food_reserve_target", 0)
         labor_priority = decrees.get("labor_priority", 0)
         own_settlements = {item.settlement_id for item in civilization.settlements}
-        held = {
-            person_id: person
-            for other_id, other in sorted(candidate.civilizations.items())
-            if other_id != civilization_id
-            for person_id, person in other.population.people.items()
-            if person.alive
-            and person.captive_of == civilization_id
-            and person.held_at in own_settlements
-        }
-        people = {**civilization.population.people, **held}
+        held = held_captives(candidate, civilization_id, own_settlements)
         # Everyone eats and farms at the settlement that supplies where they stand; captives
         # eat and farm where they are held.
         residents: dict[EntityId, list[EntityId]] = {}
-        for person_id in home_living:
-            store_id = store_id_at(civilization, people[person_id].location)
-            assert store_id is not None
-            residents.setdefault(store_id, []).append(person_id)
+        resident_rows: dict[EntityId, np.ndarray] = {}
+        for supplier, rows in rows_by_store(civilization, table, home_rows).items():
+            resident_rows[supplier] = rows
+            residents[supplier] = [table.ids[row] for row in rows.tolist()]
         for person_id, person in sorted(held.items()):
             assert person.held_at is not None
             residents.setdefault(person.held_at, []).append(person_id)
@@ -5658,7 +7381,9 @@ def advance_day(
             store_id = store_id_at(civilization, coord)
             assert store_id is not None
             fields.setdefault(store_id, []).append(coord)
-        fed_today = fed_on_the_road & set(people)
+        # Who ate today: rows of this civilization's table, and captives held here by id.
+        fed_rows: list[np.ndarray] = [table.rows_of(fed_on_the_road)]
+        fed_held = {person_id for person_id in fed_on_the_road if person_id in held}
         blockaded = {
             siege.settlement_id
             for siege in candidate.sieges
@@ -5670,16 +7395,25 @@ def advance_day(
             larder = store(civilization, store_id)
             current_food = larder.quantities.get(Resource.FOOD, 0)
             target_food = living_count * reserve_days
+            produced = 0
             # Under siege the fields lie outside the walls, beyond reach.
             if labor_priority > 0 and current_food < target_food and store_id not in blockaded:
                 capacity = larder.capacity - larder.total_units
-                farm_capacity = sum(
-                    (candidate.world_map.tile(coord).soil // 200)
-                    + (2 if candidate.world_map.tile(coord).has_water else 0)
-                    for coord in fields.get(store_id, ())
-                )
+                if rules_for(candidate.rules_version).cover_mechanics:
+                    farm_capacity = food_capacity(
+                        candidate.world_map,
+                        fields.get(store_id, ()),
+                        irrigation=knows(civilization.capabilities, CapabilityId.IRRIGATION),
+                        fishing=knows(civilization.capabilities, CapabilityId.FISHING),
+                    )
+                else:
+                    farm_capacity = sum(
+                        (candidate.world_map.tile(coord).soil // 200)
+                        + (2 if candidate.world_map.tile(coord).has_water else 0)
+                        for coord in fields.get(store_id, ())
+                    )
                 # People at drill eat but do not work the fields.
-                workers = sum(person_id not in drilling for person_id in local)
+                workers = len(local) - len(drilling.intersection(local))
                 produced = min(workers, farm_capacity, target_food - current_food, capacity)
                 if produced:
                     larder = larder.apply_delta(InventoryDelta(changes={Resource.FOOD: produced}))
@@ -5691,6 +7425,29 @@ def advance_day(
                             str(civilization_id),
                             str(store_id),
                             units=produced,
+                        )
+                    )
+            materials_target = decrees.get("materials_reserve_target", 0)
+            if (
+                materials_target > 0
+                and labor_priority > 0
+                and store_id not in blockaded
+                and rules_for(candidate.rules_version).cover_mechanics
+            ):
+                # Hands not needed in the fields cut timber and break stone.
+                hands = len(local) - len(drilling.intersection(local)) - produced
+                larder, gathered = _gather(
+                    candidate.world_map, fields.get(store_id, ()), larder, hands, materials_target
+                )
+                for resource, units in gathered.items():
+                    events.append(
+                        _event(
+                            candidate,
+                            EventPhase.WORK,
+                            f"{resource.value}_gathered",
+                            str(civilization_id),
+                            str(store_id),
+                            units=units,
                         )
                     )
             consumed = min(living_count, larder.quantities.get(Resource.FOOD, 0))
@@ -5707,7 +7464,12 @@ def advance_day(
                     units=consumed,
                 )
             )
+            if consumed == living_count:
+                fed_rows.append(resident_rows.get(store_id, _NO_ROWS))
+                fed_held.update(person_id for person_id in local if person_id in held)
+                continue
             # When food runs short, the hungriest eat first, so shortage is shared.
+            people = _PeopleOf(civilization.population.people, held)
             by_need = sorted(
                 local,
                 key=lambda person_id: (
@@ -5716,30 +7478,30 @@ def advance_day(
                     person_id,
                 ),
             )
-            fed_today |= set(by_need[:consumed])
-            if consumed < living_count:
-                for person_id in by_need[consumed:]:
-                    go_hungry(people[person_id])
-                events.append(
-                    _event(
-                        candidate,
-                        EventPhase.CONSUMPTION,
-                        "food_shortage",
-                        str(civilization_id),
-                        str(store_id),
-                        people=living_count - consumed,
-                    )
+            for chunk, own in ((by_need[:consumed], fed_rows), (by_need[consumed:], None)):
+                rows = table.rows_of(chunk)
+                if own is not None:
+                    own.append(rows)
+                    fed_held.update(person_id for person_id in chunk if person_id in held)
+                    continue
+                _go_hungry_rows(table, rows)
+                for person_id in chunk:
+                    if person_id in held:
+                        go_hungry(held[person_id])
+            events.append(
+                _event(
+                    candidate,
+                    EventPhase.CONSUMPTION,
+                    "food_shortage",
+                    str(civilization_id),
+                    str(store_id),
+                    people=living_count - consumed,
                 )
+            )
 
         work_result = execute_work_day(
             civilization.work_orders,
-            {
-                person_id: person
-                for person_id, person in civilization.population.people.items()
-                if person_id not in away
-                and person_id not in stationed
-                and person_id not in drilling
-            },
+            _Without(civilization.population.people, away | stationed | drilling),
             civilization.inventory,
             civilization.projects,
         )
@@ -5759,9 +7521,7 @@ def advance_day(
         )
         civilization.capabilities = knowledge_result.knowledge.records
         civilization.teaching_assignments = knowledge_result.knowledge.assignments
-        civilization.population = civilization.population.model_copy(
-            update={"people": knowledge_result.people}
-        )
+        civilization.population.people.update(knowledge_result.people)
         for capability in knowledge_result.learned:
             events.append(
                 _event(
@@ -5785,19 +7545,39 @@ def advance_day(
 
         current_living = max(
             1,
-            sum(person_id not in away for person_id in civilization.population.living_ids),
+            len(civilization.population.living_ids) - int(np.count_nonzero(table.alive[away_rows])),
         )
         food_days = holdings(civilization).get(Resource.FOOD, 0) // current_living
         growth_policy = candidate.active_decrees.get(civilization_id, {}).get(
             "population_growth_policy",
             0,
         )
+        eligible_mothers: frozenset[EntityId] | None = None
+        if rules_for(candidate.rules_version).houses:
+            # A settlement's women conceive only with a house for everyone it already feeds
+            # and three months' food in its store.
+            mothers: set[EntityId] = set()
+            if growth_policy > 0:
+                for store_id in sorted(residents):
+                    local = residents[store_id]
+                    food_here = store(civilization, store_id).quantities.get(Resource.FOOD, 0)
+                    if food_here // max(1, len(local)) >= 90 and slots_of(
+                        civilization, store_id
+                    ) >= len(local):
+                        mothers.update(
+                            person_id
+                            for person_id in local
+                            if person_id in civilization.population.people
+                        )
+            eligible_mothers = frozenset(mothers)
         population_result = advance_population_day(
             civilization.population,
             day=candidate.day,
             rng=rng.stream(f"day:{candidate.day}:population:{civilization_id}"),
             food_days=food_days,
             shelter_slots=current_living + 64 if growth_policy > 0 else 0,
+            in_place=True,
+            eligible_mothers=eligible_mothers,
         )
         civilization.population = population_result.population
         _keep_archive(candidate, civilization_id, institution_away)
@@ -5811,9 +7591,7 @@ def advance_day(
         )
         civilization.capabilities = mortality_knowledge_result.knowledge.records
         civilization.teaching_assignments = mortality_knowledge_result.knowledge.assignments
-        civilization.population = civilization.population.model_copy(
-            update={"people": mortality_knowledge_result.people}
-        )
+        civilization.population.people.update(mortality_knowledge_result.people)
         for capability in mortality_knowledge_result.learned:
             events.append(
                 _event(
@@ -5882,20 +7660,22 @@ def advance_day(
                 )
         # Recovery follows the death roll, so the day food returns is still a dangerous one.
         healing = serving_tiles(civilization, InstitutionKind.HEALERS_HOUSE, institution_away)
-        for person_id in sorted(fed_today):
-            eater = civilization.population.people.get(person_id) or held.get(person_id)
-            if eater is not None and eater.alive:
+        _recover_rows(civilization.population.people.table, fed_rows, healing)
+        for person_id in sorted(fed_held):
+            eater = held[person_id]
+            if eater.alive:
                 for _ in range(HEALING_FACTOR if eater.location in healing else 1):
                     recover(eater)
 
     events.extend(_advance_civilizations(candidate))
     events.extend(_advance_territory(candidate))
+    if rules_for(candidate.rules_version).ranks and council_day(candidate):
+        events.extend(_advance_ranks(candidate))
     events.extend(_joined_roads(candidate))
     if candidate.day % LEARNING_INTERVAL == 0:
-        learn(
-            person
+        learn_tables(
+            civilization.population.people.table
             for civilization in candidate.civilizations.values()
-            for person in civilization.population.people.values()
         )
         _study_languages(candidate)
     if candidate.day % ASSIMILATION_INTERVAL == 0:

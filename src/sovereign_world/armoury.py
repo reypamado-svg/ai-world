@@ -101,8 +101,13 @@ RECIPES: dict[Resource, Recipe] = {
     Resource.CATAPULT: Recipe(
         {Resource.TIMBER: 15, Resource.STONE: 10}, 10, CapabilityId.SIEGECRAFT
     ),
+    Resource.METAL: Recipe({Resource.ORE: 2}, 1, CapabilityId.METALLURGY_AWARENESS),
+    Resource.TOOL: Recipe({Resource.METAL: 1, Resource.TIMBER: 1}, 1, None),
+    Resource.PLANK: Recipe({Resource.TIMBER: 2}, 1, CapabilityId.TIMBERCRAFT),
 }
 """Everything the armoury can make, one item at a time."""
+GOODS_RECIPES: frozenset[Resource] = frozenset({Resource.METAL, Resource.TOOL, Resource.PLANK})
+"""Goods rather than kits or engines: made only under rules version 2."""
 
 MAX_CRAFT_QUANTITY = 100
 
@@ -142,11 +147,14 @@ def kit_assignment(
     kits: dict[Resource, int],
     *,
     formations: bool = False,
+    ordered: bool = False,
 ) -> dict[EntityId, Kit]:
-    """Hand out kits, best first, to fighters in id order; the rest fight as levies."""
+    """Hand out kits, best first, to fighters in id order (or in the order given, when
+    `ordered`); the rest fight as levies."""
     issued: dict[EntityId, Kit] = {}
     queue = [resource for resource in KIT_PRIORITY for _ in range(kits.get(resource, 0))]
-    for person_id, resource in zip(sorted(fighter_ids), queue, strict=False):
+    order = list(fighter_ids) if ordered else sorted(fighter_ids)
+    for person_id, resource in zip(order, queue, strict=False):
         kit = KITS[resource]
         issued[person_id] = FORMATION_SPEAR if formations and resource is Resource.SPEAR else kit
     return issued

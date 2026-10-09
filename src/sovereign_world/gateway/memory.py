@@ -34,10 +34,43 @@ HISTORY_FIELDS = frozenset(
     }
 )
 """Report fields that grow with every year; they become memories, not state."""
-DROPPED_FIELDS = frozenset({"known_tiles"})
-"""Report fields the state layer repeats elsewhere (`known_terrain` lists the same tiles)."""
-TRIMMED_LAST = ("known_terrain", "observed_control", "known_roads", "known_tolls")
+DROPPED_FIELDS = frozenset({"known_tiles", "person_ids", "speakers"})
+"""Report fields the state layer leaves out: `known_terrain` lists the same tiles, and the
+people are summed up in `population` and `notable_people` (council-5) instead of listed one
+by one, which at any size outgrew the budget."""
+TRIMMED_LAST = (
+    "known_terrain",
+    "known_rivers",
+    "observed_control",
+    "known_roads",
+    "known_bridges",
+    "known_tolls",
+    "known_sites",
+)
 """Map fields cut back, farthest from home first, when the state layer is too long."""
+TRIMMED_PEOPLE = ("notable_people",)
+"""Lists cut back from the end, after the map fields."""
+PROTECTED = (
+    "report_id",
+    "civilization_id",
+    "day",
+    "crisis",
+    "population",
+    "settlements",
+    "inventory",
+    "stores",
+    "holdings",
+    "store_capacity",
+    "active_decrees",
+    "rules_version",
+    "ranks",
+    "realm_rank",
+    "town_plans",
+    "wall_rings",
+    "defence_orders",
+    "citadels",
+)
+"""Fields dropped only as a last resort, from the end of this list; the first three never."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,27 +115,64 @@ def _tile_distance(entry: object, home: tuple[int, int]) -> int:
     return 1_000_000
 
 
+def _list_length(lengths: Sequence[int]) -> int:
+    """The length of a compact JSON list of items of these lengths."""
+    return 2 + sum(lengths) + max(0, len(lengths) - 1)
+
+
 def state_summary(report: CouncilReport, budget: int) -> str:
-    """Everything the council report says about today, without the years of history."""
-    data = {
-        key: value
-        for key, value in report.model_dump(mode="json").items()
-        if key not in HISTORY_FIELDS | DROPPED_FIELDS
-    }
+    """Everything the council report says about today, without the years of history, in
+    at most `budget` characters of valid JSON.
+
+    Over budget, map fields are cut back farthest from home first, then the notable people
+    from the end; then whole fields go, the largest first, the protected ones last."""
+    data: dict[str, object] = report.model_dump(
+        mode="json", exclude=set(HISTORY_FIELDS | DROPPED_FIELDS)
+    )
     home = (report.start_center.q, report.start_center.r)
-    text = _compact(data)
-    for field in TRIMMED_LAST:
-        if len(text) <= budget:
+    sizes = {key: len(_compact(value)) for key, value in data.items()}
+
+    def total() -> int:
+        # A compact object: braces, and for each field its quoted key, a colon and value.
+        return (
+            2
+            + sum(len(json.dumps(key)) + 1 + size for key, size in sizes.items())
+            + max(0, len(sizes) - 1)
+        )
+
+    for field in (*TRIMMED_LAST, *TRIMMED_PEOPLE):
+        if total() <= budget:
             break
         entries = data.get(field)
         if not isinstance(entries, list):
             continue
-        entries = sorted(entries, key=lambda entry: (_tile_distance(entry, home), _compact(entry)))
-        while entries and len(text) > budget:
-            entries.pop()
-            data[field] = entries
-            text = _compact(data)
-    return text[:budget]
+        if field in TRIMMED_LAST:
+            entries = sorted(
+                entries, key=lambda entry: (_tile_distance(entry, home), _compact(entry))
+            )
+        lengths = [len(_compact(entry)) for entry in entries]
+        room = budget - (total() - sizes[field])
+        keep = len(entries)
+        while keep and _list_length(lengths[:keep]) > room:
+            keep -= 1
+        if keep < len(entries):
+            data[field] = entries[:keep]
+            sizes[field] = _list_length(lengths[:keep])
+    if total() > budget:
+        protected = {key: rank for rank, key in enumerate(PROTECTED)}
+        droppable = sorted(
+            (key for key in sizes if key not in protected),
+            key=lambda key: (-sizes[key], key),
+        ) + sorted(
+            (key for key in sizes if key in protected and protected[key] >= 3),
+            key=lambda key: -protected[key],
+        )
+        for key in droppable:
+            if total() <= budget:
+                break
+            del data[key]
+            del sizes[key]
+    return _compact(data)
 
 
 def _about(*ids: object) -> frozenset[EntityId]:

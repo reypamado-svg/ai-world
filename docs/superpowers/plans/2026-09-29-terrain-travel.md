@@ -32,3 +32,5 @@
   - provisions sized from terrain.
 - Existing tests keep their timelines. Their shared test world lays grassland along the route between the two civilizations, so each scenario tests its own rules rather than the terrain it happens to cross.
 - The normal and stress suites stay green.
+
+**Later (Phase 4, G1–G5):** tiles are 25 km apart (`travel.TILE_SPACING_M`), so one grassland tile is one day's walk. Hills (2 days) and snow (5 days) were added, rivers now run along tile borders with wading costs and impassable deep rivers, and road crews can bridge them. See `2026-10-01-phase-4-observer.md`.
