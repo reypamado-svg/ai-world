@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import ipaddress
 import os
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
-from sovereign_world.gateway.envelope import MAX_REPLY_BYTES
+from sovereign_world.gateway.envelope import MAX_REPLY_BYTES, decoding_schema
 from sovereign_world.gateway.provider import (
     ModelReply,
     ModelRequest,
@@ -27,6 +28,10 @@ from sovereign_world.gateway.provider import (
 MAX_BODY_BYTES = 4 * MAX_REPLY_BYTES
 """A larger HTTP body is refused unread: it cannot hold a usable reply."""
 RETRIED = frozenset({429, 500, 502, 503, 504})
+SCHEMA_REFUSED = frozenset({400, 422, 500, 501})
+"""Answers that may mean the server cannot hold a reply to the schema (a 500 only after its
+retries): that call is made again for any JSON object. A refused token or an unknown model
+is not one of them."""
 
 
 def _plain_http_allowed(host: str, private_allowed: bool) -> bool:
@@ -53,6 +58,7 @@ class CompatibleProvider:
         allow_private_http: bool = False,
         max_retries: int = 1,
         client: httpx.Client | None = None,
+        schema: Mapping[str, object] | None = None,
     ) -> None:
         parts = urlsplit(base_url)
         host = parts.hostname or ""
@@ -72,6 +78,24 @@ class CompatibleProvider:
         self._token_env = token_env
         self._max_retries = max_retries
         self._client = client or httpx.Client()
+        self._schema = dict(schema) if schema is not None else decoding_schema()
+        self._schema_refused: str | None = None
+
+    def _response_format(self, structured: bool) -> dict[str, object]:
+        """The reply schema, so a model cannot write a command without its kind or a value
+        the engine does not know; or, where the server refused it, any JSON object."""
+        if not structured:
+            return {"type": "json_object"}
+        return {
+            "type": "json_schema",
+            "json_schema": {"name": "sovereign_reply", "schema": self._schema, "strict": True},
+        }
+
+    def status(self) -> str:
+        """How the last reply was held to the schema (shown on the launch gate's probe line)."""
+        if self._schema_refused is None:
+            return "reply schema sent as json_schema"
+        return f"json_object only: the server refused the reply schema ({self._schema_refused})"
 
     def _headers(self) -> dict[str, str]:
         if self._token_env is None:
@@ -82,6 +106,19 @@ class CompatibleProvider:
         return {"Authorization": f"Bearer {token}"}
 
     def _post(self, request: ModelRequest) -> httpx.Response:
+        headers = self._headers()
+        response = self._send(request, headers, structured=True)
+        if response.status_code in SCHEMA_REFUSED:
+            # Asked again, for this call only, for any JSON object: a server that cannot take
+            # the schema still plays, and one that failed once is held to it again next time.
+            self._schema_refused = f"answered {response.status_code}"
+            return self._send(request, headers, structured=False)
+        self._schema_refused = None
+        return response
+
+    def _send(
+        self, request: ModelRequest, headers: dict[str, str], *, structured: bool
+    ) -> httpx.Response:
         body = {
             "model": self.model,
             "messages": [
@@ -89,10 +126,9 @@ class CompatibleProvider:
                 {"role": "user", "content": request.user},
             ],
             "max_tokens": request.max_output_tokens,
-            "response_format": {"type": "json_object"},
+            "response_format": self._response_format(structured),
             "stream": False,
         }
-        headers = self._headers()
         for attempt in range(self._max_retries + 1):
             try:
                 response = self._client.post(

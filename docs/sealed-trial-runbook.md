@@ -116,6 +116,13 @@ spend the answer's budget on thought and run past the time limit. `ollama ps` (w
 is loaded, for example after the probe in step 2) must show `100% GPU` and the context size.
 The rehearsal (step 3) shows whether it copes.
 
+The local model is held to the reply's exact shape: each request sends the reply schema as
+structured output (`json_schema`), so Ollama cannot write a command without its `kind` or a
+value the engine does not know. (Without it, a small model writes valid JSON that is not a
+valid reply: on this guide's first rehearsal gemma3:12b left `kind` off its orders and both
+its councils were `malformed`.) If a server refuses the schema, that call asks for any JSON
+object instead, and the probe's line says so.
+
 ## 2. The settings file
 
 Write `work\trial.toml`. It holds no secrets.
@@ -256,7 +263,8 @@ start sites (0 is the world as generated). `--crisis-gap` is 7 by default.
 ```
 
 `--probe` asks each model one tiny question (nothing is recorded); for Claude Code and Codex it
-also shows the program's version and how it is signed in. Fix every `FAIL`
+also shows the program's version and how it is signed in, and for Ollama
+`reply schema sent as json_schema` (section 1). Fix every `FAIL`
 ([the launch gate](launch-gate.md) says what each means) and read every `WARN`: a `keys` warning
 names an API-key variable to remove. `spend --dry-run` shows the worst-case council round and
 how many the token cap covers: a year at 28 days holds 14 regular councils, plus crisis
@@ -296,8 +304,9 @@ What to look for in `councils --errors`:
   civilization does nothing that council and carries on at the next. If it happens in the
   rehearsal, choose a lighter model or effort;
 - `unavailable` with "not signed in": sign the program in again (section 1);
-- `malformed` from Ollama usually means the context is too small (section 1); `late` or
-  `timeout` means the model is too slow for `timeout_seconds`;
+- `malformed` from Ollama usually means the context is too small, or the server did not take
+  the reply schema (the probe's line; section 1); `late` or `timeout` means the model is too
+  slow for `timeout_seconds`;
 - no `answered by` lines: if there are, the probe's model names were not used (section 2);
 - the council times on the `run` lines, against `timeout_seconds`;
 - the output tokens (`councils --json`): Claude's calls at or under `max_output_tokens`, Codex's
@@ -476,6 +485,8 @@ probe and the rehearsal:
 - one Ctrl+C during a `--pace` wait ends with `stopped at day N`, and `verify` passes after;
 - `preflight` and `run` print cleanly in the console and into `launch-gate.json`;
 - Ollama holds its 32,768-token context on the card (`ollama ps`) and answers in time;
+- Ollama takes the reply schema (the probe's line) and the local model's rehearsal councils are
+  `accepted` or `repaired`;
 - the run folder is on a local NTFS drive;
 - `doctor` reads PowerShell, the drive and the sleep settings correctly;
 - a second `run` on the same folder in another window is refused with exit code 5 while the

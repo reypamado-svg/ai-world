@@ -142,7 +142,7 @@ def test_a_free_three_provider_world_passes_its_gate_and_runs(
     assert "signed in with claude.ai" in first.output
     assert [call["program"] for call in calls(clean)] == ["claude", "codex"]
     assert len(ollama.asked()) == 1
-
+    assert "reply schema sent as json_schema" in first.output
     keys = cli.invoke(app, ["keygen"])
     key = keys.output.splitlines()[0].split("=", 1)[1]
     fingerprint = keys.output.splitlines()[1].removeprefix("fingerprint: ")
@@ -173,6 +173,8 @@ def test_a_free_three_provider_world_passes_its_gate_and_runs(
     rows = {row["civilization"]: row for row in json.loads(summary.output)["civilizations"]}
     assert [rows[civ]["who"] for civ in PLAYED] == ["claude", "chatgpt", "ollama"]
     assert all(rows[civ]["outcomes"] == {"accepted": 2} for civ in PLAYED)
+    # The local model was held to the reply schema at the probe and at both councils.
+    assert ollama.formats == ["json_schema"] * 3
     assert all(rows[civ]["cost_usd"] == 0 for civ in PLAYED)
 
     spent = cli.invoke(app, ["spend", str(run)])
