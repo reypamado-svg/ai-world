@@ -6,8 +6,9 @@ One line per check, PASS, WARN, FAIL or SKIP, like the launch gate, for the comp
 than a run: Python and uv, PowerShell, where the repository lives and on what drive, the
 signed-in `claude` and `codex` programs, the variables that would replace their sign-ins, the
 local Ollama model and its context, the GPU, disk, sleep settings and the clock. It reads and
-asks; it writes nothing, and it names variables but never shows their values. Checks only
-Windows can make are SKIP elsewhere.
+asks; it writes nothing, and it names variables but never shows their values. To read the
+context Ollama really holds, it may load the local model (into the card's memory only).
+Checks only Windows can make are SKIP elsewhere.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from sovereign_world.config import SovereignConfig
 from sovereign_world.gateway.claude_code_provider import ClaudeCodeProvider
@@ -63,9 +65,17 @@ DEFAULT_OLLAMA = "http://127.0.0.1:11434"
 LONG_PATH = 60
 WINDOWS_ONLY = "a Windows check"
 
+LOAD_SECONDS = 180.0
+"""How long Ollama may take to load the model so its running context can be read."""
+
 Run = Callable[[Sequence[str]], tuple[int, str]]
-Fetch = Callable[[str], bytes]
 DriveInfo = Callable[[Path], tuple[bool, str]]
+
+
+class Fetch(Protocol):
+    """A GET, or with a body a JSON POST, answering the body's bytes."""
+
+    def __call__(self, url: str, data: bytes | None = None, timeout: float = 5.0) -> bytes: ...
 
 
 def _run(args: Sequence[str]) -> tuple[int, str]:
@@ -83,8 +93,10 @@ def _run(args: Sequence[str]) -> tuple[int, str]:
     return done.returncode, (done.stdout or done.stderr or "").strip()
 
 
-def _fetch(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=5) as answer:
+def _fetch(url: str, data: bytes | None = None, timeout: float = 5.0) -> bytes:
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    request = urllib.request.Request(url, data=data, headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as answer:
         body: bytes = answer.read()
         return body
 
@@ -136,7 +148,7 @@ def machine_checks(
         _keys(environ),
         _autoupdater(environ),
         _ollama(configs, kinds, ollama_url, fetch),
-        _ollama_context(kinds, environ),
+        _ollama_context(configs, kinds, ollama_url, environ, fetch),
         _gpu(which, run),
         _disk(root, disk_usage),
         _power(windows, run),
@@ -150,7 +162,7 @@ def _python() -> Check:
     found = sys.version_info[:2]
     shown = f"{found[0]}.{found[1]}"
     if found < MIN_PYTHON:
-        return Check("python", "FAIL", f"{shown}; install Python 3.12")
+        return Check("python", "FAIL", f"{shown}; install Python 3.12 or later")
     return Check("python", "PASS", shown)
 
 
@@ -253,9 +265,7 @@ def _ollama(
 ) -> Check:
     if configs and "compatible" not in kinds:
         return Check("ollama", "SKIP", "not in the settings")
-    local = next((c for c in configs.values() if c.provider == "compatible"), None)
-    base = ollama_url or (local.base_url if local and local.base_url else DEFAULT_OLLAMA)
-    root = base.rstrip("/").removesuffix("/v1")
+    local, root = _local_ollama(configs, ollama_url)
     try:
         version = json.loads(fetch(f"{root}/api/version")).get("version", "?")
         tags = json.loads(fetch(f"{root}/api/tags"))
@@ -270,21 +280,89 @@ def _ollama(
     return Check("ollama", "PASS", f"version {version}; {wanted} pulled")
 
 
-def _ollama_context(kinds: set[str], environ: Mapping[str, str]) -> Check:
+def _local_ollama(
+    configs: Mapping[str, SovereignConfig], ollama_url: str | None
+) -> tuple[SovereignConfig | None, str]:
+    """The settings' local sovereign (if any), and the root address of the Ollama it uses."""
+    local = next((c for c in configs.values() if c.provider == "compatible"), None)
+    base = ollama_url or (local.base_url if local and local.base_url else DEFAULT_OLLAMA)
+    return local, base.rstrip("/").removesuffix("/v1")
+
+
+def _running_context(root: str, wanted: str | None, fetch: Fetch) -> int | None:
+    """The context the running Ollama holds the model with (`GET /api/ps`), loading the
+    settings' model first if it is not loaded; None where it cannot be read."""
+
+    def running() -> int | None:
+        entries = json.loads(fetch(f"{root}/api/ps")).get("models", [])
+        names = {wanted, f"{wanted}:latest"} if wanted else None
+        lengths = [
+            int(entry["context_length"])
+            for entry in entries
+            if isinstance(entry, dict)
+            and isinstance(entry.get("context_length"), int)
+            and (names is None or {entry.get("name"), entry.get("model")} & names)
+        ]
+        return min(lengths) if lengths else None
+
+    try:
+        found = running()
+        if found is None and wanted:
+            body = json.dumps({"model": wanted, "keep_alive": "10m"}).encode()
+            fetch(f"{root}/api/generate", body, LOAD_SECONDS)
+            found = running()
+        return found
+    except Exception:
+        return None
+
+
+def _ollama_context(
+    configs: Mapping[str, SovereignConfig],
+    kinds: set[str],
+    ollama_url: str | None,
+    environ: Mapping[str, str],
+    fetch: Fetch,
+) -> Check:
+    """What the running Ollama holds, which is what a council gets, and the variable that sets
+    it on Ollama's next start. A server started before the variable was set keeps its old
+    context: the variable alone would pass while every council is cut short."""
     if kinds and "compatible" not in kinds:
         return Check("ollama_context", "SKIP", "not in the settings")
     text = environ.get("OLLAMA_CONTEXT_LENGTH", "")
-    if not text.isdigit():
+    variable = int(text) if text.isdigit() else None
+    shown = f"OLLAMA_CONTEXT_LENGTH is {text if variable is not None else 'not set'}"
+    local, root = _local_ollama(configs, ollama_url)
+    running = _running_context(root, local.model if local else None, fetch)
+    if running is not None and running < MIN_OLLAMA_CONTEXT:
         return Check(
             "ollama_context",
             "FAIL",
-            f"OLLAMA_CONTEXT_LENGTH is not set; set it to {MIN_OLLAMA_CONTEXT} and restart Ollama",
+            f"the running Ollama holds {running}; {shown}: set it to {MIN_OLLAMA_CONTEXT} and "
+            "restart Ollama (quit it from the tray)",
         )
-    if int(text) < MIN_OLLAMA_CONTEXT:
+    if running is not None:
+        if variable is None or variable < MIN_OLLAMA_CONTEXT:
+            return Check(
+                "ollama_context",
+                "WARN",
+                f"the running Ollama holds {running}, but {shown}: the next restart would "
+                f"shrink it; set it to {MIN_OLLAMA_CONTEXT}",
+            )
+        return Check("ollama_context", "PASS", f"{running} (running); OLLAMA_CONTEXT_LENGTH={text}")
+    unread = "the running context could not be read"
+    if variable is None:
         return Check(
-            "ollama_context", "FAIL", f"{text}; {MIN_OLLAMA_CONTEXT} or more holds a council"
+            "ollama_context",
+            "FAIL",
+            f"{shown}; set it to {MIN_OLLAMA_CONTEXT} and restart Ollama ({unread})",
         )
-    return Check("ollama_context", "PASS", text)
+    if variable < MIN_OLLAMA_CONTEXT:
+        return Check(
+            "ollama_context",
+            "FAIL",
+            f"{text}; {MIN_OLLAMA_CONTEXT} or more holds a council ({unread})",
+        )
+    return Check("ollama_context", "WARN", f"OLLAMA_CONTEXT_LENGTH={text} ({unread})")
 
 
 def _gpu(which: Callable[[str], str | None], run: Run) -> Check:

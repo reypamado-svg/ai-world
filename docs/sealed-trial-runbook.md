@@ -39,10 +39,11 @@ winget install Microsoft.PowerShell
 
 Open "PowerShell 7" (`pwsh`) from then on.
 
-**Python and uv.** Python 3.12 or later, and uv to install the project:
+**Python and uv.** Python 3.12 or later (this guide was rehearsed on 3.13), and uv to install
+the project:
 
 ```powershell
-py -3.12 --version
+python --version
 winget install astral-sh.uv
 ```
 
@@ -51,11 +52,14 @@ network folder (the run's database must be on a local NTFS drive), for example `
 
 ```powershell
 cd C:\ai-world
-uv venv --python 3.12 .venv
+uv venv --python 3.13 .venv
 uv pip install --python .venv\Scripts\python.exe -e ".[dev,observer]"
 $env:PYTHONUTF8 = "1"
 & .venv\Scripts\sovereign-world.exe --help
 ```
+
+(`--python 3.12` works too; uv fetches a version that is not installed. On another drive, such
+as `E:\`, it may say it copies rather than links its files: that is only slower, and harmless.)
 
 Set `$env:PYTHONUTF8 = "1"` in **every** new window: it makes Python read and write UTF-8 on the
 Windows console. (Without it nothing breaks: a character the console cannot show is printed as
@@ -115,6 +119,11 @@ same way, so its context fits on the card. Avoid "thinking" models (Qwen3, DeepS
 spend the answer's budget on thought and run past the time limit. `ollama ps` (while the model
 is loaded, for example after the probe in step 2) must show `100% GPU` and the context size.
 The rehearsal (step 3) shows whether it copes.
+
+Ollama reads the variable only when it starts: one already running when the variable was set
+keeps its old context (8,192) until it is quit from the tray and started again, even though a
+new PowerShell window shows 32768. `doctor` (step 0) asks the running Ollama, so it catches
+this.
 
 The local model is held to the reply's exact shape: each request sends the reply schema as
 structured output (`json_schema`), so Ollama cannot write a command without its `kind` or a
@@ -230,7 +239,7 @@ ends with exit code 1 while anything fails.
 
 | Line | What it checks | If it fails |
 |---|---|---|
-| `python` | Python 3.12 or later | install Python 3.12 (section 1) |
+| `python` | Python 3.12 or later | install Python 3.12 or later (section 1) |
 | `uv` | uv is installed (a WARN only) | `winget install astral-sh.uv` |
 | `powershell` | PowerShell 7.1 or later | install PowerShell 7 (section 1) |
 | `path` | the repository is not in OneDrive or on a network share; a short path without spaces | move it, e.g. to `C:\ai-world` |
@@ -240,7 +249,7 @@ ends with exit code 1 while anything fails.
 | `keys` | no variable that would replace a sign-in (a WARN; names only) | remove the named variables (section 1) |
 | `autoupdater` | `DISABLE_AUTOUPDATER` is 1 (a WARN) | set it at User level (section 1) |
 | `ollama` | Ollama answers, with the settings' model pulled | start Ollama; `ollama pull` the model |
-| `ollama_context` | `OLLAMA_CONTEXT_LENGTH` is 32768 or more | set it (section 1) and restart Ollama |
+| `ollama_context` | the running Ollama holds the model with a context of 32768 or more (read from it, loading the model if needed), and `OLLAMA_CONTEXT_LENGTH` agrees | set it (section 1) and restart Ollama from the tray |
 | `gpu` | an NVIDIA card answers `nvidia-smi` (a WARN) | install the NVIDIA driver |
 | `disk` | 10 GiB or more free (FAIL under 2 GiB) | free some space |
 | `power` | sleep and hibernate are off on mains (a WARN) | the `powercfg` lines in section 6 |

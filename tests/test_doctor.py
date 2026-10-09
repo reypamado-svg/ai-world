@@ -127,16 +127,18 @@ def test_each_problem_is_named(fakes: Path, ollama: StubModel) -> None:
         "OLLAMA_CONTEXT_LENGTH": "32768",
         "DISABLE_AUTOUPDATER": "1",
     }
-    # Not pulled, Ollama down, a short context, no context, no updater setting.
+    # Not pulled, Ollama down, no updater setting.
+    pulled = ollama.pulled
     ollama.pulled = ("llama3:8b",)
     assert _checks(ollama)["ollama"].status == "FAIL"
     assert "ollama pull gemma3:12b" in _checks(ollama)["ollama"].detail
-    down = _checks(ollama, ollama_url="http://127.0.0.1:9")["ollama"]
-    assert down.status == "FAIL" and "start it" in down.detail
-    short = _checks(ollama, environ={**base, "OLLAMA_CONTEXT_LENGTH": "8192"})
-    assert short["ollama_context"].status == "FAIL"
+    ollama.pulled = pulled
+    down = _checks(ollama, ollama_url="http://127.0.0.1:9")
+    assert down["ollama"].status == "FAIL" and "start it" in down["ollama"].detail
+    assert down["ollama_context"].status == "WARN"
+    assert "could not be read" in down["ollama_context"].detail
     unset = _checks(ollama, environ={"PATH": base["PATH"]})
-    assert unset["ollama_context"].status == "FAIL" and unset["autoupdater"].status == "WARN"
+    assert unset["autoupdater"].status == "WARN"
     # A variable that would replace a sign-in: named, its value never shown.
     hijacked = _checks(ollama, environ={**base, "ANTHROPIC_API_KEY": SECRET})["keys"]
     assert hijacked.status == "WARN" and "ANTHROPIC_API_KEY" in hijacked.detail
@@ -157,6 +159,33 @@ def test_each_problem_is_named(fakes: Path, ollama: StubModel) -> None:
     only_local = {"civ-0001": _sovereigns(ollama)["civ-0003"]}
     skipped = _checks(ollama, sovereigns=only_local)
     assert skipped["claude"].status == skipped["codex"].status == "SKIP"
+
+
+def test_the_context_is_read_from_the_running_ollama(fakes: Path, ollama: StubModel) -> None:
+    base = {"PATH": os.environ["PATH"], "DISABLE_AUTOUPDATER": "1"}
+    holds = {**base, "OLLAMA_CONTEXT_LENGTH": "32768"}
+    # The model is loaded to read its context, once; loaded, it is only read.
+    assert _checks(ollama, environ=holds)["ollama_context"].status == "PASS"
+    assert ollama.loads == ["gemma3:12b"]
+    passed = _checks(ollama, environ=holds)["ollama_context"]
+    assert ollama.loads == ["gemma3:12b"]
+    assert passed.detail == "32768 (running); OLLAMA_CONTEXT_LENGTH=32768"
+    # The case seen on the trial's PC: the variable set, the server started before it.
+    ollama.context_length = 8192
+    stale = _checks(ollama, environ=holds)["ollama_context"]
+    assert stale.status == "FAIL"
+    assert "holds 8192" in stale.detail and "OLLAMA_CONTEXT_LENGTH is 32768" in stale.detail
+    assert "restart Ollama" in stale.detail
+    # The server holds enough, but the next restart would shrink it.
+    ollama.context_length = 32768
+    for environ in (base, {**base, "OLLAMA_CONTEXT_LENGTH": "8192"}):
+        shrinking = _checks(ollama, environ=environ)["ollama_context"]
+        assert shrinking.status == "WARN" and "next restart" in shrinking.detail
+    # Unreadable, the variable decides as before, but a pass is only a warning.
+    down = "http://127.0.0.1:9"
+    assert _checks(ollama, environ=base, ollama_url=down)["ollama_context"].status == "FAIL"
+    short = {**base, "OLLAMA_CONTEXT_LENGTH": "8192"}
+    assert _checks(ollama, environ=short, ollama_url=down)["ollama_context"].status == "FAIL"
 
 
 def test_the_windows_checks(fakes: Path, ollama: StubModel) -> None:

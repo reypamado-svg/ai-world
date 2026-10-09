@@ -618,3 +618,46 @@ WARN; the command named `doctor`.
 **Left for the user's PC:** Windows byte-range locking of the empty lock file (the rehearsal
 shows it: a second `run` in another window must exit 5), and `doctor`'s reading of
 PowerShell, the drive and `powercfg`.
+
+**Confirmed on the user's PC (2026-10-08):** a second `run` in another window exited 5, and
+`doctor` read PowerShell 7.6.6, a fixed NTFS drive and sleep and hibernate off on mains.
+
+## K as built: the local model held to the reply schema (planned by Fable 5.1 at 126be3c)
+
+**What the rehearsal found.** The first 29-day rehearsal on the user's PC (seed 2026, 32 × 32,
+three civilizations) had Claude and ChatGPT accepted at both councils, and Ollama
+(gemma3:12b) `malformed` at both, even after the repair: its replies were valid JSON but not
+valid replies (`commands.0 … kind: Field required`; a defence `work` that does not exist).
+Setting the PC up also showed that `doctor` trusted `OLLAMA_CONTEXT_LENGTH` in the shell while
+the running Ollama, started before the variable was set, still held 8,192.
+
+- **K1, structured output.** The compatible provider sends the reply schema as
+  `response_format: json_schema`, which Ollama turns into a grammar, so a local model cannot
+  leave out a command's `kind` or write a value the engine does not know; the repair attempt is
+  held to it too. The schema sent is `envelope.decoding_schema()`, derived from the reply schema
+  (notes, map-key and string-length keywords dropped; no invented keys; the reasoning before
+  the commands). The reply schema itself, which the charter shows and the seal pins, is
+  unchanged, and so are its hash and the charter. A server answering 400, 422, 500 or 501 is
+  asked again for any JSON object, for that call only, and the probe's line says which was
+  used (`reply schema sent as json_schema`).
+- **K2, the running context.** `doctor`'s `ollama_context` reads `GET /api/ps`, loading the
+  settings' model first if needed (`POST /api/generate`, no prompt): FAIL when the running
+  context is under 32,768 (naming it and the variable), WARN when it is enough but the
+  variable would shrink it on the next start, and the variable alone (a pass lowered to WARN)
+  when Ollama cannot be read.
+- **K3:** the runbook says Python 3.12 or later, rehearsed on 3.13.
+- **Hashes:** `gateway/` and `doctor.py` are outside the engine hash (`16b24380…`), so the
+  balance report stands; the seal's code hash moves, so `work\trial` is made again after
+  pulling.
+
+**Tests.** `tests/test_reply_schema.py` (the reply schema and its hash unchanged; every
+definition kept; dropped keywords gone; every command's `kind` required; no invented keys; a
+valid reply still read), `tests/test_gateway_local.py` (the schema in the request; a refused
+schema asked again for that call only, and held to it again next time; a refused token is not
+a refused schema; the repair held to it), the free-trial exit test (the stand-in Ollama asked
+with the schema at the probe and both councils), and `tests/test_doctor.py` (the running
+context read, the stale 8,192 a FAIL, a shrinking variable a WARN, an unreadable server).
+
+**Left for the user's PC:** that Ollama 0.40 holds gemma3:12b to the schema at a council's
+size and in time; a fresh 29-day rehearsal with the local model `accepted` or `repaired`. If it
+is still `malformed`, the fallback is `qwen2.5:14b-instruct`.
